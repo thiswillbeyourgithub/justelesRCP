@@ -1,0 +1,15 @@
+# Large source data + generated site are never committed
+/data/
+/dist/
+
+# Local, machine-specific Claude notes
+claude.local.md
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.uvcache/
+
+# OS / editor
+.DS_Store
