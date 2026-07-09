@@ -29,12 +29,18 @@ data/CIS_bdpm.txt   (official CIS -> drug name, latin-1, tab-separated)
       v
 dist/rcp/<cis>-<slug>.html   one cleaned page per drug (slug from drug name)
 dist/search-index.json       [{cis,name,slug}] consumed by client-side search
+dist/browse/index.html       A-Z landing (letter grid with counts)
+dist/browse/<letter>.html    alphabetical drug list per letter ('#' -> num.html)
 dist/index.html style.css search.js
 + .gz and .br precompressed siblings for every text file (Caddy serves these)
 ```
 
 Key facts that aren't obvious from a single file:
 
+- **Browse pages are server-navigable (SEO), search is client-side.** The A-Z
+  browse pages under `/browse/` are plain static links (crawlable, no JS), built
+  by `write_browse()` in `build.py`. Names are bucketed by accent-folded first
+  letter; non-alpha names go under `#` (`/browse/num`).
 - **Search is 100% client-side.** `src/search.js` fetches `search-index.json`
   (~15k name entries) once and does substring matching in the browser. There is
   no search API. Full-text search over RCP *content* is intentionally NOT

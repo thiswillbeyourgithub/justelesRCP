@@ -132,6 +132,96 @@ def clean_rcp(raw: str) -> tuple[str, str]:
     return denom, cleaned
 
 
+# --- A-Z browse pages -------------------------------------------------------
+_LETTERS = [chr(c) for c in range(ord("A"), ord("Z") + 1)] + ["#"]
+
+
+def _letter_key(label: str) -> str:
+    """URL/file key for a browse letter ('#' -> 'num', else lowercase)."""
+    return "num" if label == "#" else label.lower()
+
+
+def _first_letter(name: str) -> str:
+    """Bucket a drug name under A-Z (accent-folded) or '#' for non-alpha."""
+    folded = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
+    for ch in folded:
+        if ch.isalpha():
+            return ch.upper()
+    return "#"
+
+
+def _sort_key(name: str) -> str:
+    return unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode().lower()
+
+
+def write_browse(index: list[dict[str, str]]) -> int:
+    """Write /browse/ index + one alphabetical page per letter. Returns page count."""
+    tpl = (SRC / "browse.html").read_text(encoding="utf-8")
+    (DIST / "browse").mkdir(parents=True, exist_ok=True)
+
+    groups: dict[str, list[dict[str, str]]] = {}
+    for entry in index:
+        groups.setdefault(_first_letter(entry["name"]), []).append(entry)
+
+    def nav(active: str) -> str:
+        cells = []
+        for label in _LETTERS:
+            if label in groups:
+                cls = "active" if label == active else ""
+                cells.append(
+                    f'<a class="{cls}" href="/browse/{_letter_key(label)}">{label}</a>'
+                )
+            else:
+                cells.append(f'<span class="off">{label}</span>')
+        return '<nav class="azbar">' + "".join(cells) + "</nav>"
+
+    def emit(key: str, title: str, desc: str, heading: str, active: str, body: str):
+        page = (
+            tpl.replace("{{TITLE}}", _esc(title))
+            .replace("{{DESC}}", _esc(desc))
+            .replace("{{HEADING}}", _esc(heading))
+            .replace("{{NAV}}", nav(active))
+            .replace("{{BODY}}", body)
+        )
+        out = DIST / "browse" / f"{key}.html"
+        out.write_text(page, encoding="utf-8")
+        compress(out)
+
+    # Index: a grid of letters with counts.
+    tiles = "".join(
+        f'<li><a href="/browse/{_letter_key(l)}"><b>{l}</b>'
+        f"<span>{len(groups[l])}</span></a></li>"
+        for l in _LETTERS
+        if l in groups
+    )
+    emit(
+        "index",
+        "Parcourir les médicaments de A à Z | justelesRCP",
+        "Liste alphabétique de tous les médicaments avec leur RCP (ANSM / BDPM).",
+        "Parcourir de A à Z",
+        "",
+        f'<ul class="letter-grid">{tiles}</ul>',
+    )
+
+    # One page per letter, entries sorted by folded name.
+    for label, entries in groups.items():
+        entries.sort(key=lambda e: _sort_key(e["name"]))
+        items = "".join(
+            f'<li><a href="/rcp/{e["slug"]}">{_esc(e["name"])}</a></li>'
+            for e in entries
+        )
+        emit(
+            _letter_key(label),
+            f"Médicaments : {label} | justelesRCP",
+            f"Médicaments dont le nom commence par « {label} » ({len(entries)}).",
+            f"Médicaments : {label}",
+            label,
+            f'<ul class="drug-list">{items}</ul>',
+        )
+
+    return len(groups) + 1
+
+
 def compress(path: Path) -> None:
     """Write .gz and .br siblings so Caddy can serve precompressed."""
     raw = path.read_bytes()
@@ -224,7 +314,12 @@ def main() -> None:
     for f in ("index.html", "style.css", "search.js", "search-index.json"):
         compress(DIST / f)
 
-    print(f"done: {len(index)} RCP pages ({skipped_empty} empty CIS skipped) -> {DIST}")
+    browse_pages = write_browse(index)
+
+    print(
+        f"done: {len(index)} RCP pages + {browse_pages} browse pages "
+        f"({skipped_empty} empty CIS skipped) -> {DIST}"
+    )
 
 
 def _esc(text: str) -> str:

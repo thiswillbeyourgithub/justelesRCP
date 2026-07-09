@@ -6,7 +6,7 @@ sold in France, from the ANSM / BDPM public dataset. Built as a lightweight
 alternative to slow, for-profit medicine sites.
 
 - No application server, no database: every page is precomputed to a static file.
-- Client-side instant search over ~15,600 medicines.
+- Client-side instant search over ~15,600 medicines, plus crawlable A-Z browse pages.
 - Precompressed (brotli + gzip) and served by a hardened, read-only Caddy container.
 
 ## Quick start
