@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>justelesRCP - Résumés des caractéristiques du produit</title>
+<meta name="description" content="Recherche instantanée des RCP (résumés des caractéristiques du produit) des médicaments en France. Rapide, gratuit, sans pub. Source ANSM / BDPM.">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body class="home">
+<main class="hero">
+  <h1>justelesRCP</h1>
+  <p class="tag">Juste les résumés des caractéristiques du produit. Rapide, sans pub, sans compte.</p>
+  <div class="searchbox">
+    <input id="q" type="search" autocomplete="off" autofocus
+           placeholder="Rechercher un médicament (ex. doliprane, amoxicilline…)"
+           aria-label="Rechercher un médicament">
+    <ul id="results" class="results" role="listbox"></ul>
+  </div>
+  <p id="status" class="status">Chargement de l'index…</p>
+</main>
+<footer class="foot">
+  <p>Source : RCP publiés par l'ANSM (BDPM). Site non affilié, ne remplace pas un avis médical.
+  Généré avec l'aide de Claude Code.</p>
+</footer>
+<script src="/search.js" defer></script>
+</body>
+</html>
