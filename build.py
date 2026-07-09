@@ -84,6 +84,25 @@ _STRIP_XPATH = (
 )
 
 
+def _denomination(doc) -> str:
+    """Drug name = section-1 denomination. Class hooks vary (AmmDenomination,
+    AmmCorpsTexteGras, ...), so anchor on the 'RcpDenomination' name and take the
+    first non-empty paragraph after the '1. DENOMINATION' title."""
+    hit = doc.xpath("//*[contains(@class, 'AmmDenomination')]")
+    if hit and hit[0].text_content().strip():
+        return hit[0].text_content().strip()
+    anchor = doc.xpath("//a[@name='RcpDenomination']")
+    if anchor:
+        title = anchor[0].getparent()
+        for sib in title.itersiblings():
+            if "AmmAnnexeTitre1" in (sib.get("class") or ""):
+                break  # reached section 2 without finding a name
+            text = sib.text_content().strip()
+            if text:
+                return text
+    return ""
+
+
 def clean_rcp(raw: str) -> tuple[str, str]:
     """Return (denomination, cleaned_inner_html) for one RCP document.
 
@@ -103,8 +122,7 @@ def clean_rcp(raw: str) -> tuple[str, str]:
         else:
             del node.attrib["style"]
 
-    denom_nodes = doc.xpath("//*[contains(@class, 'AmmDenomination')]")
-    denom = denom_nodes[0].text_content().strip() if denom_nodes else ""
+    denom = _denomination(doc)
 
     body = doc.xpath("//div[@id='textDocument']")
     inner = body[0] if body else doc
