@@ -112,3 +112,4 @@ a:hover { text-decoration: underline; }
   color: var(--muted); font-size: .8rem; border-top: 1px solid var(--line);
 }
 .foot p { margin: 0; }
+.foot .ver { margin-top: .4rem; opacity: .6; font-size: .75rem; }

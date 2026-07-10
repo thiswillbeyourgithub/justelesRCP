@@ -184,6 +184,7 @@ def write_browse(index: list[dict[str, str]]) -> int:
             .replace("{{HEADING}}", _esc(heading))
             .replace("{{NAV}}", nav(active))
             .replace("{{BODY}}", body)
+            .replace("{{VERSION}}", __version__)
         )
         out = DIST / "browse" / f"{key}.html"
         out.write_text(page, encoding="utf-8")
@@ -259,6 +260,7 @@ def render_record(item: tuple[str, str]) -> dict[str, str] | None:
         _TPL.replace("{{TITLE}}", _esc(name))
         .replace("{{CIS}}", _esc(cis))
         .replace("{{CONTENT}}", cleaned)
+        .replace("{{VERSION}}", __version__)
     )
     out = DIST / "rcp" / f"{slug}.html"
     out.write_text(page, encoding="utf-8")
@@ -323,7 +325,13 @@ def main() -> None:
         "dev-banner.js",
     )
     for asset in static_assets:
-        shutil.copy(SRC / asset, DIST / asset)
+        if asset == "index.html":  # only templated asset: inject the version
+            text = (SRC / asset).read_text(encoding="utf-8").replace(
+                "{{VERSION}}", __version__
+            )
+            (DIST / asset).write_text(text, encoding="utf-8")
+        else:
+            shutil.copy(SRC / asset, DIST / asset)
     for f in (*static_assets, "search-index.json"):
         compress(DIST / f)
 
