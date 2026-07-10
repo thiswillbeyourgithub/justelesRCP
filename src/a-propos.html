@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>À propos | justelesRCP</title>
+<meta name="description" content="À propos de justelesRCP : un accès rapide et sans publicité aux RCP des médicaments (source ANSM / BDPM), et son auteur.">
+<link rel="stylesheet" href="/style.css">
+<!-- Runtime config (umami metrics + dev banner); rendered by docker/entrypoint.sh. No-op when unset. -->
+<script src="/app-config.js"></script>
+<!-- Build version (window.__APP_VERSION__), injected into [data-app-version] by app-init.js. -->
+<script src="/app-version.js" defer></script>
+<script src="/app-init.js" defer></script>
+<script src="/dev-banner.js" defer></script>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="/">justelesRCP</a>
+  <nav class="topnav"><a href="/browse/">A-Z</a><a href="/">Rechercher</a><a href="/a-propos">À propos</a></nav>
+</header>
+<main class="about">
+  <h1>À propos</h1>
+  <p><strong>justelesRCP</strong> donne un accès rapide, gratuit et sans publicité
+  aux résumés des caractéristiques du produit (RCP) des médicaments vendus en
+  France. Les données proviennent de la base de données publique des médicaments
+  (BDPM) publiée par l'ANSM. Le site est entièrement statique : aucune donnée de
+  navigation n'est nécessaire pour le consulter.</p>
+
+  <h2>L'auteur</h2>
+  <p>Site créé par Olivier Cornelis, interne en psychiatrie et développeur.
+  Vous pouvez en apprendre plus sur
+  <a href="https://olicorne.org/fr" rel="noopener">olicorne.org/fr</a>.</p>
+
+  <h2>Code source</h2>
+  <p>Le code est ouvert et disponible sur
+  <a data-source-link href="https://olicorne.org/fr" target="_blank" rel="noopener">GitHub</a>.
+  Ce projet a été réalisé avec l'aide de Claude Code.</p>
+
+  <p><a href="/">← Retour à la recherche</a></p>
+  <p class="ver" data-app-version></p>
+</main>
+<footer class="foot">
+  <p>Source : RCP publiés par l'ANSM (Base de données publique des médicaments, BDPM).
+  Site non affilié. Ne remplace pas un avis médical. Généré avec l'aide de Claude Code.</p>
+</footer>
+</body>
+</html>

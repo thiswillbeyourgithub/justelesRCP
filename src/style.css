@@ -66,6 +66,13 @@ a:hover { text-decoration: underline; }
 .status { color: var(--muted); font-size: .85rem; margin-top: 1.2rem; }
 .browse-link { margin-top: 1.6rem; font-size: .95rem; }
 
+/* --- about --- */
+.about { max-width: var(--maxw); margin: 0 auto; padding: 1.5rem 1.2rem 4rem; }
+.about h1 { font-size: 1.8rem; margin: 0 0 1rem; }
+.about h2 { font-size: 1.2rem; margin: 2rem 0 .4rem; }
+.about p { margin: .6rem 0; }
+.about .ver { margin-top: 2rem; color: var(--muted); font-size: .8rem; opacity: .7; }
+
 /* --- A-Z browse --- */
 .browse { max-width: var(--maxw); margin: 0 auto; padding: 1.5rem 1.2rem 4rem; }
 .browse h1 { font-size: 1.6rem; margin: 0 0 1rem; }

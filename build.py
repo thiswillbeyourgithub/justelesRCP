@@ -40,7 +40,7 @@ from pathlib import Path
 import brotli
 from lxml import html as lxml_html
 
-__version__ = "0.3.0"  # single source of truth; bump patch/minor per change
+__version__ = "0.4.0"  # single source of truth; bump patch/minor per change
 
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
@@ -468,6 +468,7 @@ def main() -> None:
     # app-init.js (umami + version) + dev-banner.js consume window.__APP_CONFIG__.
     static_assets = (
         "index.html",
+        "a-propos.html",
         "style.css",
         "search.js",
         "app-config.js",
