@@ -102,16 +102,28 @@ a:hover { text-decoration: underline; }
 
 /* --- RCP document + table-of-contents sidebar --- */
 /* Single column on phones; a sticky sidebar + centered content on wide screens. */
-.rcp-layout { max-width: 100%; padding: 0 1rem; }
+.rcp-layout { max-width: 100%; padding: 0 1rem; overflow-x: hidden; }
 .rcp {
   max-width: var(--maxw); margin: 0 auto; padding: 1.5rem .2rem 4rem;
+  /* Buggy source pages can carry very long unbreakable tokens; never let them
+     widen the reading column past its cap. Tables scroll on their own (below). */
+  min-width: 0; overflow-wrap: break-word;
 }
 @media (min-width: 60rem) {
   .rcp-layout {
     display: grid; gap: 2.5rem; justify-content: center; align-items: start;
+    /* Row 1: sidebar + reading column. Row 2: footer under the reading column,
+       so it shares the content's exact left/right edges (col 2 = minmax(0,maxw)). */
     grid-template-columns: 15rem minmax(0, var(--maxw));
   }
-  .rcp { padding: 1.5rem 0 4rem; }
+  .rcp { grid-column: 2; grid-row: 1; padding: 1.5rem 0 4rem; }
+  .rcp-layout .toc { grid-column: 1; grid-row: 1; }
+  .rcp-layout .foot {
+    grid-column: 2; grid-row: 2;
+    /* Fill the reading column exactly (defeat the base max-width/margin auto and
+       the grid item's fit-content shrink) so edges line up with .rcp above. */
+    max-width: none; width: 100%; margin: 0; padding-left: 0; padding-right: 0;
+  }
 }
 
 /* Table of contents. <details open>: a permanent sidebar on desktop, a
