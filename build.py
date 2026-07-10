@@ -40,7 +40,7 @@ from pathlib import Path
 import brotli
 from lxml import html as lxml_html
 
-__version__ = "0.4.7"  # single source of truth; bump patch/minor per change
+__version__ = "0.4.8"  # single source of truth; bump patch/minor per change
 
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
@@ -322,8 +322,12 @@ def _toc_html(toc: list[tuple[str, str]]) -> str:
     links = "".join(
         f'<li><a href="#{sec_id}">{_esc(title)}</a></li>' for sec_id, title in toc
     )
+    # No `open`: ships collapsed so on phones it doesn't bury the top of the
+    # document. On wide screens style.css reveals the content regardless of the
+    # open state (permanent sidebar); src/toc.js snaps it shut after a section
+    # link is tapped on phones.
     return (
-        '<details class="toc" open>'
+        '<details class="toc">'
         "<summary>Sommaire</summary>"
         f'<nav aria-label="Sommaire"><ol>{links}</ol></nav>'
         '<p class="ver" data-app-version></p>'
@@ -474,6 +478,7 @@ def main() -> None:
         "app-config.js",
         "app-init.js",
         "dev-banner.js",
+        "toc.js",
     )
     for asset in static_assets:
         shutil.copy(SRC / asset, DIST / asset)

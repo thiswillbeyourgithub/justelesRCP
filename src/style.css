@@ -32,7 +32,9 @@ a:hover { text-decoration: underline; }
 .topbar {
   display: flex; justify-content: space-between; align-items: center;
   gap: 1rem; padding: .7rem 1rem; border-bottom: 1px solid var(--line);
-  position: sticky; top: 0; background: var(--bg);
+  /* z-index above the sticky ToC (z-index 5) so the ToC never paints over the
+     bar where the two sticky elements overlap as you scroll. */
+  position: sticky; top: 0; z-index: 10; background: var(--bg);
 }
 .brand { font-weight: 700; color: var(--fg); padding: .3rem 0; }
 .back { font-size: .9rem; }
@@ -159,7 +161,13 @@ a:hover { text-decoration: underline; }
     position: sticky; top: 3.6rem; margin-top: 1.5rem;
     max-height: calc(100vh - 4.5rem); overflow-y: auto;
   }
-  /* On desktop the sidebar is always shown; the toggle stays but reads as a heading. */
+  /* On desktop the sidebar is a permanent, always-expanded panel. The <details>
+     ships without `open` (so phones start collapsed), so here we reveal its
+     contents regardless of open state: `display: revert` handles Firefox/Safari
+     and older Blink; `::details-content` handles Chrome 131+ (content-visibility). */
+  .toc:not([open]) > *:not(summary) { display: revert; }
+  .toc::details-content { content-visibility: visible; }
+  /* The toggle stays put but reads as a heading, not a control. */
   .toc > summary { cursor: default; }
 }
 

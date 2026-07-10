@@ -46,7 +46,7 @@ dist/search-index.json       [{cis,name,slug}] consumed by client-side search
 dist/browse/index.html       A-Z landing (letter grid with counts)
 dist/browse/<letter>.html    alphabetical drug list per letter ('#' -> num.html)
 dist/index.html a-propos.html style.css search.js
-dist/app-config.js app-init.js dev-banner.js app-version.js  (runtime client assets)
+dist/app-config.js app-init.js dev-banner.js toc.js app-version.js  (runtime client assets)
 dist/.build-manifest.json    incremental-build cache (per-CIS input hashes)
 + .gz and .br precompressed siblings for every text file (Caddy serves these)
 ```
