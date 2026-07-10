@@ -15,6 +15,10 @@ code, comments, and developer docs are in English. `README.md` is the French
 readme and `README.en.md` is its English translation. They are cross-linked and
 MUST be kept in sync: whenever you edit one, update the other accordingly.
 
+**Versioning:** the project version is `__version__` in `build.py` (single
+source of truth, printed at build start). There are no git tags; bump it
+patch/minor per change.
+
 ## Architecture (the important part)
 
 Two stages, cleanly separated:

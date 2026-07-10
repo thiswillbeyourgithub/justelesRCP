@@ -39,6 +39,8 @@ from pathlib import Path
 import brotli
 from lxml import html as lxml_html
 
+__version__ = "0.1.0"  # single source of truth; bump patch/minor per change
+
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
 SRC = ROOT / "src"
@@ -268,7 +270,7 @@ def main() -> None:
     if not CSV_PATH.exists():
         sys.exit(f"missing {CSV_PATH} (see README / download-data.sh)")
 
-    print("build justelesRCP")
+    print(f"build justelesRCP v{__version__}")
     names = load_names()
 
     if DIST.exists():
