@@ -102,7 +102,9 @@ a:hover { text-decoration: underline; }
 
 /* --- RCP document + table-of-contents sidebar --- */
 /* Single column on phones; a sticky sidebar + centered content on wide screens. */
-.rcp-layout { max-width: 100%; padding: 0 1rem; overflow-x: hidden; }
+/* overflow-x: clip (NOT hidden) contains long unbreakable tokens WITHOUT
+   creating a scroll container, which would break the sticky .toc inside. */
+.rcp-layout { max-width: 100%; padding: 0 1rem; overflow-x: clip; }
 .rcp {
   max-width: var(--maxw); margin: 0 auto; padding: 1.5rem .2rem 4rem;
   /* Buggy source pages can carry very long unbreakable tokens; never let them
@@ -129,6 +131,11 @@ a:hover { text-decoration: underline; }
 /* Table of contents. <details open>: a permanent sidebar on desktop, a
    collapsible "Sommaire" block on phones (tap the summary to fold it away). */
 .toc {
+  /* Sticky on phones too: sits just under the sticky top bar so, once
+     collapsed, it rides along and lets you jump sections without scrolling
+     back up. Internal scroll when the (open) list is taller than the screen. */
+  position: sticky; top: 3.2rem; z-index: 5;
+  max-height: calc(100vh - 3.6rem); overflow-y: auto;
   margin: 1rem 0 0; border: 1px solid var(--line); border-radius: .6rem;
   background: var(--card); padding: .2rem .7rem .6rem;
 }
