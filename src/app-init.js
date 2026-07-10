@@ -20,17 +20,6 @@
     });
   }
 
-  // Point every [data-source-link] at the configured source repo (SOURCE_URL in
-  // the container env). Kept in config, not hardcoded, so the repo URL (which
-  // carries the author's GitHub handle) is not baked into the static site. Only
-  // an http(s) value is accepted; otherwise the element keeps its fallback href.
-  const sourceUrl = String(cfg.sourceUrl || "").trim();
-  if (/^https?:\/\//i.test(sourceUrl)) {
-    document.querySelectorAll("a[data-source-link]").forEach((a) => {
-      a.href = sourceUrl;
-    });
-  }
-
   // A value is "set" only if it is a non-empty, non-placeholder string.
   function isSet(value) {
     return typeof value === "string" && value.length > 0 && !value.startsWith("{{");

@@ -86,9 +86,9 @@ Key facts that aren't obvious from a single file:
   edit forces a full rebuild while a version-only bump does not. Full build is
   ~3 min; an unchanged-data rebuild reuses everything in ~35 s.
 - **`/a-propos` is a static About page** (`src/a-propos.html`, shipped as a
-  static asset). Its GitHub link uses `data-source-link`, filled at runtime by
-  `app-init.js` from `SOURCE_URL` (`window.__APP_CONFIG__.sourceUrl`), so the
-  repo URL (a GitHub handle) is not baked into the site.
+  static asset): what the site is, the author, a privacy/hosting note, and a
+  direct link to the GitHub repo. (`SOURCE_URL` still drives the separate "Code
+  source" link in the DEV banner, `src/dev-banner.js`.)
 - **~15% of CIS have an empty RCP field** in the source and are skipped (no page,
   not in the index). This is expected, not an error.
 - **Precompression (.gz/.br) is baked at build time** so Caddy spends zero CPU
