@@ -1,5 +1,5 @@
-// Injects the privacy-friendly umami metrics tag when configured at runtime, and
-// forwards clicks to umami as events.
+// Injects the privacy-friendly umami metrics tag when configured at runtime,
+// fills the build version into the page, and forwards clicks to umami as events.
 //
 // Config arrives in window.__APP_CONFIG__ from app-config.js, which the
 // container fills from docker/.env (see docker/Caddyfile). When the values are
@@ -8,6 +8,17 @@
 // window.__APP_CONFIG__ exists.
 (function () {
   const cfg = window.__APP_CONFIG__ || {};
+
+  // Build version. Served at runtime from app-version.js (window.__APP_VERSION__,
+  // written by build.py) rather than baked into each page, so page HTML stays
+  // independent of the version and the incremental build cache survives a bump.
+  // Fill every [data-app-version] slot (footer, sidebar, about page).
+  const version = String(window.__APP_VERSION__ || "").trim();
+  if (version) {
+    document.querySelectorAll("[data-app-version]").forEach((el) => {
+      el.textContent = "justelesRCP v" + version;
+    });
+  }
 
   // A value is "set" only if it is a non-empty, non-placeholder string.
   function isSet(value) {

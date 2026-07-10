@@ -8,6 +8,8 @@
 <link rel="stylesheet" href="/style.css">
 <!-- Runtime config (umami metrics + dev banner); rendered by docker/entrypoint.sh. No-op when unset. -->
 <script src="/app-config.js"></script>
+<!-- Build version (window.__APP_VERSION__), injected into [data-app-version] by app-init.js. -->
+<script src="/app-version.js" defer></script>
 <script src="/app-init.js" defer></script>
 <script src="/dev-banner.js" defer></script>
 </head>
@@ -24,7 +26,7 @@
 <footer class="foot">
   <p>Source : RCP publiés par l'ANSM (BDPM). Site non affilié, ne remplace pas un avis médical.
   Généré avec l'aide de Claude Code.</p>
-  <p class="ver">justelesRCP v{{VERSION}}</p>
+  <p class="ver" data-app-version></p>
 </footer>
 </body>
 </html>

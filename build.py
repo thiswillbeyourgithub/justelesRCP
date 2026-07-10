@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import csv
 import gzip
+import hashlib
 import json
 import os
 import re
@@ -39,7 +40,7 @@ from pathlib import Path
 import brotli
 from lxml import html as lxml_html
 
-__version__ = "0.1.1"  # single source of truth; bump patch/minor per change
+__version__ = "0.2.0"  # single source of truth; bump patch/minor per change
 
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
@@ -48,9 +49,55 @@ DIST = ROOT / "dist"
 
 CSV_PATH = DATA / "CIS_RCP.csv"
 BDPM_PATH = DATA / "CIS_bdpm.txt"
+# Incremental-build cache. Lives inside dist/ (already gitignored) and records,
+# per CIS, the hash of the inputs that produced its page so an unchanged record
+# can be reused instead of re-parsed and re-compressed. See main().
+MANIFEST_PATH = DIST / ".build-manifest.json"
 
 # The RCP HTML field can be very large; lift the csv field-size ceiling.
 csv.field_size_limit(sys.maxsize)
+
+
+def _code_fingerprint() -> bytes:
+    """This build script's own source, minus the __version__ line.
+
+    Any change to the build logic or templates should bust the whole incremental
+    cache (outputs may now differ). We exclude the __version__ assignment on
+    purpose: the version is decoupled from page content (served at runtime via
+    app-version.js), so a version-only bump must NOT force a full rebuild.
+    """
+    src = Path(__file__).read_text(encoding="utf-8")
+    return re.sub(r"(?m)^__version__\s*=.*$", "", src).encode("utf-8")
+
+
+def _global_key(page_tpl: str) -> str:
+    """Cache key that invalidates every record when build code/template change."""
+    h = hashlib.sha256()
+    h.update(_code_fingerprint())
+    h.update(b"\0")
+    h.update(page_tpl.encode("utf-8"))
+    return h.hexdigest()
+
+
+def _record_hash(raw: str, mapped_name: str) -> str:
+    """Per-record cache key: the raw ANSM HTML plus the CIS->name mapping value.
+
+    The rendered page is a pure function of (raw, mapped_name, template, code);
+    template/code are folded into the global key, so these two suffice here. The
+    parsed denomination is derived from raw, so it needs no separate input.
+    """
+    h = hashlib.sha256()
+    h.update(raw.encode("utf-8"))
+    h.update(b"\0")
+    h.update(mapped_name.encode("utf-8"))
+    return h.hexdigest()
+
+
+def _load_manifest() -> dict:
+    try:
+        return json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
 
 
 def slugify(text: str) -> str:
@@ -184,7 +231,6 @@ def write_browse(index: list[dict[str, str]]) -> int:
             .replace("{{HEADING}}", _esc(heading))
             .replace("{{NAV}}", nav(active))
             .replace("{{BODY}}", body)
-            .replace("{{VERSION}}", __version__)
         )
         out = DIST / "browse" / f"{key}.html"
         out.write_text(page, encoding="utf-8")
@@ -260,7 +306,6 @@ def render_record(item: tuple[str, str]) -> dict[str, str] | None:
         _TPL.replace("{{TITLE}}", _esc(name))
         .replace("{{CIS}}", _esc(cis))
         .replace("{{CONTENT}}", cleaned)
-        .replace("{{VERSION}}", __version__)
     )
     out = DIST / "rcp" / f"{slug}.html"
     out.write_text(page, encoding="utf-8")
@@ -275,13 +320,22 @@ def main() -> None:
     print(f"build justelesRCP v{__version__}")
     names = load_names()
 
-    if DIST.exists():
-        shutil.rmtree(DIST)
-    (DIST / "rcp").mkdir(parents=True)
+    (DIST / "rcp").mkdir(parents=True, exist_ok=True)  # kept: incremental reuse
 
     page_tpl = (SRC / "rcp.html").read_text(encoding="utf-8")
+
+    # Incremental cache: reuse a record's page when its inputs are unchanged and
+    # its output files still exist. A build-code or template change flips the
+    # global key and forces a full rebuild; a version-only bump does not.
+    global_key = _global_key(page_tpl)
+    prev = _load_manifest()
+    prev_records = prev.get("records", {}) if prev.get("global") == global_key else {}
+
     index: list[dict[str, str]] = []
+    new_records: dict[str, dict[str, str]] = {}
+    miss_hashes: dict[str, str] = {}  # cis -> record hash for pages we (re)render
     skipped_empty = 0
+    reused = 0
 
     def records():
         """Yield (cis, raw) for non-empty RCPs; count empties as a side effect."""
@@ -298,24 +352,81 @@ def main() -> None:
                     continue
                 yield cis, raw
 
+    def output_ok(slug: str) -> bool:
+        """True when a slug's page and both precompressed siblings still exist."""
+        page = DIST / "rcp" / f"{slug}.html"
+        return (
+            page.exists()
+            and page.with_suffix(".html.gz").exists()
+            and page.with_suffix(".html.br").exists()
+        )
+
+    def misses():
+        """Yield (cis, raw) only for records that must be (re)rendered.
+
+        Cache hits are appended straight to the index here (no parsing, no
+        compression) as the pool pulls this generator, keeping memory streaming.
+        """
+        nonlocal reused
+        for cis, raw in records():
+            rec_hash = _record_hash(raw, names.get(cis, ""))
+            hit = prev_records.get(cis)
+            if hit and hit.get("h") == rec_hash and output_ok(hit["slug"]):
+                index.append({"cis": cis, "name": hit["name"], "slug": hit["slug"]})
+                new_records[cis] = {"h": rec_hash, "name": hit["name"], "slug": hit["slug"]}
+                reused += 1
+                continue
+            miss_hashes[cis] = rec_hash
+            yield cis, raw
+
     # Parsing + brotli are CPU-bound and independent per record -> fan out.
     workers = max(1, (os.cpu_count() or 2) - 1)
-    print(f"  rendering with {workers} workers...")
+    print(f"  rendering with {workers} workers ({len(prev_records)} cached)...")
     with Pool(workers, initializer=_init_worker, initargs=(names, page_tpl)) as pool:
         for i, entry in enumerate(
-            pool.imap_unordered(render_record, records(), chunksize=8)
+            pool.imap_unordered(render_record, misses(), chunksize=8)
         ):
             if entry is not None:
                 index.append(entry)
+                cis = entry["cis"]
+                new_records[cis] = {
+                    "h": miss_hashes[cis],
+                    "name": entry["name"],
+                    "slug": entry["slug"],
+                }
             if (i + 1) % 2000 == 0:
-                print(f"  {i + 1} pages...")
+                print(f"  {i + 1} rendered...")
 
-    # Homepage + assets
+    # Prune outputs left behind by renamed slugs or CIS dropped from the source.
+    keep = {e["slug"] for e in index}
+    pruned = 0
+    for page in (DIST / "rcp").glob("*.html"):
+        if page.stem not in keep:
+            page.unlink()
+            page.with_suffix(".html.gz").unlink(missing_ok=True)
+            page.with_suffix(".html.br").unlink(missing_ok=True)
+            pruned += 1
+
+    MANIFEST_PATH.write_text(
+        json.dumps({"global": global_key, "records": new_records}), encoding="utf-8"
+    )
+
+    # Homepage + assets. Sorted by CIS so search-index.json is stable across runs
+    # (imap_unordered returns pages in arbitrary order); a stable file avoids
+    # needless recompression churn and rsync transfers on unchanged data.
+    index.sort(key=lambda e: e["cis"])
     idx_json = json.dumps(index, ensure_ascii=False, separators=(",", ":"))
     (DIST / "search-index.json").write_text(idx_json, encoding="utf-8")
+    # The version is served at runtime (window.__APP_VERSION__) and injected into
+    # the page by src/app-init.js, so it is NOT baked into page HTML. This keeps
+    # rendered pages independent of the version, so a version bump alone does not
+    # invalidate the incremental cache above.
+    (DIST / "app-version.js").write_text(
+        f'window.__APP_VERSION__ = "{__version__}";\n', encoding="utf-8"
+    )
     # app-config.js is the local-dev fallback (empty config); in the container
     # docker/Caddyfile serves a per-startup rendered copy from a tmpfs instead.
-    # app-init.js (umami) + dev-banner.js consume window.__APP_CONFIG__.
+    # app-init.js (umami + version) + dev-banner.js consume window.__APP_CONFIG__.
     static_assets = (
         "index.html",
         "style.css",
@@ -325,21 +436,15 @@ def main() -> None:
         "dev-banner.js",
     )
     for asset in static_assets:
-        if asset == "index.html":  # only templated asset: inject the version
-            text = (SRC / asset).read_text(encoding="utf-8").replace(
-                "{{VERSION}}", __version__
-            )
-            (DIST / asset).write_text(text, encoding="utf-8")
-        else:
-            shutil.copy(SRC / asset, DIST / asset)
-    for f in (*static_assets, "search-index.json"):
+        shutil.copy(SRC / asset, DIST / asset)
+    for f in (*static_assets, "app-version.js", "search-index.json"):
         compress(DIST / f)
 
     browse_pages = write_browse(index)
 
     print(
-        f"done: {len(index)} RCP pages + {browse_pages} browse pages "
-        f"({skipped_empty} empty CIS skipped) -> {DIST}"
+        f"done: {len(index)} RCP pages ({reused} reused, {pruned} pruned) "
+        f"+ {browse_pages} browse pages ({skipped_empty} empty CIS skipped) -> {DIST}"
     )
 
 
