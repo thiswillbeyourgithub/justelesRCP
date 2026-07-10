@@ -43,6 +43,14 @@ services:
       - /gen
     cap_drop:
       - ALL
+    cap_add:
+      # The caddy:2-alpine binary ships with `setcap cap_net_bind_service=+ep`.
+      # The effective (+e) bit means execve() fails with EPERM ("Operation not
+      # permitted") if this cap is not in the bounding set - which cap_drop: ALL
+      # empties. We don't bind a privileged port (we listen on 8459), but the
+      # binary's file cap must still be satisfiable at exec time, so add it back.
+      # Everything else stays dropped; this is the one cap Caddy's binary needs.
+      - NET_BIND_SERVICE
     security_opt:
       - no-new-privileges:true
     healthcheck:

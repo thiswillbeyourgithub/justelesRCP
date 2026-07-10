@@ -103,6 +103,13 @@ mounted dir live), but a `docker compose -f docker/docker-compose.yml restart we
   `/data`, and `/gen` for the rendered `app-config.js`). Keep it that way; if
   Caddy needs a new writable path, add a tmpfs mount rather than dropping
   read-only.
+- `cap_drop: ALL` is paired with `cap_add: [NET_BIND_SERVICE]`, and that one cap
+  must stay. The `caddy:2-alpine` binary ships with `setcap
+  cap_net_bind_service=+ep`; the effective bit makes `execve()` fail with EPERM
+  ("Operation not permitted", crash loop at the `exec caddy` line of
+  entrypoint.sh) if the cap is absent from the bounding set that `cap_drop: ALL`
+  empties. We don't bind a privileged port (we listen on 8459), but the binary's
+  file cap still has to be satisfiable at exec time. Do not remove it.
 - A strict CSP (`default-src 'self'`) is set in the Caddyfile. The site uses no
   external fonts, scripts, or CDNs by design. The ONLY escape hatch is the umami
   origin: `entrypoint.sh` derives `ANALYTICS_ORIGIN` from `ANALYTICS_URL` and the
