@@ -1,0 +1,54 @@
+# Hardened, read-only static hosting for justelesRCP.
+# The generated site (../dist), the Caddyfile and the entrypoint are mounted
+# read-only; the container itself runs read-only with tmpfs scratch space.
+#
+# Runtime config (privacy-friendly umami metrics + the optional DEV banner) comes
+# from docker/.env; see docker/env.example for the keys. The entrypoint renders
+# it into /gen/app-config.js at startup and Caddy serves that for /app-config.js.
+services:
+  web:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    # Startup wrapper (docker/entrypoint.sh): stamps STARTED_AT, validates
+    # ANALYTICS_URL (crashes if set but unreachable / not JavaScript), derives
+    # ANALYTICS_ORIGIN for the CSP, renders /gen/app-config.js from the env, then
+    # exec's caddy. Run via /bin/sh so no host +x bit is required.
+    entrypoint: ["/bin/sh", "/usr/local/bin/entrypoint.sh"]
+    ports:
+      # host:container - front this with your existing TLS reverse proxy, which
+      # is already pointed at 8459.
+      - "${PORT:-8459}:8459"
+    # Analytics + dev-banner config, injected straight into the container from
+    # docker/.env (gitignored; copy docker/env.example). Unset keys fall back to
+    # safe defaults in the entrypoint / client code (DNT=true, DEV off, no
+    # analytics). We deliberately do NOT add an `environment:` block: it would
+    # take precedence over env_file and, since compose interpolates ${VAR} from
+    # the CWD rather than docker/, shadow these with empty values.
+    env_file:
+      - .env
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./entrypoint.sh:/usr/local/bin/entrypoint.sh:ro
+      - ../dist:/srv:ro
+    read_only: true
+    tmpfs:
+      # Caddy needs a writable data/config dir even without TLS; /gen holds the
+      # per-startup rendered app-config.js (see entrypoint.sh + Caddyfile).
+      - /tmp
+      - /config
+      - /data
+      - /gen
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8459/index.html"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

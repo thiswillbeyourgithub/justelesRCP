@@ -4,6 +4,12 @@
 
 # Local, machine-specific Claude notes
 claude.local.md
+TODO.md
+.serena
+.tokensave
+
+# Local runtime config (real analytics ids); docker/env.example is the template
+/docker/.env
 
 # Python
 __pycache__/

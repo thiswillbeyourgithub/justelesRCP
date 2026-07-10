@@ -32,8 +32,13 @@ dist/search-index.json       [{cis,name,slug}] consumed by client-side search
 dist/browse/index.html       A-Z landing (letter grid with counts)
 dist/browse/<letter>.html    alphabetical drug list per letter ('#' -> num.html)
 dist/index.html style.css search.js
+dist/app-config.js app-init.js dev-banner.js   (runtime-config client assets)
 + .gz and .br precompressed siblings for every text file (Caddy serves these)
 ```
+
+Docker lives under `docker/` (compose, Caddyfile, entrypoint.sh, env.example).
+Run compose with `-f docker/docker-compose.yml`; paths inside are relative to it
+(`../dist` is the web root).
 
 Key facts that aren't obvious from a single file:
 
@@ -56,31 +61,50 @@ Key facts that aren't obvious from a single file:
 - **Precompression (.gz/.br) is baked at build time** so Caddy spends zero CPU
   compressing. `compress()` writes both siblings; the Caddyfile uses
   `precompressed br gzip`.
+- **Runtime config is injected, not baked.** Every page loads `/app-config.js`,
+  which defines `window.__APP_CONFIG__` (optional umami analytics + a DEV
+  banner). `src/app-config.js` is the local-dev fallback (all empty = nothing
+  loads). In the container, `docker/entrypoint.sh` renders an equivalent file
+  from `docker/.env` into the `/gen` tmpfs and `docker/Caddyfile` serves THAT for
+  `/app-config.js`, so the build stays config-free. `src/app-init.js` injects the
+  umami tag + a click tracker; `src/dev-banner.js` shows the WIP banner when
+  `DEV=1`. Keep the config keys in sync between `src/app-config.js` and the
+  heredoc in `docker/entrypoint.sh`.
 
 ## Commands
 
 ```bash
 ./download-data.sh        # fetch data/CIS_RCP.csv + data/CIS_bdpm.txt (see TODOs in it)
 uv run build.py           # build ./dist from ./data
-docker compose up -d      # serve ./dist on :8080 (read-only, hardened)
-docker compose up --build # after changing Caddyfile/compose
+cp docker/env.example docker/.env                      # optional: umami analytics / DEV banner
+docker compose -f docker/docker-compose.yml up -d      # serve ./dist on :8459 (read-only, hardened)
+docker compose -f docker/docker-compose.yml up --build # after changing Caddyfile/compose
 ```
 
 To rebuild after a data refresh: re-run `download-data.sh` then `uv run build.py`;
 `dist/` is wiped and regenerated each run. Restart is not needed (Caddy reads the
-mounted dir live), but a `docker compose restart web` is harmless.
+mounted dir live), but a `docker compose -f docker/docker-compose.yml restart web` is harmless.
 
 ## Deployment / hardening notes
 
-- Caddy listens on **:8080 plain HTTP**; TLS is expected to be terminated by an
+- Caddy listens on **:8459 plain HTTP**; TLS is expected to be terminated by an
   upstream reverse proxy you already run. There is no ACME/TLS config here.
 - The container runs `read_only: true`, `cap_drop: ALL`,
-  `no-new-privileges`, with tmpfs for Caddy's scratch dirs. Keep it that way; if
+  `no-new-privileges`, with tmpfs for Caddy's scratch dirs (`/tmp`, `/config`,
+  `/data`, and `/gen` for the rendered `app-config.js`). Keep it that way; if
   Caddy needs a new writable path, add a tmpfs mount rather than dropping
   read-only.
 - A strict CSP (`default-src 'self'`) is set in the Caddyfile. The site uses no
-  external fonts, scripts, or CDNs by design; keep it self-contained so the CSP
-  holds.
+  external fonts, scripts, or CDNs by design. The ONLY escape hatch is the umami
+  origin: `entrypoint.sh` derives `ANALYTICS_ORIGIN` from `ANALYTICS_URL` and the
+  Caddyfile adds it to `script-src`/`connect-src` (empty when analytics is off).
+  Keep it self-contained otherwise so the CSP holds.
+- **`docker/.env` is gitignored** (real analytics ids); `docker/env.example` is
+  the committed template. Compose loads it via `env_file`; there is deliberately
+  no `environment:` block (it would shadow `env_file` with empty defaults).
+- `ANALYTICS_URL` must point at the umami **script** (`.../script.js`), not the
+  instance base URL. `entrypoint.sh` validates this at startup (reachable AND
+  serves JavaScript) and refuses to start otherwise, so a misconfig fails loud.
 
 ## Gotchas
 

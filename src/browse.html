@@ -6,6 +6,10 @@
 <title>{{TITLE}}</title>
 <meta name="description" content="{{DESC}}">
 <link rel="stylesheet" href="/style.css">
+<!-- Runtime config (umami metrics + dev banner); rendered by docker/entrypoint.sh. No-op when unset. -->
+<script src="/app-config.js"></script>
+<script src="/app-init.js" defer></script>
+<script src="/dev-banner.js" defer></script>
 </head>
 <body>
 <header class="topbar">

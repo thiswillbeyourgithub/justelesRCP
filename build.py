@@ -309,9 +309,20 @@ def main() -> None:
     # Homepage + assets
     idx_json = json.dumps(index, ensure_ascii=False, separators=(",", ":"))
     (DIST / "search-index.json").write_text(idx_json, encoding="utf-8")
-    for asset in ("index.html", "style.css", "search.js"):
+    # app-config.js is the local-dev fallback (empty config); in the container
+    # docker/Caddyfile serves a per-startup rendered copy from a tmpfs instead.
+    # app-init.js (umami) + dev-banner.js consume window.__APP_CONFIG__.
+    static_assets = (
+        "index.html",
+        "style.css",
+        "search.js",
+        "app-config.js",
+        "app-init.js",
+        "dev-banner.js",
+    )
+    for asset in static_assets:
         shutil.copy(SRC / asset, DIST / asset)
-    for f in ("index.html", "style.css", "search.js", "search-index.json"):
+    for f in (*static_assets, "search-index.json"):
         compress(DIST / f)
 
     browse_pages = write_browse(index)
