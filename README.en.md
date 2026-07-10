@@ -17,8 +17,8 @@ for-profit medicine sites.
   pages.
 - Precompressed (brotli + gzip), served by a hardened, read-only Caddy
   container.
-- Privacy-respecting analytics (umami: no cookies, no ad tracking, honours "Do
-  Not Track"). Hosted in France.
+- Privacy-respecting analytics (umami: no cookies, no ad tracking). Hosted in
+  France.
 
 > [!WARNING]
 > **The RCP content is not up to date.** The latest dataset upload on

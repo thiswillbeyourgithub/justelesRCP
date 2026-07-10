@@ -40,7 +40,7 @@ from pathlib import Path
 import brotli
 from lxml import html as lxml_html
 
-__version__ = "0.4.4"  # single source of truth; bump patch/minor per change
+__version__ = "0.4.5"  # single source of truth; bump patch/minor per change
 
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"

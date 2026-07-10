@@ -19,7 +19,7 @@ ANSM / BDPM. Conçu comme une alternative légère aux sites de médicaments len
 - Précompressé (brotli + gzip), servi par un conteneur Caddy durci en lecture
   seule.
 - Mesure d'audience respectueuse de la vie privée (umami : sans cookies, sans
-  traçage publicitaire, « Do Not Track » respecté). Site hébergé en France.
+  traçage publicitaire). Site hébergé en France.
 
 > [!WARNING]
 > **Le contenu des RCP n'est pas à jour.** Le dernier dépôt du jeu de données sur
