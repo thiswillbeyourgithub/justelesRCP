@@ -11,6 +11,9 @@ TODO.md
 # Local runtime config (real analytics ids); docker/env.example is the template
 /docker/.env
 
+# Environment-specific deploy script (rsync working tree to a VPS + compose up)
+/deploy.sh
+
 # Python
 __pycache__/
 *.pyc

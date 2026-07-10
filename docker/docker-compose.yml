@@ -8,6 +8,9 @@
 services:
   web:
     image: caddy:2-alpine
+    # Stable name so deploy.sh can `docker inspect justelesrcp` for health checks
+    # (without it the container would be the project-derived `docker-web-1`).
+    container_name: justelesrcp
     restart: unless-stopped
     # Startup wrapper (docker/entrypoint.sh): stamps STARTED_AT, validates
     # ANALYTICS_URL (crashes if set but unreachable / not JavaScript), derives
