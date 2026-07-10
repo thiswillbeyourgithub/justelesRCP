@@ -40,7 +40,7 @@ from pathlib import Path
 import brotli
 from lxml import html as lxml_html
 
-__version__ = "0.2.0"  # single source of truth; bump patch/minor per change
+__version__ = "0.3.0"  # single source of truth; bump patch/minor per change
 
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
@@ -152,11 +152,30 @@ def _denomination(doc) -> str:
     return ""
 
 
-def clean_rcp(raw: str) -> tuple[str, str]:
-    """Return (denomination, cleaned_inner_html) for one RCP document.
+def _build_toc(inner) -> list[tuple[str, str]]:
+    """Give each top-level section (AmmAnnexeTitre1, e.g. '1. DENOMINATION ...')
+    a stable id and return [(id, title)] for the on-page table of contents.
+
+    Mutates the tree in place (adds id="sec-N"), so the ids land in the rendered
+    HTML and the sidebar links resolve to them.
+    """
+    toc: list[tuple[str, str]] = []
+    for el in inner.xpath(".//*[contains(@class, 'AmmAnnexeTitre1')]"):
+        title = " ".join(el.text_content().split())
+        if not title:
+            continue
+        sec_id = f"sec-{len(toc)}"
+        el.set("id", sec_id)
+        toc.append((sec_id, title))
+    return toc
+
+
+def clean_rcp(raw: str) -> tuple[str, str, list[tuple[str, str]]]:
+    """Return (denomination, cleaned_inner_html, toc) for one RCP document.
 
     Keeps the semantic structure (section anchors, headings, paragraphs) but
     removes ANSM decoration and inline font styling so style.css can reskin it.
+    The toc is the list of top-level sections for the sidebar navigation.
     """
     doc = lxml_html.fromstring(raw)
     for node in doc.xpath(_STRIP_XPATH):
@@ -175,10 +194,11 @@ def clean_rcp(raw: str) -> tuple[str, str]:
 
     body = doc.xpath("//div[@id='textDocument']")
     inner = body[0] if body else doc
+    toc = _build_toc(inner)
     cleaned = "".join(
         lxml_html.tostring(c, encoding="unicode") for c in inner.iterchildren()
     )
-    return denom, cleaned
+    return denom, cleaned, toc
 
 
 # --- A-Z browse pages -------------------------------------------------------
@@ -293,11 +313,29 @@ def _init_worker(names: dict[str, str], tpl: str) -> None:
     _NAMES, _TPL = names, tpl
 
 
+def _toc_html(toc: list[tuple[str, str]]) -> str:
+    """Sidebar navigation for one RCP: a collapsible 'Sommaire' listing the
+    top-level sections, plus the runtime version slot. Empty string when a
+    document exposes no sections (nothing to navigate)."""
+    if not toc:
+        return ""
+    links = "".join(
+        f'<li><a href="#{sec_id}">{_esc(title)}</a></li>' for sec_id, title in toc
+    )
+    return (
+        '<details class="toc" open>'
+        "<summary>Sommaire</summary>"
+        f'<nav aria-label="Sommaire"><ol>{links}</ol></nav>'
+        '<p class="ver" data-app-version></p>'
+        "</details>"
+    )
+
+
 def render_record(item: tuple[str, str]) -> dict[str, str] | None:
     """Clean one RCP, write its page + precompressed siblings, return index row."""
     cis, raw = item
     try:
-        denom, cleaned = clean_rcp(raw)
+        denom, cleaned, toc = clean_rcp(raw)
     except Exception:  # a few dumps have malformed markup
         return None
     name = _NAMES.get(cis) or denom or f"RCP {cis}"
@@ -305,6 +343,7 @@ def render_record(item: tuple[str, str]) -> dict[str, str] | None:
     page = (
         _TPL.replace("{{TITLE}}", _esc(name))
         .replace("{{CIS}}", _esc(cis))
+        .replace("{{TOC}}", _toc_html(toc))
         .replace("{{CONTENT}}", cleaned)
     )
     out = DIST / "rcp" / f"{slug}.html"
