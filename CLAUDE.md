@@ -10,6 +10,11 @@ BDPM public dataset. It exists to be a lightweight alternative to slow, for-prof
 sites like vidal.fr. The whole thing is precomputed to static files; there is no
 application server at runtime.
 
+**Language convention:** the website (page text, UI strings) is in French; the
+code, comments, and developer docs are in English. `README.md` is the French
+readme and `README.en.md` is its English translation. They are cross-linked and
+MUST be kept in sync: whenever you edit one, update the other accordingly.
+
 ## Architecture (the important part)
 
 Two stages, cleanly separated:

@@ -1,54 +1,65 @@
+<!-- Version française. English version: README.en.md
+     IMPORTANT : README.md (FR) et README.en.md (EN) doivent rester synchronisés.
+     Quand vous modifiez l'un, mettez l'autre à jour en conséquence. -->
+
 # justelesRCP
 
-**Juste les résumés des caractéristiques du produit.** A fast, ad-free, no-account
-static site for the RCP (résumés des caractéristiques du produit) of medicines
-sold in France, from the ANSM / BDPM public dataset. Built as a lightweight
-alternative to slow, for-profit medicine sites.
+*Read this in [English](README.en.md).*
 
-- No application server, no database: every page is precomputed to a static file.
-- Client-side instant search over ~15,600 medicines, plus crawlable A-Z browse pages.
-- Precompressed (brotli + gzip) and served by a hardened, read-only Caddy container.
+**Juste les résumés des caractéristiques du produit.** Un site statique rapide,
+sans pub et sans compte, qui sert les RCP (résumés des caractéristiques du
+produit) des médicaments vendus en France, à partir du jeu de données public
+ANSM / BDPM. Conçu comme une alternative légère aux sites de médicaments lents et
+à but lucratif.
+
+- Aucun serveur applicatif, aucune base de données : chaque page est un fichier
+  statique précalculé.
+- Recherche instantanée côté client sur ~15 600 médicaments, plus des pages de
+  navigation A-Z indexables par les moteurs de recherche.
+- Précompressé (brotli + gzip), servi par un conteneur Caddy durci en lecture
+  seule.
 
 > [!WARNING]
-> **The RCP content is not up to date.** The latest dataset upload on data.gouv.fr
-> dates from **2 May 2022**, so the pages reflect the medicine information as of that
-> date and may be outdated. Always check an authoritative, current source before
-> relying on any information here.
+> **Le contenu des RCP n'est pas à jour.** Le dernier dépôt du jeu de données sur
+> data.gouv.fr date du **2 mai 2022**, donc les pages reflètent des informations
+> médicaments potentiellement obsolètes. Vérifiez toujours une source faisant
+> autorité et à jour avant de vous fier à une information présente ici.
 
-## Quick start
+## Démarrage rapide
 
 ```bash
-./download-data.sh        # fetch the source datasets into ./data (gitignored)
-uv run build.py           # render ./dist from ./data
-cp docker/env.example docker/.env                   # optional: configure analytics
-docker compose -f docker/docker-compose.yml up -d   # serve on http://localhost:8459
+./download-data.sh                                  # récupère les jeux de données source dans ./data (gitignored)
+uv run build.py                                     # génère ./dist à partir de ./data
+cp docker/env.example docker/.env                   # optionnel : configurer les statistiques
+docker compose -f docker/docker-compose.yml up -d   # sert sur http://localhost:8459
 ```
 
-Put your own TLS reverse proxy in front of port 8459.
+Placez votre propre reverse proxy TLS devant le port 8459.
 
-Optional runtime config (privacy-friendly [umami](https://umami.is) analytics and a
-"work in progress" banner) lives in `docker/.env`; see `docker/env.example`. Leave it
-empty for zero tracking. Nothing is loaded from a CDN; the strict CSP only opens up to
-your own umami origin when you set `ANALYTICS_URL`.
+La configuration optionnelle au runtime (statistiques [umami](https://umami.is)
+respectueuses de la vie privée et bannière « travaux en cours ») se trouve dans
+`docker/.env` ; voir `docker/env.example`. Laissez le fichier vide pour zéro
+traçage. Rien n'est chargé depuis un CDN ; une CSP stricte n'ouvre que votre
+propre origine umami quand vous définissez `ANALYTICS_URL`.
 
-## How it works
+## Comment ça marche
 
-`build.py` reads the ANSM RCP dump (`data/CIS_RCP.csv`: `Code_CIS <TAB> RCP_html`),
-cleans and restyles each document, and writes:
+`build.py` lit le dump des RCP de l'ANSM (`data/CIS_RCP.csv` :
+`Code_CIS <TAB> RCP_html`), nettoie et restyle chaque document, puis écrit :
 
-- `dist/rcp/<cis>-<slug>.html` : one page per medicine
-- `dist/search-index.json` : the name index for client-side search
-- homepage + `style.css` + `search.js`, all with `.gz`/`.br` siblings
+- `dist/rcp/<cis>-<slug>.html` : une page nettoyée par médicament
+- `dist/search-index.json` : consommé par la recherche côté client
+- `style.css`, `search.js`, et un jumeau `.gz`/`.br` pour chaque fichier texte
 
-See [CLAUDE.md](CLAUDE.md) for the full architecture and gotchas.
+Voir [CLAUDE.md](CLAUDE.md) pour l'architecture détaillée.
 
-## Data source & disclaimer
+## Source des données
 
-Data: [Base de données publique des médicaments (BDPM)](https://www.data.gouv.fr/datasets/base-de-donnees-publique-des-medicaments-defi-idoc-sante),
-published by the ANSM. The most recent upload there is from **2 May 2022**, so the
-content is that old and may no longer be accurate. This site is not affiliated with the
-ANSM or any authority and does not replace professional medical advice.
+[Base de données publique des médicaments (BDPM)](https://www.data.gouv.fr/datasets/base-de-donnees-publique-des-medicaments-defi-idoc-sante),
+ANSM. Le dépôt le plus récent date du **2 mai 2022**, donc le contenu est ancien
+et peut ne plus être exact. Ce site n'est affilié ni à l'ANSM ni à aucune
+autorité et ne remplace pas un avis médical professionnel.
 
-## Credits
+## Crédits
 
-Built with the help of [Claude Code](https://claude.com/claude-code).
+Réalisé avec l'aide de [Claude Code](https://claude.com/claude-code).
