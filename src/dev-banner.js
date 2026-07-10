@@ -39,8 +39,12 @@
   const banner = document.createElement("div");
   banner.id = "dev-banner";
   banner.setAttribute("role", "status");
+  // Non-sticky on purpose: the page already has a sticky top bar (and RCP pages a
+  // sticky ToC), both at top:0. A sticky banner would sit at the same offset and
+  // hide the nav on scroll. Static keeps the WIP notice visible on load, then
+  // scrolls away, leaving the real nav sticky and unobscured.
   banner.style.cssText =
-    "position:sticky;top:0;z-index:1000;background:#b45309;color:#fff;" +
+    "position:relative;z-index:1;background:#b45309;color:#fff;" +
     "padding:.5rem 1rem;font-size:.9rem;line-height:1.4;text-align:center;" +
     "cursor:pointer;";
   banner.title = "Cliquer pour masquer";
