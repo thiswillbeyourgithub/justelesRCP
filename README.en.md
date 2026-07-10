@@ -45,9 +45,17 @@ opens up your own umami origin when you set `ANALYTICS_URL`.
 `build.py` reads the ANSM RCP dump (`data/CIS_RCP.csv`:
 `Code_CIS <TAB> RCP_html`), cleans and restyles each document, then writes:
 
-- `dist/rcp/<cis>-<slug>.html`: one cleaned page per medicine
+- `dist/rcp/<cis>-<slug>.html`: one cleaned page per medicine, with a sidebar
+  table of contents ("Sommaire") to jump between sections
 - `dist/search-index.json`: consumed by the client-side search
+- `dist/a-propos.html`: the "About" page
 - `style.css`, `search.js`, and a `.gz`/`.br` sibling for every text file
+
+The build is **incremental**: a per-medicine cache (`dist/.build-manifest.json`)
+skips re-parsing and re-compressing unchanged documents, which greatly speeds up
+redeploys after a plain data refresh. The version number is not baked into page
+HTML (it is served at runtime via `app-version.js`), so a version-only bump does
+not invalidate the cache.
 
 See [CLAUDE.md](CLAUDE.md) for the detailed architecture.
 

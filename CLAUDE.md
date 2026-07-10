@@ -17,7 +17,11 @@ MUST be kept in sync: whenever you edit one, update the other accordingly.
 
 **Versioning:** the project version is `__version__` in `build.py` (single
 source of truth, printed at build start). There are no git tags; bump it
-patch/minor per change.
+patch/minor per change. The version is NOT baked into page HTML: `build.py`
+writes `dist/app-version.js` (`window.__APP_VERSION__`) and `src/app-init.js`
+injects it into every `[data-app-version]` slot (RCP sidebar, About page, home
+and browse footers). This keeps page content independent of the version so a
+version-only bump does not invalidate the incremental-build cache (below).
 
 ## Architecture (the important part)
 
@@ -36,12 +40,14 @@ data/CIS_RCP.csv    (TSV: Code_CIS <TAB> RCP_html, CSV-quoted multi-line HTML)
 data/CIS_bdpm.txt   (official CIS -> drug name, latin-1, tab-separated)
       | build.py
       v
-dist/rcp/<cis>-<slug>.html   one cleaned page per drug (slug from drug name)
+dist/rcp/<cis>-<slug>.html   one cleaned page per drug (slug from drug name),
+                             with a sidebar table of contents (ToC) of sections
 dist/search-index.json       [{cis,name,slug}] consumed by client-side search
 dist/browse/index.html       A-Z landing (letter grid with counts)
 dist/browse/<letter>.html    alphabetical drug list per letter ('#' -> num.html)
-dist/index.html style.css search.js
-dist/app-config.js app-init.js dev-banner.js   (runtime-config client assets)
+dist/index.html a-propos.html style.css search.js
+dist/app-config.js app-init.js dev-banner.js app-version.js  (runtime client assets)
+dist/.build-manifest.json    incremental-build cache (per-CIS input hashes)
 + .gz and .br precompressed siblings for every text file (Caddy serves these)
 ```
 
@@ -65,6 +71,24 @@ Key facts that aren't obvious from a single file:
   `AmmDenomination`). `clean_rcp()` strips decoration (BackToTop images,
   inline `font-*` styles, scripts) but preserves those classes; `style.css`
   restyles them. If you change class names in one place, change both.
+- **Each RCP page has a sidebar table of contents.** `clean_rcp()` assigns
+  `id="sec-N"` to every top-level `AmmAnnexeTitre1` heading and returns the
+  section list; `render_record()` emits a `<details class="toc">` of jump links
+  (plus the version slot) into `{{TOC}}`. It is a sticky sidebar on wide screens
+  and a collapsible block on phones (see `.rcp-layout`/`.toc` in `style.css`).
+- **The build is incremental** (`main()` in `build.py`). It no longer wipes
+  `dist/`; instead `dist/.build-manifest.json` maps each CIS to a hash of its
+  inputs (raw HTML + mapped name). A record whose hash is unchanged and whose
+  output files still exist is reused (no parse, no compress); stale pages
+  (renamed slugs, dropped CIS) are pruned by slug set. A `_global_key` (hash of
+  `build.py`'s source MINUS the `__version__` line, plus the RCP template) busts
+  the whole cache when build logic or the template changes, so any real code
+  edit forces a full rebuild while a version-only bump does not. Full build is
+  ~3 min; an unchanged-data rebuild reuses everything in ~35 s.
+- **`/a-propos` is a static About page** (`src/a-propos.html`, shipped as a
+  static asset). Its GitHub link uses `data-source-link`, filled at runtime by
+  `app-init.js` from `SOURCE_URL` (`window.__APP_CONFIG__.sourceUrl`), so the
+  repo URL (a GitHub handle) is not baked into the site.
 - **~15% of CIS have an empty RCP field** in the source and are skipped (no page,
   not in the index). This is expected, not an error.
 - **Precompression (.gz/.br) is baked at build time** so Caddy spends zero CPU
@@ -91,8 +115,10 @@ docker compose -f docker/docker-compose.yml up --build # after changing Caddyfil
 ```
 
 To rebuild after a data refresh: re-run `download-data.sh` then `uv run build.py`;
-`dist/` is wiped and regenerated each run. Restart is not needed (Caddy reads the
-mounted dir live), but a `docker compose -f docker/docker-compose.yml restart web` is harmless.
+the build is incremental (only changed drugs are re-rendered; see the
+`.build-manifest.json` note above), so a rebuild on unchanged data is fast.
+Restart is not needed (Caddy reads the mounted dir live), but a
+`docker compose -f docker/docker-compose.yml restart web` is harmless.
 
 ## Deployment / hardening notes
 
