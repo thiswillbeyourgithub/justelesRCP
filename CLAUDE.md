@@ -85,6 +85,23 @@ Key facts that aren't obvious from a single file:
   the whole cache when build logic or the template changes, so any real code
   edit forces a full rebuild while a version-only bump does not. Full build is
   ~3 min; an unchanged-data rebuild reuses everything in ~35 s.
+- **RCP freshness is an overlay, not a live server.** The bulk `data/CIS_RCP.csv`
+  is a frozen 2 May 2022 snapshot (the only bulk RCP *HTML* dump in existence;
+  the official BDPM download is daily-fresh but metadata-only). `scrape-rcp.py`
+  (a `uv` PEP 723 script) runs as a background/cron job, fetches drug pages from
+  the live ANSM site (`/medicament/<cis>/extrait`, which the old
+  `affichageDoc.php?specid=…&typedoc=R` now redirects to), extracts the RCP body
+  from `#tabpanel-rcp-panel #contenu` (scoped because `id="contenu"` is not
+  unique: the notice panel has one too), strips DSFR chrome (`fr-no-print`
+  toolbars, buttons), and re-wraps it in the exact `<div id="textDocument">…`
+  envelope the 2022 dump used. It writes one overlay file `data/rcp/<cis>.html`
+  per drug; `build.py`'s `records()` prefers that file over the baseline CSV cell
+  (an empty overlay file means "scraped, no RCP" and is skipped, not fallen back).
+  Ordering is popularity-first (`--popularity` list of CIS by sold units) with a
+  `--ttl-days` (default 30) skip window, so the static architecture is preserved:
+  nothing dynamic runs at serve time. `data/.scrape-manifest.json` holds per-CIS
+  `last_fetch`/hash for the TTL. Keep the extraction envelope in sync with
+  `clean_rcp`'s `div#textDocument` lookup if either changes.
 - **`/a-propos` is a static About page** (`src/a-propos.html`, shipped as a
   static asset): what the site is, the author, a privacy/hosting note, and a
   direct link to the GitHub repo. (`SOURCE_URL` still drives the separate "Code
@@ -108,7 +125,8 @@ Key facts that aren't obvious from a single file:
 
 ```bash
 ./download-data.sh        # fetch data/CIS_RCP.csv + data/CIS_bdpm.txt (see TODOs in it)
-uv run build.py           # build ./dist from ./data
+uv run scrape-rcp.py --limit 60   # refresh N RCPs from live ANSM into data/rcp/ overlay
+uv run build.py           # build ./dist from ./data (overlay wins over the 2022 CSV)
 cp docker/env.example docker/.env                      # optional: umami analytics / DEV banner
 docker compose -f docker/docker-compose.yml up -d      # serve ./dist on :8459 (read-only, hardened)
 docker compose -f docker/docker-compose.yml up --build # after changing Caddyfile/compose

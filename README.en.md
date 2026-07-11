@@ -61,6 +61,25 @@ not invalidate the cache.
 
 See [CLAUDE.md](CLAUDE.md) for the detailed architecture.
 
+## Keeping RCPs up to date
+
+The `CIS_RCP.csv` dump is frozen (2 May 2022) and is the only bulk *HTML* export
+that exists: the official BDPM download is refreshed daily but ships metadata
+only, never the RCP body. To refresh RCPs without giving up the static
+architecture, `scrape-rcp.py` fetches drug pages from the live ANSM site in the
+background and writes a per-medicine overlay file (`data/rcp/<cis>.html`) that
+`build.py` prefers over the 2022 dump. Nothing dynamic runs at serve time.
+
+```bash
+uv run scrape-rcp.py --limit 60 --popularity sales.txt   # refresh 60 drugs (most-sold first)
+uv run build.py                                           # rebuild (incremental: only changes)
+```
+
+A CIS refreshed less than `--ttl-days` ago (30 by default) is skipped, and
+`--popularity` (a list of CIS codes in decreasing sold-units order) freshens the
+most-read drugs first. Ideal as a `cron` job. See the script header for all
+options (`--all` for a one-time full scan, `--only` for specific CIS).
+
 ## Data source
 
 [Base de données publique des médicaments (BDPM)](https://www.data.gouv.fr/datasets/base-de-donnees-publique-des-medicaments-defi-idoc-sante),

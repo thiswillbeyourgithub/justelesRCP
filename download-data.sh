@@ -8,6 +8,11 @@ mkdir -p data
 # 1. RCP dump (Code_CIS <TAB> RCP_html). Large (~1GB uncompressed).
 #    Provided as the "défi iDoc santé" export; see the dataset page:
 #    https://www.data.gouv.fr/datasets/base-de-donnees-publique-des-medicaments-defi-idoc-sante
+#    NOTE: this is a FROZEN snapshot from 2 May 2022 and the only bulk dump of RCP
+#    *HTML* that exists (the official BDPM download ships metadata only). It serves
+#    as a baseline floor. To refresh individual RCPs from the live ANSM site, run
+#    scrape-rcp.py, which writes per-CIS overlay files that build.py prefers over
+#    this baseline (see its module docstring). This dump is optional if you scrape.
 RCP_URL="https://www.data.gouv.fr/api/1/datasets/r/bdbe2367-1898-4848-ac85-6fe58a1bdf68"
 
 # 2. CIS -> drug name mapping (official denominations for titles + search).
