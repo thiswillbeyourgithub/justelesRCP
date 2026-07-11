@@ -21,9 +21,12 @@ NOT a request-time renderer: nothing dynamic runs at serve time.
 What it does
 ------------
 1. Builds the CIS universe from ``data/CIS_bdpm.txt`` (the official mapping).
-2. Orders candidates by popularity (``--popularity`` file of CIS in decreasing
-   sold-units order) so the drugs people actually read are freshened first;
-   falls back to the CIS_bdpm file order when no list is given.
+2. Orders candidates by a frequency list (``--frequency`` JSONL of
+   ``{"term": <drug/substance name>, "score": <higher = sooner>}``) so the drugs
+   people actually read are freshened first. Terms are matched to each CIS's
+   denomination by accent-folded tokens; a drug that no term matches is given
+   the 25th-percentile score so it still scrapes at a middling rank. Falls back
+   to the CIS_bdpm file order when no list is given.
 3. Skips any CIS refreshed within ``--ttl-days`` (default 30) per the scrape
    manifest, then takes the first ``--limit`` still-due CIS.
 4. Fetches ``/medicament/<cis>/extrait``, extracts the RCP fragment, and writes
@@ -46,9 +49,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import time
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -64,14 +69,14 @@ RCP_OVERLAY_DIR = DATA / "rcp"
 # Manifest lives beside the data (gitignored) and drives the TTL: a CIS whose
 # last_fetch is younger than --ttl-days is not re-fetched.
 MANIFEST_PATH = DATA / ".scrape-manifest.json"
+# Default frequency list (drug name -> priority score) used to order the scrape
+# queue; copy your own here or pass --frequency. See load_frequency / the module
+# docstring for the expected JSONL shape.
+DEFAULT_FREQUENCY = DATA / "drugs_frequency.jsonl"
 
 # The live drug page. The old affichageDoc.php?specid=<cis>&typedoc=R endpoint
 # now 301-redirects here; httpx follows the redirect either way.
 PAGE_URL = "https://base-donnees-publique.medicaments.gouv.fr/medicament/{cis}/extrait"
-
-# A CIS code is exactly 8 digits; used to harvest codes leniently from an
-# arbitrary popularity export regardless of its column layout.
-CIS_RE = re.compile(r"\b(\d{8})\b")
 
 
 def _now_iso() -> str:
@@ -154,49 +159,113 @@ def save_manifest(manifest: dict) -> None:
     tmp.replace(MANIFEST_PATH)
 
 
-def read_cis_universe() -> list[str]:
-    """Return all CIS codes from ``CIS_bdpm.txt`` in file order.
+def read_catalog() -> list[tuple[str, str]]:
+    """Return ``(cis, denomination)`` pairs from ``CIS_bdpm.txt`` in file order.
 
-    The official BDPM file is latin-1, tab-separated, with the 8-digit CIS in
-    the first column (same source build.load_names reads for names).
+    The official BDPM file is latin-1, tab-separated: column 0 is the 8-digit
+    CIS, column 1 the drug name (same source build.load_names reads for names).
+    File order is preserved and used as the stable tiebreak for equal scores.
     """
-    codes: list[str] = []
+    catalog: list[tuple[str, str]] = []
     with BDPM_PATH.open(encoding="latin-1") as fh:
         for line in fh:
-            cis = line.split("\t", 1)[0].strip()
+            parts = line.split("\t")
+            cis = parts[0].strip()
             if cis:
-                codes.append(cis)
-    return codes
+                name = parts[1].strip() if len(parts) > 1 else ""
+                catalog.append((cis, name))
+    return catalog
 
 
-def read_popularity(path: Path) -> list[str]:
-    """Harvest CIS codes from a popularity export, in file (decreasing) order.
+def _tokens(text: str) -> set[str]:
+    """Normalise a drug name/term to a set of comparable word tokens.
 
-    The parser is deliberately lenient: it pulls the first 8-digit code from
-    each line, so most sold-units exports keyed by CIS work without reshaping.
-    Order is preserved and duplicates dropped (first occurrence wins).
+    Uppercases, strips accents (paracétamol -> PARACETAMOL) and splits on any
+    non-alphanumeric run, so a term matches a denomination regardless of case,
+    accents, dosage punctuation or word order.
     """
-    seen: set[str] = set()
-    ordered: list[str] = []
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        match = CIS_RE.search(line)
-        if match and match.group(1) not in seen:
-            seen.add(match.group(1))
-            ordered.append(match.group(1))
-    return ordered
+    folded = unicodedata.normalize("NFKD", text.upper())
+    folded = folded.encode("ascii", "ignore").decode("ascii")
+    return {tok for tok in re.split(r"[^A-Z0-9]+", folded) if tok}
 
 
-def order_candidates(universe: list[str], popularity: list[str]) -> list[str]:
-    """Order the CIS universe by popularity first, then the remaining codes.
+def _percentile(values: list[float], pct: float) -> float:
+    """Linear-interpolated percentile (numpy default method); pct in [0, 1]."""
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    k = (len(ordered) - 1) * pct
+    lo = math.floor(k)
+    hi = math.ceil(k)
+    if lo == hi:
+        return float(ordered[lo])
+    return ordered[lo] * (hi - k) + ordered[hi] * (k - lo)
 
-    Popularity codes not present in the universe are ignored; universe codes
-    absent from the popularity list keep their original (file) order at the end.
+
+def load_frequency(path: Path) -> tuple[dict[str, float], list[tuple[frozenset[str], float]], float]:
+    """Load a frequency list and return matchers plus the 25th-percentile score.
+
+    The file is JSONL with at least ``term`` (a drug/substance name) and ``score``
+    (higher = higher scrape priority), e.g.
+    ``{"term": "DOLIPRANE", "type": "brand", "score": 10}``. Terms are normalised
+    to tokens; single-word terms go into a fast ``{token: score}`` map and
+    multi-word terms into a ``[(token_set, score)]`` list matched by subset (so
+    "ACETYLSALICYLIQUE ACIDE" still matches "... ACIDE ACETYLSALICYLIQUE ..."). A
+    term seen twice keeps its highest score.
+
+    Returns ``(single, multi, p25)`` where ``p25`` is the 25th percentile of all
+    scores, used as the fallback priority for drugs no term matches.
     """
-    in_universe = set(universe)
-    head = [cis for cis in popularity if cis in in_universe]
-    head_set = set(head)
-    tail = [cis for cis in universe if cis not in head_set]
-    return head + tail
+    single: dict[str, float] = {}
+    multi: list[tuple[frozenset[str], float]] = []
+    scores: list[float] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        row = json.loads(line)
+        term, score = row.get("term"), row.get("score")
+        if term is None or score is None:
+            continue
+        score = float(score)
+        scores.append(score)
+        toks = _tokens(term)
+        if len(toks) == 1:
+            word = next(iter(toks))
+            single[word] = max(single.get(word, score), score)
+        elif toks:
+            multi.append((frozenset(toks), score))
+    return single, multi, _percentile(scores, 0.25)
+
+
+def score_catalog(
+    catalog: list[tuple[str, str]],
+    single: dict[str, float],
+    multi: list[tuple[frozenset[str], float]],
+    fallback: float,
+) -> dict[str, float]:
+    """Score every CIS by the best frequency term matching its denomination.
+
+    A CIS scores the max over: single-word terms present in its name tokens, and
+    multi-word terms whose whole token set is a subset of the name tokens. A CIS
+    no term matches gets ``fallback`` (the p25 priority), so it is still scraped
+    at a middling rank rather than being starved to the very end of the queue.
+    """
+    scores: dict[str, float] = {}
+    for cis, name in catalog:
+        toks = _tokens(name)
+        best = max((single[t] for t in toks if t in single), default=None)
+        for term_toks, score in multi:
+            if (best is None or score > best) and term_toks <= toks:
+                best = score
+        scores[cis] = fallback if best is None else best
+    return scores
+
+
+def order_by_score(catalog: list[tuple[str, str]], scores: dict[str, float]) -> list[str]:
+    """Order CIS by descending score, breaking ties by original file order."""
+    order = {cis: i for i, (cis, _) in enumerate(catalog)}
+    return sorted((cis for cis, _ in catalog), key=lambda c: (-scores[c], order[c]))
 
 
 def is_due(entry: dict | None, ttl_days: int) -> bool:
@@ -244,15 +313,16 @@ def fetch_one(client: httpx.Client, cis: str) -> tuple[str, int]:
 @click.option("--rate", type=float, default=2.0, show_default=True,
               help="Seconds to wait between requests (politeness).")
 @click.option("--force", is_flag=True, help="Ignore the TTL for selected drugs.")
-@click.option("--popularity", type=click.Path(exists=True, path_type=Path),
-              help="File listing CIS in decreasing sold-units order (freshen first).")
+@click.option("--frequency", type=click.Path(exists=True, path_type=Path), default=None,
+              help="JSONL of {term, score} priorities (higher=first); matched to drug "
+                   f"names. Defaults to {DEFAULT_FREQUENCY} if present.")
 @click.option("--timeout", type=float, default=30.0, show_default=True,
               help="Per-request timeout in seconds.")
 @click.option("--user-agent",
               default=None,
               help="Override the HTTP User-Agent sent to the ANSM site.")
 def main(limit: int, fetch_all: bool, only: tuple[str, ...], ttl_days: int,
-         rate: float, force: bool, popularity: Path | None, timeout: float,
+         rate: float, force: bool, frequency: Path | None, timeout: float,
          user_agent: str | None) -> None:
     """Refresh RCP overlay files from the live ANSM site (see module docstring)."""
     # TODO: set a real contact/repo URL in the default User-Agent so ANSM can
@@ -265,19 +335,29 @@ def main(limit: int, fetch_all: bool, only: tuple[str, ...], ttl_days: int,
     else:
         if not BDPM_PATH.exists():
             raise SystemExit(f"missing {BDPM_PATH} (run download-data.sh first)")
-        universe = read_cis_universe()
-        pop = read_popularity(popularity) if popularity else []
-        if popularity:
-            logger.info("popularity list: {} CIS from {}", len(pop), popularity)
+        catalog = read_catalog()
+        # Order the queue by frequency score (falling back to CIS_bdpm file order
+        # when no list is given): popular drugs get refreshed first.
+        freq_path = frequency or (DEFAULT_FREQUENCY if DEFAULT_FREQUENCY.exists() else None)
+        if freq_path:
+            single, multi, p25 = load_frequency(freq_path)
+            scores = score_catalog(catalog, single, multi, p25)
+            ordered = order_by_score(catalog, scores)
+            matched = sum(1 for cis in scores if scores[cis] != p25)
+            logger.info(
+                "frequency {}: {} single + {} multi terms, p25={} fallback; "
+                "{}/{} CIS matched a term",
+                freq_path.name, len(single), len(multi), p25, matched, len(catalog),
+            )
         else:
-            logger.warning("no --popularity file; using CIS_bdpm file order")
-        ordered = order_candidates(universe, pop)
+            ordered = [cis for cis, _ in catalog]
+            logger.warning("no --frequency file; using CIS_bdpm file order")
         manifest = load_manifest()
         due = ordered if force else [c for c in ordered if is_due(manifest.get(c), ttl_days)]
         targets = due if fetch_all else due[:limit]
         logger.info(
-            "{} CIS in universe, {} due (ttl={}d), fetching {} this run",
-            len(universe), len(due), ttl_days, len(targets),
+            "{} CIS in catalog, {} due (ttl={}d), fetching {} this run",
+            len(catalog), len(due), ttl_days, len(targets),
         )
 
     if not targets:
