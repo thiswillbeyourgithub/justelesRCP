@@ -71,14 +71,18 @@ background and writes a per-medicine overlay file (`data/rcp/<cis>.html`) that
 `build.py` prefers over the 2022 dump. Nothing dynamic runs at serve time.
 
 ```bash
-uv run scrape-rcp.py --limit 60 --popularity sales.txt   # refresh 60 drugs (most-sold first)
-uv run build.py                                           # rebuild (incremental: only changes)
+uv run scrape-rcp.py --limit 60   # refresh 60 drugs (most-read first)
+uv run build.py                    # rebuild (incremental: only changes)
 ```
 
-A CIS refreshed less than `--ttl-days` ago (30 by default) is skipped, and
-`--popularity` (a list of CIS codes in decreasing sold-units order) freshens the
-most-read drugs first. Ideal as a `cron` job. See the script header for all
-options (`--all` for a one-time full scan, `--only` for specific CIS).
+A CIS refreshed less than `--ttl-days` ago (30 by default) is skipped. Priority
+ordering comes from a JSONL frequency list (`--frequency`, default
+`data/drugs_frequency.jsonl`) where each line is
+`{"term": "<drug or substance name>", "score": <higher = sooner>}`; terms are
+matched to each drug's name (accent-insensitive), and a drug no term matches gets
+the 25th-percentile score so it stays at middling priority. Ideal as a `cron`
+job. See the script header for all options (`--all` for a one-time full scan,
+`--only` for specific CIS).
 
 ## Data source
 

@@ -75,15 +75,19 @@ un fichier de surcharge par médicament (`data/rcp/<cis>.html`) que `build.py`
 préfère au dump de 2022. Rien de dynamique ne tourne au moment de servir les pages.
 
 ```bash
-uv run scrape-rcp.py --limit 60 --popularity ventes.txt   # rafraîchit 60 médicaments (les plus vendus d'abord)
-uv run build.py                                            # régénère (incrémental : seuls les changements)
+uv run scrape-rcp.py --limit 60   # rafraîchit 60 médicaments (les plus consultés d'abord)
+uv run build.py                    # régénère (incrémental : seuls les changements)
 ```
 
-Un CIS rafraîchi depuis moins de `--ttl-days` (30 par défaut) est ignoré, et
-`--popularity` (une liste de codes CIS par unités vendues décroissantes) fait
-passer les médicaments les plus consultés en premier. Idéal en tâche `cron`. Voir
-l'en-tête du script pour toutes les options (`--all` pour un scan complet unique,
-`--only` pour des CIS précis).
+Un CIS rafraîchi depuis moins de `--ttl-days` (30 par défaut) est ignoré. L'ordre
+de priorité vient d'une liste de fréquence JSONL (`--frequency`, par défaut
+`data/drugs_frequency.jsonl`) où chaque ligne est
+`{"term": "<nom de médicament ou substance>", "score": <plus haut = plus tôt>}` ;
+les termes sont rapprochés du nom de chaque médicament (insensible aux accents),
+et un médicament qu'aucun terme ne matche reçoit le score du 25e centile pour
+rester à une priorité moyenne. Idéal en tâche `cron`. Voir l'en-tête du script
+pour toutes les options (`--all` pour un scan complet unique, `--only` pour des
+CIS précis).
 
 ## Source des données
 

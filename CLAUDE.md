@@ -97,8 +97,11 @@ Key facts that aren't obvious from a single file:
   envelope the 2022 dump used. It writes one overlay file `data/rcp/<cis>.html`
   per drug; `build.py`'s `records()` prefers that file over the baseline CSV cell
   (an empty overlay file means "scraped, no RCP" and is skipped, not fallen back).
-  Ordering is popularity-first (`--popularity` list of CIS by sold units) with a
-  `--ttl-days` (default 30) skip window, so the static architecture is preserved:
+  Ordering is frequency-first: `--frequency` (default `data/drugs_frequency.jsonl`)
+  is a JSONL of `{term, score}` (drug/substance name -> priority) matched to each
+  CIS's accent-folded denomination; a CIS no term matches gets the 25th-percentile
+  score. Combined with a `--ttl-days` (default 30) skip window, the static
+  architecture is preserved:
   nothing dynamic runs at serve time. `data/.scrape-manifest.json` holds per-CIS
   `last_fetch`/hash for the TTL. Keep the extraction envelope in sync with
   `clean_rcp`'s `div#textDocument` lookup if either changes.
