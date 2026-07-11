@@ -9,7 +9,10 @@
 
 Pipeline (id + raw ANSM html) -> (id + cleaned, reskinned static page):
 
-  data/CIS_RCP.csv   TSV: Code_CIS <TAB> RCP_html (CSV-quoted, multi-line)
+  data/CIS_RCP.csv   TSV: Code_CIS <TAB> RCP_html (CSV-quoted, multi-line);
+                     frozen 2022 baseline dump (see download-data.sh)
+  data/rcp/<cis>.html  optional freshness overlay from scrape-rcp.py; wins over
+                     the baseline cell for that CIS (empty file = "no RCP")
   data/CIS_bdpm.txt  official BDPM CIS -> drug name mapping (see download-data.sh)
         |
         v
@@ -40,7 +43,7 @@ from pathlib import Path
 import brotli
 from lxml import html as lxml_html
 
-__version__ = "0.4.8"  # single source of truth; bump patch/minor per change
+__version__ = "0.5.0"  # single source of truth; bump patch/minor per change
 
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
@@ -49,6 +52,13 @@ DIST = ROOT / "dist"
 
 CSV_PATH = DATA / "CIS_RCP.csv"
 BDPM_PATH = DATA / "CIS_bdpm.txt"
+# Freshness overlay written by scrape-rcp.py: one <cis>.html per drug re-fetched
+# from the live ANSM site. The CSV above is a frozen 2022 baseline (the only bulk
+# RCP dump that exists); the overlay lets us serve current RCPs without abandoning
+# the static architecture. An overlay file ALWAYS wins over the CSV cell for the
+# same CIS, and an intentionally empty overlay file means "scraped, but this drug
+# has no RCP" (so we skip it rather than fall back to a stale baseline cell).
+RCP_OVERLAY_DIR = DATA / "rcp"
 # Incremental-build cache. Lives inside dist/ (already gitignored) and records,
 # per CIS, the hash of the inputs that produced its page so an unchanged record
 # can be reused instead of re-parsed and re-compressed. See main().
@@ -357,8 +367,10 @@ def render_record(item: tuple[str, str]) -> dict[str, str] | None:
 
 
 def main() -> None:
-    if not CSV_PATH.exists():
-        sys.exit(f"missing {CSV_PATH} (see README / download-data.sh)")
+    # Either input source suffices: the 2022 baseline CSV or a scraped overlay
+    # dir (scrape-rcp.py can run standalone without the bulk dump present).
+    if not CSV_PATH.exists() and not RCP_OVERLAY_DIR.is_dir():
+        sys.exit(f"missing {CSV_PATH} and {RCP_OVERLAY_DIR} (see README / download-data.sh)")
 
     print(f"build justelesRCP v{__version__}")
     names = load_names()
@@ -380,18 +392,51 @@ def main() -> None:
     skipped_empty = 0
     reused = 0
 
+    def _overlay(cis: str) -> str | None:
+        """Return the scraped overlay HTML for a CIS, or None if no overlay file.
+
+        A present overlay file always supersedes the CSV baseline cell (fresher
+        data). An empty file is a real value ("scraped, no RCP") and is returned
+        as "" so the caller skips it rather than falling back to the stale cell.
+        """
+        if not RCP_OVERLAY_DIR.is_dir():
+            return None
+        path = RCP_OVERLAY_DIR / f"{cis}.html"
+        return path.read_text(encoding="utf-8") if path.exists() else None
+
     def records():
-        """Yield (cis, raw) for non-empty RCPs; count empties as a side effect."""
+        """Yield (cis, raw) for non-empty RCPs; count empties as a side effect.
+
+        Sources are merged with the overlay winning: for each CIS the scraped
+        data/rcp/<cis>.html is used when present, else the 2022 CSV cell. Overlay
+        files whose CIS is absent from the baseline CSV are yielded afterwards.
+        """
         nonlocal skipped_empty
-        with CSV_PATH.open(encoding="utf-8", newline="") as fh:
-            reader = csv.reader(fh, delimiter="\t")
-            next(reader, None)  # header: Code_CIS / RCP_html
-            for row in reader:
-                if len(row) < 2:
+        seen: set[str] = set()
+        if CSV_PATH.exists():
+            with CSV_PATH.open(encoding="utf-8", newline="") as fh:
+                reader = csv.reader(fh, delimiter="\t")
+                next(reader, None)  # header: Code_CIS / RCP_html
+                for row in reader:
+                    if len(row) < 2:
+                        continue
+                    cis = row[0].strip()
+                    seen.add(cis)
+                    overlay = _overlay(cis)
+                    raw = row[1] if overlay is None else overlay
+                    if not raw.strip():
+                        skipped_empty += 1  # no published RCP (or empty overlay)
+                        continue
+                    yield cis, raw
+        # Overlay-only drugs: scraped CIS that never existed in the 2022 baseline.
+        if RCP_OVERLAY_DIR.is_dir():
+            for path in sorted(RCP_OVERLAY_DIR.glob("*.html")):
+                cis = path.stem
+                if cis in seen:
                     continue
-                cis, raw = row[0].strip(), row[1]
+                raw = path.read_text(encoding="utf-8")
                 if not raw.strip():
-                    skipped_empty += 1  # some CIS have no published RCP
+                    skipped_empty += 1
                     continue
                 yield cis, raw
 
