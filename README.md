@@ -96,12 +96,19 @@ rester à une priorité moyenne. Idéal en tâche `cron`. Voir l'en-tête du scr
 pour toutes les options (`--all` pour un scan complet unique, `--only` pour des
 CIS précis).
 
-## Source des données
+## Source des données et licence
 
-[Base de données publique des médicaments (BDPM)](https://www.data.gouv.fr/datasets/base-de-donnees-publique-des-medicaments-defi-idoc-sante),
-ANSM. Le dépôt le plus récent date du **2 mai 2022**, donc le contenu est ancien
-et peut ne plus être exact. Ce site n'est affilié ni à l'ANSM ni à aucune
-autorité et ne remplace pas un avis médical professionnel.
+Les données proviennent de la
+[base de données publique des médicaments (BDPM)](https://base-donnees-publique.medicaments.gouv.fr/telechargement),
+publiée par l'ANSM. Ce sont des **données ouvertes** sous
+[Licence Ouverte / Etalab 2.0](https://www.etalab.gouv.fr/licence-ouverte-open-licence/),
+et justelesRCP les réutilise **dans le respect de cette licence** : citation de la
+source et de sa date, aucune altération du sens, aucune suggestion de caractère
+officiel. Le socle des RCP date du **2 mai 2022** (dépôt en masse le plus récent),
+donc le contenu peut être ancien et ne plus être exact ; certaines pages sont
+progressivement rafraîchies. Cette réutilisation ne confère aucun caractère officiel
+et ne suggère aucune reconnaissance de l'ANSM, de la HAS ou de l'UNCAM. Ce site
+n'est affilié à aucune autorité et ne remplace pas un avis médical professionnel.
 
 ## Crédits
 

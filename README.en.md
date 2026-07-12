@@ -90,12 +90,19 @@ the 25th-percentile score so it stays at middling priority. Ideal as a `cron`
 job. See the script header for all options (`--all` for a one-time full scan,
 `--only` for specific CIS).
 
-## Data source
+## Data source and licence
 
-[Base de données publique des médicaments (BDPM)](https://www.data.gouv.fr/datasets/base-de-donnees-publique-des-medicaments-defi-idoc-sante),
-ANSM. The most recent upload dates from **2 May 2022**, so the content is old and
-may no longer be accurate. This site is not affiliated with the ANSM or any
-authority and does not replace professional medical advice.
+The data comes from the
+[Base de données publique des médicaments (BDPM)](https://base-donnees-publique.medicaments.gouv.fr/telechargement),
+published by the ANSM. It is **open data** under the
+[Licence Ouverte / Etalab 2.0](https://www.etalab.gouv.fr/licence-ouverte-open-licence/),
+and justelesRCP reuses it **in compliance with that licence**: it cites the source
+and its date, does not distort the data, and does not imply any official status.
+The RCP baseline dates from **2 May 2022** (the most recent bulk upload), so the
+content can be old and may no longer be accurate; some pages are progressively
+refreshed. This reuse confers no official status and implies no endorsement by the
+ANSM, HAS or UNCAM. This site is not affiliated with any authority and does not
+replace professional medical advice.
 
 ## Credits
 
