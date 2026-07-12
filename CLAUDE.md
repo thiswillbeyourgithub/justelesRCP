@@ -99,8 +99,11 @@ Key facts that aren't obvious from a single file:
   (an empty overlay file means "scraped, no RCP" and is skipped, not fallen back).
   Ordering is frequency-first: `--frequency` (default `data/drugs_frequency.jsonl`)
   is a JSONL of `{term, score}` (drug/substance name -> priority) matched to each
-  CIS's accent-folded denomination; a CIS no term matches gets the 25th-percentile
-  score. Combined with a `--ttl-days` (default 30) skip window, the static
+  CIS's accent-folded token pool: its denomination plus, when the optional
+  `CIS_COMPO_bdpm.txt`/`CIS_GENER_bdpm.txt` joins are present, its active-substance
+  and generic-group tokens (so a brand can match a substance or reference-brand
+  term, e.g. XENAZINE -> tétrabénazine). A CIS no term matches gets the
+  25th-percentile score. Combined with a `--ttl-days` (default 30) skip window, the static
   architecture is preserved:
   nothing dynamic runs at serve time. `data/.scrape-manifest.json` holds per-CIS
   `last_fetch`/hash for the TTL. Keep the extraction envelope in sync with

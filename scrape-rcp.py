@@ -65,6 +65,15 @@ from lxml import html as lxml_html
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
 BDPM_PATH = DATA / "CIS_bdpm.txt"
+# Two more optional BDPM exports (same zip as CIS_bdpm) used only to match drugs
+# to the frequency list, never to build pages. They let a drug match a term via
+# its active substance or reference brand even when the commercial name hides
+# them (e.g. XENAZINE -> tétrabénazine, a REMINYL generic -> galantamine). Both
+# are optional: absent, matching gracefully falls back to the name alone.
+#   COMPO: CIS -> active-substance denominations (col 3).
+#   GENER: generic-group label "SUBSTANCE ... - REFERENCE_BRAND ...", per CIS.
+COMPO_PATH = DATA / "CIS_COMPO_bdpm.txt"
+GENER_PATH = DATA / "CIS_GENER_bdpm.txt"
 RCP_OVERLAY_DIR = DATA / "rcp"
 # Manifest lives beside the data (gitignored) and drives the TTL: a CIS whose
 # last_fetch is younger than --ttl-days is not re-fetched.
@@ -189,6 +198,45 @@ def _tokens(text: str) -> set[str]:
     return {tok for tok in re.split(r"[^A-Z0-9]+", folded) if tok}
 
 
+def read_substance_signals(catalog: list[tuple[str, str]]) -> dict[str, set[str]]:
+    """Build, per CIS, the token pool used to match it against the frequency list.
+
+    Commercial names alone match only ~73% of drugs, because many brands hide
+    their active substance (XENAZINE, REMINYL, ENANTYUM ...). Two extra BDPM
+    exports recover a large slice of the rest by adding, to each CIS's name
+    tokens:
+
+    * ``CIS_COMPO_bdpm`` - the active-substance denomination(s) (column 3), so a
+      brand matches a *substance* frequency term (e.g. a REMINYL generic ->
+      GALANTAMINE).
+    * ``CIS_GENER_bdpm`` - the generic-group label, which reads
+      ``"<substance> <dose> - <reference brand> <dose>, <form>"``; folding it in
+      lets a generic also match its *reference brand* term.
+
+    Both files are optional. When neither is present this returns exactly the
+    name tokens, so matching degrades gracefully to the previous behaviour.
+    Only CIS already in ``catalog`` are populated (foreign CIS are ignored).
+    """
+    signals: dict[str, set[str]] = {cis: _tokens(name) for cis, name in catalog}
+
+    def _fold_column(path: Path, cis_col: int, text_col: int) -> None:
+        if not path.exists():
+            return
+        with path.open(encoding="latin-1") as fh:
+            for line in fh:
+                parts = line.split("\t")
+                if len(parts) <= max(cis_col, text_col):
+                    continue
+                cis = parts[cis_col].strip()
+                bucket = signals.get(cis)
+                if bucket is not None:
+                    bucket |= _tokens(parts[text_col])
+
+    _fold_column(COMPO_PATH, 0, 3)  # CIS -> substance denomination
+    _fold_column(GENER_PATH, 2, 1)  # generic-group label -> its member CIS
+    return signals
+
+
 def _percentile(values: list[float], pct: float) -> float:
     """Linear-interpolated percentile (numpy default method); pct in [0, 1]."""
     if not values:
@@ -239,27 +287,38 @@ def load_frequency(path: Path) -> tuple[dict[str, float], list[tuple[frozenset[s
 
 
 def score_catalog(
-    catalog: list[tuple[str, str]],
+    signals: dict[str, set[str]],
     single: dict[str, float],
     multi: list[tuple[frozenset[str], float]],
     fallback: float,
-) -> dict[str, float]:
-    """Score every CIS by the best frequency term matching its denomination.
+) -> tuple[dict[str, float], set[str]]:
+    """Score every CIS by the best frequency term matching its signal tokens.
 
-    A CIS scores the max over: single-word terms present in its name tokens, and
-    multi-word terms whose whole token set is a subset of the name tokens. A CIS
-    no term matches gets ``fallback`` (the p25 priority), so it is still scraped
-    at a middling rank rather than being starved to the very end of the queue.
+    ``signals`` maps CIS -> token pool (name + substance + generic label, see
+    ``read_substance_signals``). A CIS scores the max over: single-word terms
+    present in its tokens, and multi-word terms whose whole token set is a subset
+    of its tokens. A CIS no term matches gets ``fallback`` (the p25 priority), so
+    it is still scraped at a middling rank rather than starved to the queue end.
+
+    Returns ``(scores, matched)`` where ``matched`` is the set of CIS that hit a
+    real term. This is tracked explicitly instead of inferred as ``score !=
+    fallback``: many terms carry a score equal to the p25 fallback, so a genuine
+    match at that score is indistinguishable from the fallback by value alone
+    (that conflation is what made the old queue under-report its own coverage).
     """
     scores: dict[str, float] = {}
-    for cis, name in catalog:
-        toks = _tokens(name)
+    matched: set[str] = set()
+    for cis, toks in signals.items():
         best = max((single[t] for t in toks if t in single), default=None)
         for term_toks, score in multi:
             if (best is None or score > best) and term_toks <= toks:
                 best = score
-        scores[cis] = fallback if best is None else best
-    return scores
+        if best is None:
+            scores[cis] = fallback
+        else:
+            scores[cis] = best
+            matched.add(cis)
+    return scores, matched
 
 
 def order_by_score(catalog: list[tuple[str, str]], scores: dict[str, float]) -> list[str]:
@@ -340,14 +399,20 @@ def main(limit: int, fetch_all: bool, only: tuple[str, ...], ttl_days: int,
         # when no list is given): popular drugs get refreshed first.
         freq_path = frequency or (DEFAULT_FREQUENCY if DEFAULT_FREQUENCY.exists() else None)
         if freq_path:
+            signals = read_substance_signals(catalog)
             single, multi, p25 = load_frequency(freq_path)
-            scores = score_catalog(catalog, single, multi, p25)
+            scores, matched = score_catalog(signals, single, multi, p25)
             ordered = order_by_score(catalog, scores)
-            matched = sum(1 for cis in scores if scores[cis] != p25)
+            if not COMPO_PATH.exists():
+                logger.warning(
+                    "{} absent: matching on drug names only (re-run download-data.sh "
+                    "to add the substance/generic join)", COMPO_PATH.name,
+                )
             logger.info(
                 "frequency {}: {} single + {} multi terms, p25={} fallback; "
-                "{}/{} CIS matched a term",
-                freq_path.name, len(single), len(multi), p25, matched, len(catalog),
+                "{}/{} CIS matched a term ({}%)",
+                freq_path.name, len(single), len(multi), p25,
+                len(matched), len(catalog), round(100 * len(matched) / len(catalog)),
             )
         else:
             ordered = [cis for cis, _ in catalog]
