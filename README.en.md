@@ -20,6 +20,12 @@ for-profit medicine sites.
 - Privacy-respecting analytics (umami: no cookies, no ad tracking). Hosted in
   France.
 
+> [!CAUTION]
+> **Early-stage prototype.** This site is at an early stage: some features are
+> missing, bugs are likely, and the data may be incomplete or outdated. Do not
+> use it as your only source for a medical decision; always check an
+> authoritative, up-to-date source and consult a healthcare professional.
+
 > [!WARNING]
 > **The RCP content is not up to date.** The latest dataset upload on
 > data.gouv.fr dates from **2 May 2022**, so pages reflect medicine information
