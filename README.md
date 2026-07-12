@@ -81,6 +81,10 @@ récupère en arrière-plan les pages de médicaments sur le site de l'ANSM et �
 un fichier de surcharge par médicament (`data/rcp/<cis>.html`) que `build.py`
 préfère au dump de 2022. Rien de dynamique ne tourne au moment de servir les pages.
 
+Chaque page RCP indique depuis quand ses informations datent (« Informations à
+jour au … »), calculé à partir de la date de récupération (ou du 2 mai 2022 pour
+le socle), avec un avertissement affiché quand les données ont plus d'un an.
+
 ```bash
 uv run scrape-rcp.py --limit 60   # rafraîchit 60 médicaments (les plus consultés d'abord)
 uv run build.py                    # régénère (incrémental : seuls les changements)

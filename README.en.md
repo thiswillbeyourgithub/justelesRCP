@@ -76,6 +76,10 @@ architecture, `scrape-rcp.py` fetches drug pages from the live ANSM site in the
 background and writes a per-medicine overlay file (`data/rcp/<cis>.html`) that
 `build.py` prefers over the 2022 dump. Nothing dynamic runs at serve time.
 
+Every RCP page shows how old its data is ("Informations à jour au …"), computed
+from the fetch date (or 2 May 2022 for the baseline), with a warning shown when
+the data is more than a year old.
+
 ```bash
 uv run scrape-rcp.py --limit 60   # refresh 60 drugs (most-read first)
 uv run build.py                    # rebuild (incremental: only changes)

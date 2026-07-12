@@ -172,6 +172,17 @@ a:hover { text-decoration: underline; }
 }
 
 .rcp .cis { color: var(--muted); font-size: .85rem; margin: 0 0 1.5rem; }
+/* Freshness banner: how old the shown RCP data is (see app-init.js). ".stale"
+   is added client-side when the data is older than a year. */
+.rcp-asof {
+  margin: 0 0 1.5rem; padding: .5rem .8rem; font-size: .85rem;
+  color: var(--muted); background: var(--card);
+  border: 1px solid var(--line); border-left: 3px solid var(--muted);
+  border-radius: .4rem;
+}
+.rcp-asof.stale {
+  color: #b45309; border-color: #b45309; font-weight: 600;
+}
 /* Section titles are sidebar jump targets: keep them clear of the sticky bar. */
 .rcp .AmmAnnexeTitre1[id] { scroll-margin-top: 4rem; }
 .rcp p { margin: .5rem 0; }

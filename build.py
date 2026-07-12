@@ -37,13 +37,14 @@ import re
 import shutil
 import sys
 import unicodedata
+from datetime import date, datetime
 from multiprocessing import Pool
 from pathlib import Path
 
 import brotli
 from lxml import html as lxml_html
 
-__version__ = "0.6.2"  # single source of truth; bump patch/minor per change
+__version__ = "0.7.0"  # single source of truth; bump patch/minor per change
 
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
@@ -63,6 +64,13 @@ RCP_OVERLAY_DIR = DATA / "rcp"
 # per CIS, the hash of the inputs that produced its page so an unchanged record
 # can be reused instead of re-parsed and re-compressed. See main().
 MANIFEST_PATH = DIST / ".build-manifest.json"
+# scrape-rcp.py's manifest: CIS -> {last_fetch (ISO UTC), ...}. Read here only to
+# stamp each overlay-sourced page with a real "as of" date for the freshness
+# banner (see _load_scrape_dates / _asof_html). Absent on a baseline-only build.
+SCRAPE_MANIFEST_PATH = DATA / ".scrape-manifest.json"
+# The frozen bulk RCP dump's date (data.gouv.fr upload). Every baseline-sourced
+# page carries it as its "as of" date; overlay pages use their scrape date.
+BASELINE_DATE = "2022-05-02"
 
 # The RCP HTML field can be very large; lift the csv field-size ceiling.
 csv.field_size_limit(sys.maxsize)
@@ -89,17 +97,22 @@ def _global_key(page_tpl: str) -> str:
     return h.hexdigest()
 
 
-def _record_hash(raw: str, mapped_name: str) -> str:
-    """Per-record cache key: the raw ANSM HTML plus the CIS->name mapping value.
+def _record_hash(raw: str, mapped_name: str, asof: str) -> str:
+    """Per-record cache key: the raw ANSM HTML, the CIS->name mapping value, and
+    the "as of" date baked into the page's freshness banner.
 
-    The rendered page is a pure function of (raw, mapped_name, template, code);
-    template/code are folded into the global key, so these two suffice here. The
-    parsed denomination is derived from raw, so it needs no separate input.
+    The rendered page is a pure function of (raw, mapped_name, asof, template,
+    code); template/code are folded into the global key, so these three suffice
+    here. asof is included so a re-scrape that refreshes the date without changing
+    the HTML still re-renders the page with the new date. The parsed denomination
+    is derived from raw, so it needs no separate input.
     """
     h = hashlib.sha256()
     h.update(raw.encode("utf-8"))
     h.update(b"\0")
     h.update(mapped_name.encode("utf-8"))
+    h.update(b"\0")
+    h.update(asof.encode("utf-8"))
     return h.hexdigest()
 
 
@@ -133,6 +146,48 @@ def load_names() -> dict[str, str]:
                 names[row[0].strip()] = row[1].strip()
     print(f"  loaded {len(names)} names from {BDPM_PATH.name}")
     return names
+
+
+_FR_MONTHS = (
+    "janvier", "février", "mars", "avril", "mai", "juin",
+    "juillet", "août", "septembre", "octobre", "novembre", "décembre",
+)
+
+
+def _fr_date(iso: str) -> str:
+    """'2022-05-02' -> '2 mai 2022' (human French date for the freshness banner)."""
+    year, month, day = iso.split("-")
+    return f"{int(day)} {_FR_MONTHS[int(month) - 1]} {year}"
+
+
+def _load_scrape_dates() -> dict[str, str]:
+    """CIS -> 'YYYY-MM-DD' of its last successful scrape, from scrape-rcp.py's
+    manifest. Used to stamp each overlay-sourced page with a real 'as of' date;
+    returns {} when the manifest is absent (baseline-only build)."""
+    try:
+        raw = json.loads(SCRAPE_MANIFEST_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    dates: dict[str, str] = {}
+    for cis, entry in raw.items():
+        stamp = (entry or {}).get("last_fetch")
+        if not stamp:
+            continue
+        try:
+            dates[cis] = datetime.fromisoformat(stamp).date().isoformat()
+        except ValueError:
+            continue
+    return dates
+
+
+def _overlay_date(cis: str) -> str:
+    """Fallback 'as of' date for an overlay with no manifest entry: the overlay
+    file's own modification date. '' if it cannot be read."""
+    try:
+        ts = (RCP_OVERLAY_DIR / f"{cis}.html").stat().st_mtime
+        return date.fromtimestamp(ts).isoformat()
+    except OSError:
+        return ""
 
 
 # ANSM cruft we strip so a single stylesheet can own the look.
@@ -345,9 +400,23 @@ def _toc_html(toc: list[tuple[str, str]]) -> str:
     )
 
 
-def render_record(item: tuple[str, str]) -> dict[str, str] | None:
+def _asof_html(asof: str) -> str:
+    """Top-of-page freshness banner: the absolute 'as of' date, baked so that
+    no-JS readers still see it. app-init.js turns it into a relative age
+    ('il y a X') and flags data older than a year, client-side, so the page stays
+    cacheable and the age stays correct without a rebuild. Empty string when the
+    date is unknown (nothing to show)."""
+    if not asof:
+        return ""
+    return (
+        f'<p class="rcp-asof" data-rcp-asof="{_esc(asof)}">'
+        f"Informations à jour au {_esc(_fr_date(asof))}.</p>"
+    )
+
+
+def render_record(item: tuple[str, str, str]) -> dict[str, str] | None:
     """Clean one RCP, write its page + precompressed siblings, return index row."""
-    cis, raw = item
+    cis, raw, asof = item
     try:
         denom, cleaned, toc = clean_rcp(raw)
     except Exception:  # a few dumps have malformed markup
@@ -358,6 +427,7 @@ def render_record(item: tuple[str, str]) -> dict[str, str] | None:
         _TPL.replace("{{TITLE}}", _esc(name))
         .replace("{{CIS}}", _esc(cis))
         .replace("{{TOC}}", _toc_html(toc))
+        .replace("{{ASOF}}", _asof_html(asof))
         .replace("{{CONTENT}}", cleaned)
     )
     out = DIST / "rcp" / f"{slug}.html"
@@ -374,6 +444,9 @@ def main() -> None:
 
     print(f"build justelesRCP v{__version__}")
     names = load_names()
+    # Per-CIS scrape dates stamp overlay pages with a real "as of" date; baseline
+    # pages fall back to BASELINE_DATE. Loaded once, read inside records().
+    scrape_dates = _load_scrape_dates()
 
     (DIST / "rcp").mkdir(parents=True, exist_ok=True)  # kept: incremental reuse
 
@@ -405,11 +478,13 @@ def main() -> None:
         return path.read_text(encoding="utf-8") if path.exists() else None
 
     def records():
-        """Yield (cis, raw) for non-empty RCPs; count empties as a side effect.
+        """Yield (cis, raw, asof) for non-empty RCPs; count empties as a side effect.
 
         Sources are merged with the overlay winning: for each CIS the scraped
         data/rcp/<cis>.html is used when present, else the 2022 CSV cell. Overlay
         files whose CIS is absent from the baseline CSV are yielded afterwards.
+        asof is the page's freshness date: the scrape date for overlay data
+        (manifest, else the overlay file's mtime), or BASELINE_DATE for a CSV cell.
         """
         nonlocal skipped_empty
         seen: set[str] = set()
@@ -423,11 +498,14 @@ def main() -> None:
                     cis = row[0].strip()
                     seen.add(cis)
                     overlay = _overlay(cis)
-                    raw = row[1] if overlay is None else overlay
+                    if overlay is None:
+                        raw, asof = row[1], BASELINE_DATE
+                    else:
+                        raw, asof = overlay, scrape_dates.get(cis) or _overlay_date(cis)
                     if not raw.strip():
                         skipped_empty += 1  # no published RCP (or empty overlay)
                         continue
-                    yield cis, raw
+                    yield cis, raw, asof
         # Overlay-only drugs: scraped CIS that never existed in the 2022 baseline.
         if RCP_OVERLAY_DIR.is_dir():
             for path in sorted(RCP_OVERLAY_DIR.glob("*.html")):
@@ -438,7 +516,7 @@ def main() -> None:
                 if not raw.strip():
                     skipped_empty += 1
                     continue
-                yield cis, raw
+                yield cis, raw, scrape_dates.get(cis) or _overlay_date(cis)
 
     def output_ok(slug: str) -> bool:
         """True when a slug's page and both precompressed siblings still exist."""
@@ -450,14 +528,14 @@ def main() -> None:
         )
 
     def misses():
-        """Yield (cis, raw) only for records that must be (re)rendered.
+        """Yield (cis, raw, asof) only for records that must be (re)rendered.
 
         Cache hits are appended straight to the index here (no parsing, no
         compression) as the pool pulls this generator, keeping memory streaming.
         """
         nonlocal reused
-        for cis, raw in records():
-            rec_hash = _record_hash(raw, names.get(cis, ""))
+        for cis, raw, asof in records():
+            rec_hash = _record_hash(raw, names.get(cis, ""), asof)
             hit = prev_records.get(cis)
             if hit and hit.get("h") == rec_hash and output_ok(hit["slug"]):
                 index.append({"cis": cis, "name": hit["name"], "slug": hit["slug"]})
@@ -465,7 +543,7 @@ def main() -> None:
                 reused += 1
                 continue
             miss_hashes[cis] = rec_hash
-            yield cis, raw
+            yield cis, raw, asof
 
     # Parsing + brotli are CPU-bound and independent per record -> fan out.
     workers = max(1, (os.cpu_count() or 2) - 1)

@@ -20,6 +20,47 @@
     });
   }
 
+  // RCP freshness banner: turn the baked absolute "as of" date into a relative
+  // age ("il y a X") and flag data older than a year. Runs only on RCP pages
+  // (the [data-rcp-asof] element is absent elsewhere). build.py bakes the
+  // absolute date so no-JS readers still see it; we only enhance it here, which
+  // keeps the page cacheable while the age stays correct without a rebuild.
+  (function () {
+    const el = document.querySelector("[data-rcp-asof]");
+    if (!el) return;
+    const iso = (el.getAttribute("data-rcp-asof") || "").trim();
+    const when = new Date(iso + "T00:00:00Z");
+    if (isNaN(when.getTime())) return;
+    const days = Math.floor((Date.now() - when.getTime()) / 86400000);
+    if (days < 0) return; // future date (clock skew): leave the baked text alone
+
+    function humanAge(d) {
+      if (d < 1) return "aujourd'hui";
+      if (d < 31) return "il y a " + d + " jour" + (d > 1 ? "s" : "");
+      if (d < 365) return "il y a " + Math.max(1, Math.round(d / 30)) + " mois";
+      const yr = Math.floor(d / 365);
+      return "il y a " + yr + " an" + (yr > 1 ? "s" : "");
+    }
+
+    try {
+      const dateStr = new Intl.DateTimeFormat("fr-FR", {
+        day: "numeric",
+        month: "long",
+        year: "numeric",
+      }).format(when);
+      el.textContent =
+        "Informations à jour au " + dateStr + " (" + humanAge(days) + ").";
+    } catch (_) {
+      /* Intl unavailable: keep build.py's baked absolute date. */
+    }
+    if (days > 365) {
+      el.classList.add("stale");
+      el.append(
+        " Ces informations datent de plus d'un an ; vérifiez une source à jour."
+      );
+    }
+  })();
+
   // A value is "set" only if it is a non-empty, non-placeholder string.
   function isSet(value) {
     return typeof value === "string" && value.length > 0 && !value.startsWith("{{");

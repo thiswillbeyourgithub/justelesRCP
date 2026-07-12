@@ -105,6 +105,19 @@ Key facts that aren't obvious from a single file:
   nothing dynamic runs at serve time. `data/.scrape-manifest.json` holds per-CIS
   `last_fetch`/hash for the TTL. Keep the extraction envelope in sync with
   `clean_rcp`'s `div#textDocument` lookup if either changes.
+- **Every RCP page shows a freshness banner ("Informations à jour au …").**
+  `build.py` bakes the *absolute* as-of date into the page as
+  `data-rcp-asof="YYYY-MM-DD"` (`_asof_html`): `BASELINE_DATE` (`2022-05-02`) for
+  a baseline CSV cell, or the scrape date for an overlay file (from
+  `.scrape-manifest.json`'s `last_fetch`, else the overlay file's mtime; see
+  `_load_scrape_dates`/`_overlay_date`). Baking the absolute date (not the age)
+  keeps pages cacheable; `src/app-init.js` rewrites it client-side to a relative
+  age ("il y a X mois") and adds a `.stale` warning class when the data is older
+  than a year. The `asof` value is folded into each CIS's build-cache hash
+  (`_record_hash`), so a re-scrape that changes the date re-renders the page.
+  Keep the `data-rcp-asof` contract in sync between `_asof_html`, the
+  `{{ASOF}}` slot in `src/rcp.html`, `.rcp-asof` in `style.css`, and the
+  enhancer in `src/app-init.js`.
 - **`/a-propos` is a static About page** (`src/a-propos.html`, shipped as a
   static asset): what the site is, the author, a privacy/hosting note, and a
   direct link to the GitHub repo. (`SOURCE_URL` still drives the separate "Code
