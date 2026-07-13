@@ -14,6 +14,16 @@
 		file_server
 	}
 
+	# On-demand RCP refresh API -> the companion service container (refresh-service.py
+	# on :8460, not published to the host). Same-origin, so the strict `connect-src
+	# 'self'` CSP below covers the fetch()es from app-init.js. If the refresh service
+	# is not running, this upstream is simply unreachable and /api/* returns 502; the
+	# frontend degrades gracefully (the button reports it unavailable). Static-only
+	# deploys can leave the refresh service out entirely.
+	handle /api/* {
+		reverse_proxy refresh:8460
+	}
+
 	# Everything else: the generated static site, bind-mounted read-only at /srv.
 	handle {
 		root * /srv

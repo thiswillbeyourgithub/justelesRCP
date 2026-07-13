@@ -63,3 +63,54 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  # Companion refresh service (refresh-service.py): the ONE runtime piece, behind
+  # the "Rafraichir maintenant" button and the >1-year auto-refresh. Caddy above
+  # reverse-proxies /api/* to it (see Caddyfile), so it is never exposed to the
+  # host directly (no ports:). Kept separate from `web` so the web server stays
+  # fully read-only; this container gets only the narrow writable mounts it needs.
+  refresh:
+    build:
+      context: ..
+      dockerfile: docker/refresh.Dockerfile
+    container_name: justelesrcp-refresh
+    restart: unless-stopped
+    # Match the host user that owns ../data and ../dist so files the service
+    # writes (overlays, rebuilt pages, the manifest) stay owned by you and sync
+    # cleanly. Defaults to 1000:1000 (the usual first Linux user); override with
+    # REFRESH_UID/REFRESH_GID in docker/.env if your host uid differs (e.g. VPS).
+    user: "${REFRESH_UID:-1000}:${REFRESH_GID:-1000}"
+    # Same env file as web. Tuning knobs (all optional, sane defaults in the
+    # script): REFRESH_RATE_SECONDS, REFRESH_MIN_INTERVAL_SECONDS,
+    # REFRESH_QUEUE_MAX, RCP_OVERLAY_GZIP. See docker/env.example.
+    env_file:
+      - .env
+    volumes:
+      # Read-only: the CIS -> name map (for page titles) and the RCP template are
+      # baked into the image, but names must be current, so mount the map RO.
+      - ../data/CIS_bdpm.txt:/app/data/CIS_bdpm.txt:ro
+      # The ONLY writable locations (the "write just here" compromise): the
+      # overlay dir, the rebuilt-page dir, and the scrape manifest file. The
+      # manifest must exist on the host first (run scrape-rcp.py once, or
+      # `touch data/.scrape-manifest.json`), else Docker would create a directory.
+      - ../data/rcp:/app/data/rcp
+      - ../data/.scrape-manifest.json:/app/data/.scrape-manifest.json
+      - ../dist/rcp:/app/dist/rcp
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8460/api/health').status==200 else 1)"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
