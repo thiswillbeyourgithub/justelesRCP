@@ -46,7 +46,7 @@ from lxml import html as lxml_html
 
 import bdpm  # shared, pure-stdlib BDPM tokenising + frequency scoring
 
-__version__ = "0.11.0"  # single source of truth; bump patch/minor per change
+__version__ = "0.11.1"  # single source of truth; bump patch/minor per change
 
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
@@ -75,6 +75,12 @@ RCP_OVERLAY_DIR = DATA / "rcp"
 # per CIS, the hash of the inputs that produced its page so an unchanged record
 # can be reused instead of re-parsed and re-compressed. See main().
 MANIFEST_PATH = DIST / ".build-manifest.json"
+# Cache of which CIS have a NON-EMPTY baseline RCP cell in CIS_RCP.csv (i.e. would
+# render a page). The bulk CSV is frozen (BASELINE_DATE), so this full ~18s parse
+# runs once and is reused on every later build, keyed by the CSV's (size, mtime).
+# Used by build_xref_index to only ever link to CIS that actually have a page. See
+# _baseline_present_cis / _present_cis. Lives in dist/ (already gitignored).
+PRESENT_CACHE_PATH = DIST / ".rcp-present.json"
 # scrape-rcp.py's manifest: CIS -> {last_fetch (ISO UTC), ...}. Read here only to
 # stamp each overlay-sourced page with a real "as of" date for the freshness
 # banner (see _load_scrape_dates / _asof_html). Absent on a baseline-only build.
@@ -273,6 +279,85 @@ def _overlay_date(cis: str) -> str:
         return ""
 
 
+def _baseline_present_cis() -> set[str]:
+    """CIS whose frozen baseline CSV cell has a non-empty RCP (would render a page).
+
+    ~15% of CIS have an empty RCP field and are pageless; a cross-drug link must
+    never target one (it would 404). The bulk CSV is frozen at BASELINE_DATE, so
+    this ~18s full parse is memoised in PRESENT_CACHE_PATH keyed by the CSV's
+    (size, mtime): the set is recomputed only if the CSV ever changes, keeping
+    incremental rebuilds fast. Returns an empty set when there is no CSV (an
+    overlay-only build); overlay presence is layered on in _present_cis.
+    """
+    if not CSV_PATH.exists():
+        return set()
+    st = CSV_PATH.stat()
+    sig = [st.st_size, int(st.st_mtime)]
+    try:
+        cached = json.loads(PRESENT_CACHE_PATH.read_text(encoding="utf-8"))
+        if cached.get("sig") == sig:
+            return set(cached.get("cis", []))
+    except (OSError, ValueError):
+        pass
+    present: set[str] = set()
+    with CSV_PATH.open(encoding="utf-8", newline="") as fh:
+        reader = csv.reader(fh, delimiter="\t")
+        next(reader, None)  # header
+        for row in reader:
+            if len(row) >= 2 and row[0].strip() and row[1].strip():
+                present.add(row[0].strip())
+    try:
+        PRESENT_CACHE_PATH.write_text(
+            json.dumps({"sig": sig, "cis": sorted(present)}), encoding="utf-8"
+        )
+    except OSError:
+        pass
+    return present
+
+
+def _present_cis() -> set[str]:
+    """Set of CIS that will actually render a page this build.
+
+    The cached baseline presence set, adjusted by overlays exactly as records()
+    resolves them: a non-empty overlay adds/keeps a CIS (including an overlay-only
+    drug absent from the baseline), and an EMPTY overlay is the "scraped, no RCP"
+    sentinel that removes it (the overlay wins over a non-empty baseline cell).
+    build_xref_index restricts every link target to this set so no link 404s.
+    """
+    present = _baseline_present_cis()
+    if RCP_OVERLAY_DIR.is_dir():
+        overlay_cis = {
+            p.name.split(".", 1)[0]
+            for p in (
+                *RCP_OVERLAY_DIR.glob("*.html"),
+                *RCP_OVERLAY_DIR.glob("*.html.gz"),
+            )
+        }
+        for cis in overlay_cis:
+            path = _overlay_path(cis)
+            if path is None:
+                continue
+            if _read_overlay(path).strip():
+                present.add(cis)
+            else:
+                present.discard(cis)  # empty overlay: scraped, confirmed no RCP
+    return present
+
+
+def page_cis_from_dist() -> set[str]:
+    """Set of CIS that have a built page on disk (``dist/rcp/<cis>-<slug>.html``).
+
+    Derived by globbing the rendered output rather than the source data, for
+    callers that lack the ANSM source (the refresh service mounts ``dist/rcp`` but
+    not ``CIS_RCP.csv``). The main build uses _present_cis instead, which is
+    source-derived and correct even before any page has been rendered.
+    """
+    rcp_dir = DIST / "rcp"
+    if not rcp_dir.is_dir():
+        return set()
+    return {p.name.split("-", 1)[0] for p in rcp_dir.glob("*.html")}
+
+
 # --- cross-drug backlinks (xref) --------------------------------------------
 # An RCP body often names OTHER drugs or active substances (e.g. a
 # contraindication mentioning "ritonavir"). build_xref_index() builds, once per
@@ -329,7 +414,9 @@ def _make_fold_table() -> dict[int, int]:
 _FOLD_TABLE = _make_fold_table()
 
 
-def build_xref_index(names: dict[str, str]) -> dict[str, tuple[str, str, str]]:
+def build_xref_index(
+    names: dict[str, str], page_cis: set[str]
+) -> dict[str, tuple[str, str, str]]:
     """Map a linkable term (accent-folded uppercase word) -> canonical target
     ``(cis, slug, display_name)``.
 
@@ -345,7 +432,15 @@ def build_xref_index(names: dict[str, str]) -> dict[str, tuple[str, str, str]]:
     "contenant" into links. Per term the target is chosen by prescription
     frequency (mono targets preferred, then the frequency score from the same
     list scrape-rcp.py uses, then file order), so e.g. RITONAVIR -> NORVIR,
-    OMEPRAZOLE -> MOPRAL. Returns {} when CIS_bdpm.txt or the frequency list is
+    OMEPRAZOLE -> MOPRAL.
+
+    ``page_cis`` is the set of CIS that actually render a page (see _present_cis /
+    page_cis_from_dist). Only those may be link targets: ~15% of CIS have an empty
+    RCP and are pageless, so linking to one would 404 (e.g. HELICOBACTER's only
+    carriers are pageless breath-test diagnostics, which made "Helicobacter pylori"
+    a broken link on amoxicillin pages). A term whose best-scored carrier is
+    pageless falls back to its best carrier that does have a page, or drops out
+    entirely if none do. Returns {} when CIS_bdpm.txt or the frequency list is
     missing (nothing safe to link)."""
     # is_file (not exists): a missing OR stray-directory single-file mount (a bad
     # bind mount in the refresh container) degrades to no backlinks, never a crash.
@@ -382,7 +477,8 @@ def build_xref_index(names: dict[str, str]) -> dict[str, tuple[str, str, str]]:
 
     def consider(term: str, cis: str, mono: bool) -> None:
         if (len(term) < _XREF_MIN_LEN or term not in whitelist
-                or term in _XREF_STOP or not term.isalpha()):
+                or term in _XREF_STOP or not term.isalpha()
+                or cis not in page_cis):  # never target a pageless CIS (would 404)
             return
         key = (mono, scores.get(cis, 0.0), -order[cis])
         cur = best.get(term)
@@ -807,9 +903,14 @@ def main() -> None:
 
     print(f"build justelesRCP v{__version__}")
     names = load_names()
+    # CIS that actually render a page (non-empty baseline cell or overlay). Link
+    # targets are restricted to this set so a backlink never points at a pageless
+    # CIS. Baseline presence is cached (frozen CSV), so this is cheap after the
+    # first build; overlays are layered on each build. See _present_cis.
+    present = _present_cis()
     # Cross-drug backlink index (term -> canonical target page). Built once and
     # shared read-only with every worker; empty when the BDPM inputs are absent.
-    xref = build_xref_index(names)
+    xref = build_xref_index(names, present)
     print(f"  cross-drug backlink terms: {len(xref)}")
     # Per-CIS scrape dates stamp overlay pages with a real "as of" date; baseline
     # pages fall back to BASELINE_DATE. Loaded once, read inside records().

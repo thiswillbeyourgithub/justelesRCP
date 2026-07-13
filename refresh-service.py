@@ -106,8 +106,16 @@ class Refresher:
         # returns {} and the rebuilt page simply has no backlinks).
         names = build.load_names()
         tpl = (build.SRC / "rcp.html").read_text(encoding="utf-8")
-        xref = build.build_xref_index(names)
-        logger.info("primed render: {} names, {} backlink terms", len(names), len(xref))
+        # Restrict link targets to CIS that already have a built page. This
+        # container has no CIS_RCP.csv (only dist/rcp is mounted), so derive the
+        # page set from the rendered files rather than the source. Prevents a
+        # backlink to a pageless CIS (which would 404, e.g. HELICOBACTER).
+        page_cis = build.page_cis_from_dist()
+        xref = build.build_xref_index(names, page_cis)
+        logger.info(
+            "primed render: {} names, {} pages, {} backlink terms",
+            len(names), len(page_cis), len(xref),
+        )
         build._init_worker(names, tpl, xref)
         self._worker = threading.Thread(target=self._run, name="refresher", daemon=True)
 
