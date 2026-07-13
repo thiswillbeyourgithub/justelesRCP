@@ -30,16 +30,24 @@ What it does
 3. Skips any CIS refreshed within ``--ttl-days`` (default 30) per the scrape
    manifest, then takes the first ``--limit`` still-due CIS.
 4. Fetches ``/medicament/<cis>/extrait``, extracts the RCP fragment, and writes
-   ``data/rcp/<cis>.html`` (an empty file means "scraped, this drug has no RCP",
-   which build.py treats as a real value and skips, not a baseline fallback).
+   an overlay: ``data/rcp/<cis>.html.gz`` by default (gzip, ``--gzip`` / env
+   ``RCP_OVERLAY_GZIP``) or plain ``data/rcp/<cis>.html`` with ``--no-gzip``.
+   build.py reads either format transparently, so the choice only trades disk /
+   rsync size for greppability. A zero-byte file means "scraped, this drug has
+   no RCP", which build.py treats as a real value and skips (not a fallback).
 5. Records ``{last_fetch, hash, status, http}`` per CIS in
    ``data/.scrape-manifest.json`` for the TTL and change detection.
 
 Politeness
 ----------
-One request every ``--rate`` seconds (default 2.0), redirects followed, a plain
-identifying User-Agent. A one-time full scrape (``--all``) of ~15k drugs at 2 s
-each is ~8 h; the routine cron freshener does a small ``--limit`` batch.
+One request every ``--rate`` seconds (default 2.0, env ``RCP_SCRAPE_RATE_SECONDS``)
+plus up to ``min(rate, 10)`` seconds of random jitter, redirects followed, an
+identifying User-Agent. Set a larger ``--rate`` (e.g. 120) for a slow background
+trickle of one RCP every couple of minutes. A one-time full scrape (``--all``) of
+~15k drugs at 2 s each is ~8 h; the routine cron freshener does a small
+``--limit`` batch. Progress (a bar with elapsed/ETA) and the trigger of each
+fetch ("user" for ``--only``, "timer" for the automatic queue) are logged per
+drug; add finer per-step detail at DEBUG.
 
 After a run, rebuild with ``uv run build.py`` (incremental: only changed drugs
 re-render). Typical cron: ``uv run scrape-rcp.py --limit 60 && uv run build.py``.
@@ -47,10 +55,12 @@ re-render). Typical cron: ``uv run scrape-rcp.py --limit 60 && uv run build.py``
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 import json
 import math
 import os
+import random
 import re
 import time
 import unicodedata
@@ -345,19 +355,65 @@ def is_due(entry: dict | None, ttl_days: int) -> bool:
     return age.days >= ttl_days
 
 
-def write_overlay(cis: str, rcp_html: str) -> None:
-    """Write ``data/rcp/<cis>.html`` atomically (temp file + rename)."""
+def write_overlay(cis: str, rcp_html: str, gzip_overlay: bool) -> Path:
+    """Write the overlay for a CIS atomically (temp file + rename); return its path.
+
+    With ``gzip_overlay`` the RCP is stored gzip-compressed as ``<cis>.html.gz``
+    (a large space/transfer win over ~15k HTML files), otherwise plain as
+    ``<cis>.html``. build.py reads either format transparently, so the two are
+    interchangeable and the flag can be flipped at will. To keep exactly one
+    overlay per CIS, the other-format sibling is removed after writing.
+
+    The "scraped, but no RCP" case (``rcp_html == ""``) is stored as a zero-byte
+    file (never a gzip of the empty string) so both sides recognise the sentinel
+    by size alone without gunzipping.
+    """
     RCP_OVERLAY_DIR.mkdir(parents=True, exist_ok=True)
-    dest = RCP_OVERLAY_DIR / f"{cis}.html"
-    tmp = dest.with_suffix(".html.tmp")
-    tmp.write_text(rcp_html, encoding="utf-8")
+    plain = RCP_OVERLAY_DIR / f"{cis}.html"
+    gz = RCP_OVERLAY_DIR / f"{cis}.html.gz"
+    dest, sibling = (gz, plain) if gzip_overlay else (plain, gz)
+    if rcp_html == "":
+        payload = b""  # zero-byte sentinel in either mode
+    elif gzip_overlay:
+        payload = gzip.compress(rcp_html.encode("utf-8"))
+    else:
+        payload = rcp_html.encode("utf-8")
+    tmp = dest.with_name(dest.name + ".tmp")
+    tmp.write_bytes(payload)
     tmp.replace(dest)
+    sibling.unlink(missing_ok=True)  # never leave both formats for one CIS
+    return dest
 
 
 def fetch_one(client: httpx.Client, cis: str) -> tuple[str, int]:
     """Fetch a drug page and return its raw HTML plus the final HTTP status."""
     resp = client.get(PAGE_URL.format(cis=cis))
     return resp.text, resp.status_code
+
+
+def _fmt_dur(seconds: float) -> str:
+    """Format a duration as H:MM:SS, or MM:SS when under an hour."""
+    s = int(max(0.0, seconds))
+    h, s = divmod(s, 3600)
+    m, s = divmod(s, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
+
+
+def _progress(done: int, total: int, start: float, width: int = 24) -> str:
+    """Render a textual progress bar with percent, elapsed time and ETA.
+
+    Emitted as a normal log line (not drawn in place) so it reads identically in
+    an interactive terminal and in a cron log file, and never fights loguru for
+    the current line the way an animated bar would. ETA is a simple linear
+    extrapolation from the average time per drug so far (the fixed inter-request
+    delay dominates, so it is a good estimate).
+    """
+    frac = done / total if total else 1.0
+    filled = round(frac * width)
+    bar = "#" * filled + "-" * (width - filled)
+    elapsed = time.monotonic() - start
+    eta = (elapsed / done) * (total - done) if done else 0.0
+    return f"[{bar}] {frac * 100:3.0f}% {done}/{total} elapsed {_fmt_dur(elapsed)} eta {_fmt_dur(eta)}"
 
 
 @click.command(context_settings={"help_option_names": ["-h", "--help"]})
@@ -370,7 +426,14 @@ def fetch_one(client: httpx.Client, cis: str) -> tuple[str, int]:
 @click.option("--ttl-days", type=int, default=30, show_default=True,
               help="Skip a CIS refreshed more recently than this many days.")
 @click.option("--rate", type=float, default=2.0, show_default=True,
-              help="Seconds to wait between requests (politeness).")
+              envvar="RCP_SCRAPE_RATE_SECONDS",
+              help="Base seconds between requests, i.e. how often to scrape one RCP "
+                   "(env RCP_SCRAPE_RATE_SECONDS). A random 0..min(rate,10)s is added "
+                   "to each gap so timing is not perfectly periodic.")
+@click.option("--gzip/--no-gzip", "gzip_overlay", default=True, show_default=True,
+              envvar="RCP_OVERLAY_GZIP",
+              help="Store overlays gzip-compressed (<cis>.html.gz) instead of plain "
+                   "(<cis>.html); env RCP_OVERLAY_GZIP. build.py reads either transparently.")
 @click.option("--force", is_flag=True, help="Ignore the TTL for selected drugs.")
 @click.option("--frequency", type=click.Path(exists=True, path_type=Path), default=None,
               help="JSONL of {term, score} priorities (higher=first); matched to drug "
@@ -381,8 +444,8 @@ def fetch_one(client: httpx.Client, cis: str) -> tuple[str, int]:
               default=None,
               help="Override the HTTP User-Agent sent to the ANSM site.")
 def main(limit: int, fetch_all: bool, only: tuple[str, ...], ttl_days: int,
-         rate: float, force: bool, frequency: Path | None, timeout: float,
-         user_agent: str | None) -> None:
+         rate: float, gzip_overlay: bool, force: bool, frequency: Path | None,
+         timeout: float, user_agent: str | None) -> None:
     """Refresh RCP overlay files from the live ANSM site (see module docstring)."""
     # Identifying User-Agent with a reachable contact so ANSM can get in touch
     # (or block) rather than seeing an anonymous bot. Override with --user-agent.
@@ -431,15 +494,32 @@ def main(limit: int, fetch_all: bool, only: tuple[str, ...], ttl_days: int,
 
     manifest = load_manifest()
     headers = {"User-Agent": ua}
+    # A run is homogeneous: either the operator explicitly asked for these CIS
+    # (--only, "user") or they came off the automatic frequency queue ("timer",
+    # the cron/background freshener). Every line is tagged so a user-triggered
+    # refresh is always distinguishable from the timer-driven one.
+    source = "user" if only else "timer"
+    total = len(targets)
+    logger.info(
+        "fetching {} CIS [{}], overlay={}, base rate {}s + up to {}s jitter",
+        total, source, "gzip" if gzip_overlay else "plain",
+        rate, round(min(rate, 10.0), 1),
+    )
     n_ok = n_empty = n_err = 0
+    start = time.monotonic()
     with httpx.Client(follow_redirects=True, timeout=timeout, headers=headers) as client:
         for i, cis in enumerate(targets, 1):
+            logger.debug("[{}/{}] {} {}: GET {}", i, total, source, cis, PAGE_URL.format(cis=cis))
             try:
                 page, status = fetch_one(client, cis)
                 if status != 200:
                     raise RuntimeError(f"HTTP {status}")
+                logger.debug("[{}/{}] {} {}: extracting RCP from {} bytes of HTML",
+                             i, total, source, cis, len(page))
                 rcp = extract_rcp(page)
-                write_overlay(cis, rcp)
+                dest = write_overlay(cis, rcp, gzip_overlay)
+                logger.debug("[{}/{}] {} {}: wrote {} ({} bytes on disk)",
+                             i, total, source, cis, dest.name, dest.stat().st_size)
                 digest = hashlib.sha256(rcp.encode("utf-8")).hexdigest()
                 manifest[cis] = {
                     "last_fetch": _now_iso(), "hash": digest,
@@ -447,22 +527,27 @@ def main(limit: int, fetch_all: bool, only: tuple[str, ...], ttl_days: int,
                 }
                 if rcp == "":
                     n_empty += 1
-                    logger.info("[{}/{}] {} -> no RCP (empty overlay)", i, len(targets), cis)
+                    result = "no RCP (empty overlay)"
                 else:
                     n_ok += 1
-                    logger.info("[{}/{}] {} -> {} bytes", i, len(targets), cis, len(rcp))
+                    result = f"{len(rcp)} bytes"
+                logger.info("{} | {} {} -> {}", _progress(i, total, start), source, cis, result)
             except Exception as exc:  # network / parse error: record and move on
                 n_err += 1
                 manifest[cis] = {"last_fetch": _now_iso(), "status": "error", "error": str(exc)[:200]}
-                logger.error("[{}/{}] {} -> {}", i, len(targets), cis, exc)
+                logger.error("{} | {} {} -> ERROR {}", _progress(i, total, start), source, cis, exc)
             # Persist periodically so a long run survives interruption.
             if i % 25 == 0:
                 save_manifest(manifest)
-            if i < len(targets) and rate > 0:
-                time.sleep(rate)
+            if i < total and rate > 0:
+                # Base politeness gap + up to min(rate, 10)s of jitter so requests
+                # are not perfectly periodic (gentler on the origin, and matches the
+                # "~every N s +- random" background trickle the design calls for).
+                time.sleep(rate + random.uniform(0.0, min(rate, 10.0)))
 
     save_manifest(manifest)
-    logger.info("done: {} RCPs, {} empty, {} errors", n_ok, n_empty, n_err)
+    logger.info("done [{}]: {} RCPs, {} empty, {} errors in {}",
+                source, n_ok, n_empty, n_err, _fmt_dur(time.monotonic() - start))
     logger.info("now rebuild: uv run build.py")
 
 

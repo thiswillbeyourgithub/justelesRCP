@@ -78,8 +78,9 @@ masse qui existe : le téléchargement officiel de la BDPM, lui, est rafraîchi
 quotidiennement mais ne contient que des métadonnées, jamais le corps HTML des
 RCP. Pour rafraîchir les RCP sans renoncer à l'architecture statique, `scrape-rcp.py`
 récupère en arrière-plan les pages de médicaments sur le site de l'ANSM et écrit
-un fichier de surcharge par médicament (`data/rcp/<cis>.html`) que `build.py`
-préfère au dump de 2022. Rien de dynamique ne tourne au moment de servir les pages.
+un fichier de surcharge par médicament (`data/rcp/<cis>.html.gz`, gzip par défaut)
+que `build.py` préfère au dump de 2022. Rien de dynamique ne tourne au moment de
+servir les pages.
 
 Chaque page RCP indique depuis quand ses informations datent (« Informations à
 jour au … »), calculé à partir de la date de récupération (ou du 2 mai 2022 pour
@@ -99,6 +100,14 @@ et un médicament qu'aucun terme ne matche reçoit le score du 25e centile pour
 rester à une priorité moyenne. Idéal en tâche `cron`. Voir l'en-tête du script
 pour toutes les options (`--all` pour un scan complet unique, `--only` pour des
 CIS précis).
+
+Deux réglages se pilotent aussi par variable d'environnement, pratique pour un
+`cron` : `RCP_OVERLAY_GZIP` (surcharges gzippées, activé par défaut ; `--no-gzip`
+pour du HTML brut, `build.py` lit les deux de façon transparente) et
+`RCP_SCRAPE_RATE_SECONDS` (délai de base entre deux requêtes, un aléa est ajouté).
+Le script journalise une barre de progression avec estimation du temps restant et
+indique à chaque page si elle est demandée manuellement (`--only`, « user ») ou
+issue de la file automatique (« timer »).
 
 ## Source des données et licence
 

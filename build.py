@@ -44,7 +44,7 @@ from pathlib import Path
 import brotli
 from lxml import html as lxml_html
 
-__version__ = "0.7.0"  # single source of truth; bump patch/minor per change
+__version__ = "0.8.0"  # single source of truth; bump patch/minor per change
 
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
@@ -180,12 +180,46 @@ def _load_scrape_dates() -> dict[str, str]:
     return dates
 
 
+def _overlay_path(cis: str) -> Path | None:
+    """Return the overlay file for a CIS, or None if none exists.
+
+    scrape-rcp.py stores each overlay either plain (``<cis>.html``) or gzipped
+    (``<cis>.html.gz``), depending on RCP_OVERLAY_GZIP at scrape time, and keeps
+    only one of the two. We read whichever is present transparently; if both
+    somehow coexist (format flipped mid-cache), the newest by mtime wins.
+    """
+    cands = [
+        p for p in (RCP_OVERLAY_DIR / f"{cis}.html.gz", RCP_OVERLAY_DIR / f"{cis}.html")
+        if p.exists()
+    ]
+    if not cands:
+        return None
+    return max(cands, key=lambda p: p.stat().st_mtime)
+
+
+def _read_overlay(path: Path) -> str:
+    """Decode an overlay file to HTML text, transparently un-gzipping if needed.
+
+    A zero-byte file is the "scraped, no RCP" sentinel and decodes to "" in
+    either format (we never gzip an empty overlay), so the caller skips it
+    without attempting to gunzip 0 bytes.
+    """
+    data = path.read_bytes()
+    if not data:
+        return ""
+    if path.suffix == ".gz":
+        return gzip.decompress(data).decode("utf-8")
+    return data.decode("utf-8")
+
+
 def _overlay_date(cis: str) -> str:
     """Fallback 'as of' date for an overlay with no manifest entry: the overlay
     file's own modification date. '' if it cannot be read."""
+    path = _overlay_path(cis)
+    if path is None:
+        return ""
     try:
-        ts = (RCP_OVERLAY_DIR / f"{cis}.html").stat().st_mtime
-        return date.fromtimestamp(ts).isoformat()
+        return date.fromtimestamp(path.stat().st_mtime).isoformat()
     except OSError:
         return ""
 
@@ -474,8 +508,8 @@ def main() -> None:
         """
         if not RCP_OVERLAY_DIR.is_dir():
             return None
-        path = RCP_OVERLAY_DIR / f"{cis}.html"
-        return path.read_text(encoding="utf-8") if path.exists() else None
+        path = _overlay_path(cis)
+        return _read_overlay(path) if path is not None else None
 
     def records():
         """Yield (cis, raw, asof) for non-empty RCPs; count empties as a side effect.
@@ -507,12 +541,20 @@ def main() -> None:
                         continue
                     yield cis, raw, asof
         # Overlay-only drugs: scraped CIS that never existed in the 2022 baseline.
+        # Collect CIS from both formats (<cis>.html and <cis>.html.gz); the CIS is
+        # the filename up to the first dot (8 digits, never dotted). Read through
+        # _overlay so gz/plain and the newest-wins rule stay in one place.
         if RCP_OVERLAY_DIR.is_dir():
-            for path in sorted(RCP_OVERLAY_DIR.glob("*.html")):
-                cis = path.stem
+            overlay_cis = {
+                p.name.split(".", 1)[0]
+                for p in (*RCP_OVERLAY_DIR.glob("*.html"), *RCP_OVERLAY_DIR.glob("*.html.gz"))
+            }
+            for cis in sorted(overlay_cis):
                 if cis in seen:
                     continue
-                raw = path.read_text(encoding="utf-8")
+                raw = _overlay(cis)
+                if raw is None:
+                    continue
                 if not raw.strip():
                     skipped_empty += 1
                     continue

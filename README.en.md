@@ -73,8 +73,9 @@ The `CIS_RCP.csv` dump is frozen (2 May 2022) and is the only bulk *HTML* export
 that exists: the official BDPM download is refreshed daily but ships metadata
 only, never the RCP body. To refresh RCPs without giving up the static
 architecture, `scrape-rcp.py` fetches drug pages from the live ANSM site in the
-background and writes a per-medicine overlay file (`data/rcp/<cis>.html`) that
-`build.py` prefers over the 2022 dump. Nothing dynamic runs at serve time.
+background and writes a per-medicine overlay file (`data/rcp/<cis>.html.gz`,
+gzipped by default) that `build.py` prefers over the 2022 dump. Nothing dynamic
+runs at serve time.
 
 Every RCP page shows how old its data is ("Informations à jour au …"), computed
 from the fetch date (or 2 May 2022 for the baseline), with a warning shown when
@@ -93,6 +94,13 @@ matched to each drug's name (accent-insensitive), and a drug no term matches get
 the 25th-percentile score so it stays at middling priority. Ideal as a `cron`
 job. See the script header for all options (`--all` for a one-time full scan,
 `--only` for specific CIS).
+
+Two knobs are also driven by environment variables, handy for a `cron`:
+`RCP_OVERLAY_GZIP` (gzipped overlays, on by default; `--no-gzip` for raw HTML,
+`build.py` reads either transparently) and `RCP_SCRAPE_RATE_SECONDS` (base delay
+between requests, with a random jitter added). The script logs a progress bar with
+a time estimate and tags each page as manually requested (`--only`, "user") or
+coming from the automatic queue ("timer").
 
 ## Data source and licence
 

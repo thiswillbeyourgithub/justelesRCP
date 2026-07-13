@@ -94,9 +94,13 @@ Key facts that aren't obvious from a single file:
   from `#tabpanel-rcp-panel #contenu` (scoped because `id="contenu"` is not
   unique: the notice panel has one too), strips DSFR chrome (`fr-no-print`
   toolbars, buttons), and re-wraps it in the exact `<div id="textDocument">…`
-  envelope the 2022 dump used. It writes one overlay file `data/rcp/<cis>.html`
-  per drug; `build.py`'s `records()` prefers that file over the baseline CSV cell
-  (an empty overlay file means "scraped, no RCP" and is skipped, not fallen back).
+  envelope the 2022 dump used. It writes one overlay file per drug, gzipped as
+  `data/rcp/<cis>.html.gz` by default or plain `data/rcp/<cis>.html` with
+  `--no-gzip` (env `RCP_OVERLAY_GZIP`); it keeps only one format per CIS and
+  `build.py` reads either transparently (`_overlay_path`/`_read_overlay`, newest
+  wins if both coexist), so the flag only trades disk/rsync size for
+  greppability. `records()` prefers the overlay over the baseline CSV cell (a
+  *zero-byte* overlay means "scraped, no RCP" and is skipped, not fallen back).
   Ordering is frequency-first: `--frequency` (default `data/drugs_frequency.jsonl`)
   is a JSONL of `{term, score}` (drug/substance name -> priority) matched to each
   CIS's accent-folded token pool: its denomination plus, when the optional
@@ -145,6 +149,9 @@ Key facts that aren't obvious from a single file:
 ```bash
 ./download-data.sh        # fetch data/CIS_RCP.csv + data/CIS_bdpm.txt (see TODOs in it)
 uv run scrape-rcp.py --limit 60   # refresh N RCPs from live ANSM into data/rcp/ overlay
+                                  # env: RCP_OVERLAY_GZIP (gzip overlays, default on),
+                                  # RCP_SCRAPE_RATE_SECONDS (base gap between fetches);
+                                  # logs a progress bar + ETA and the trigger (user/timer)
 uv run build.py           # build ./dist from ./data (overlay wins over the 2022 CSV)
 cp docker/env.example docker/.env                      # optional: umami analytics / DEV banner
 docker compose -f docker/docker-compose.yml up -d      # serve ./dist on :8459 (read-only, hardened)
