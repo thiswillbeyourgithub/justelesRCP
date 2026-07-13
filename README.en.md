@@ -130,6 +130,11 @@ refreshed. This reuse confers no official status and implies no endorsement by t
 ANSM, HAS or UNCAM. This site is not affiliated with any authority and does not
 replace professional medical advice.
 
+To keep the RCPs current, justelesRCP occasionally fetches some pages directly from
+the public ANSM website. These requests are infrequent, rate-limited and carry a
+contact address, so as not to burden that public service; no visitor personal data
+is sent in the process.
+
 ## Credits
 
 Built with the help of [Claude Code](https://claude.com/claude-code).

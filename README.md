@@ -140,6 +140,12 @@ progressivement rafraîchies. Cette réutilisation ne confère aucun caractère 
 et ne suggère aucune reconnaissance de l'ANSM, de la HAS ou de l'UNCAM. Ce site
 n'est affilié à aucune autorité et ne remplace pas un avis médical professionnel.
 
+Pour maintenir les RCP à jour, justelesRCP récupère ponctuellement certaines pages
+directement sur le site public de l'ANSM. Ces requêtes sont peu fréquentes, limitées
+en débit et accompagnées d'une adresse de contact, afin de ne pas peser sur ce
+service public ; aucune donnée personnelle des visiteurs n'est transmise à cette
+occasion.
+
 ## Crédits
 
 Réalisé avec l'aide de [Claude Code](https://claude.com/claude-code).
