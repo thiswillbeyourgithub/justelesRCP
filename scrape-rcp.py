@@ -384,9 +384,9 @@ def main(limit: int, fetch_all: bool, only: tuple[str, ...], ttl_days: int,
          rate: float, force: bool, frequency: Path | None, timeout: float,
          user_agent: str | None) -> None:
     """Refresh RCP overlay files from the live ANSM site (see module docstring)."""
-    # TODO: set a real contact/repo URL in the default User-Agent so ANSM can
-    # reach the operator; kept generic here to avoid hardcoding any identity.
-    ua = user_agent or "justelesRCP-scraper/0.1 (RCP freshness bot)"
+    # Identifying User-Agent with a reachable contact so ANSM can get in touch
+    # (or block) rather than seeing an anonymous bot. Override with --user-agent.
+    ua = user_agent or "justelesRCP-scraper/1.0 (RCP freshness bot; contact hedv10g9@mailer.me)"
 
     if only:
         targets = list(dict.fromkeys(only))  # dedupe, keep order
