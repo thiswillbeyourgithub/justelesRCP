@@ -92,7 +92,11 @@ services:
       # The ONLY writable locations (the "write just here" compromise): the
       # overlay dir, the rebuilt-page dir, and the scrape manifest file. The
       # manifest must exist on the host first (run scrape-rcp.py once, or
-      # `touch data/.scrape-manifest.json`), else Docker would create a directory.
+      # `touch data/.scrape-manifest.json`), else Docker would create a directory
+      # in its place (IsADirectoryError at startup). deploy.sh heals this before
+      # `up`; scrape.load_manifest also tolerates a directory/empty file, and
+      # scrape.save_manifest writes in place here (a .tmp sibling would be EROFS
+      # since /app/data is read-only apart from this single mounted file).
       - ../data/rcp:/app/data/rcp
       - ../data/.scrape-manifest.json:/app/data/.scrape-manifest.json
       - ../dist/rcp:/app/dist/rcp

@@ -165,17 +165,41 @@ def extract_rcp(page_html: str) -> str:
 
 
 def load_manifest() -> dict:
-    """Load the scrape manifest, or an empty mapping if it does not exist yet."""
-    if MANIFEST_PATH.exists():
-        return json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
-    return {}
+    """Load the scrape manifest, or an empty mapping when it is missing, empty,
+    unreadable, or not a JSON object.
+
+    The tolerant read matters for the refresh service: the manifest is
+    bind-mounted as a single file into that (read-only) container, so if the
+    file did not exist on the host at first ``up`` Docker silently creates a
+    *directory* in its place (``read_text`` -> IsADirectoryError), and an empty
+    ``touch``ed file is not valid JSON either. Either would otherwise crash the
+    service at startup; degrade to an empty manifest instead (mirrors build.py's
+    _load_scrape_dates). deploy.sh separately heals the directory case."""
+    try:
+        data = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def save_manifest(manifest: dict) -> None:
-    """Write the manifest atomically (temp file + rename) to survive crashes."""
+    """Persist the manifest. Prefer an atomic temp-file + rename (crash-safe for
+    the long batch scraper); fall back to an in-place write when that cannot work.
+
+    The fallback exists for the refresh container: there the manifest is a single
+    bind-mounted file on an otherwise read-only rootfs, so a sibling ``.tmp`` in
+    ``data/`` cannot be created (EROFS) and you cannot rename onto a bind-mount
+    point (EBUSY). Writing in place is not crash-atomic, but load_manifest
+    tolerates a truncated/invalid manifest (returns {}), so at worst a crash
+    mid-write costs the TTL cache, never correctness."""
+    payload = json.dumps(manifest, ensure_ascii=False, indent=0)
     tmp = MANIFEST_PATH.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(manifest, ensure_ascii=False, indent=0), encoding="utf-8")
-    tmp.replace(MANIFEST_PATH)
+    try:
+        tmp.write_text(payload, encoding="utf-8")
+        tmp.replace(MANIFEST_PATH)
+    except OSError:
+        tmp.unlink(missing_ok=True)  # no-op if the temp was never created (EROFS)
+        MANIFEST_PATH.write_text(payload, encoding="utf-8")
 
 
 def read_catalog() -> list[tuple[str, str]]:
