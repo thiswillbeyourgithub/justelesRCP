@@ -61,6 +61,117 @@
     }
   })();
 
+  // On-demand RCP refresh: a "Rafraichir maintenant" button plus an automatic
+  // background refresh when the page's data is over a year old. Both call the
+  // same-origin companion service POST /api/refresh/<cis> (refresh-service.py),
+  // which Caddy reverse-proxies, so the strict `connect-src 'self'` CSP allows
+  // it. Everything degrades gracefully: on a plain static deploy with no service
+  // the fetch simply fails and the button reports it unavailable, changing
+  // nothing else. The button is created here (not baked) so no-JS pages don't
+  // show a dead control; styling is via the .rcp-refresh class (a style="" attr
+  // would trip the strict style-src CSP).
+  (function () {
+    const main = document.querySelector(".rcp[data-cis]");
+    if (!main) return; // not an RCP page
+    const cis = (main.getAttribute("data-cis") || "").trim();
+    if (!/^\d{8}$/.test(cis)) return; // missing/placeholder CIS: nothing to refresh
+
+    const asofEl = document.querySelector("[data-rcp-asof]");
+    const bakedAsof = asofEl
+      ? (asofEl.getAttribute("data-rcp-asof") || "").trim()
+      : "";
+    const ageDays = bakedAsof
+      ? Math.floor((Date.now() - new Date(bakedAsof + "T00:00:00Z").getTime()) / 86400000)
+      : NaN;
+
+    function refresh(cisId) {
+      return fetch("/api/refresh/" + cisId, {
+        method: "POST",
+        headers: { Accept: "application/json" },
+      });
+    }
+
+    const box = document.createElement("p");
+    box.className = "rcp-refresh";
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = "Rafraîchir maintenant";
+    const msg = document.createElement("span");
+    msg.className = "msg";
+    box.append(btn, msg);
+    const anchor = asofEl || main.querySelector(".cis");
+    if (anchor && anchor.parentNode) anchor.after(box);
+    else main.prepend(box);
+
+    let polling = false;
+    function setMsg(text) {
+      msg.textContent = text ? " " + text : "";
+    }
+
+    // After a refresh is queued, poll the service until it reports a scrape date
+    // newer than the one baked into this page, then reload to show the fresh RCP.
+    function pollUntilFresh(deadline) {
+      fetch("/api/status/" + cis, { headers: { Accept: "application/json" } })
+        .then((r) => r.json())
+        .then((s) => {
+          if (s.asof && s.asof !== bakedAsof && !s.pending) {
+            setMsg("à jour, rechargement…");
+            location.reload();
+            return true;
+          }
+          return false;
+        })
+        .catch(() => false)
+        .then((done) => {
+          if (done) return;
+          if (Date.now() < deadline) {
+            setTimeout(() => pollUntilFresh(deadline), 3000);
+          } else {
+            polling = false;
+            btn.disabled = false;
+            setMsg("la mise à jour prend du temps ; réessayez plus tard.");
+          }
+        });
+    }
+
+    btn.addEventListener("click", () => {
+      if (polling) return;
+      btn.disabled = true;
+      setMsg("mise à jour demandée…");
+      refresh(cis)
+        .then((r) => r.json())
+        .then((s) => {
+          if (s.status === "fresh") {
+            if (s.asof && s.asof !== bakedAsof) {
+              location.reload();
+              return;
+            }
+            btn.disabled = false;
+            setMsg("déjà à jour.");
+          } else if (s.status === "busy") {
+            btn.disabled = false;
+            setMsg("service occupé, réessayez plus tard.");
+          } else {
+            polling = true;
+            setMsg("mise à jour en cours…");
+            pollUntilFresh(Date.now() + 90000);
+          }
+        })
+        .catch(() => {
+          btn.disabled = false;
+          setMsg("rafraîchissement indisponible.");
+        });
+    });
+
+    // Automatic, fire-and-forget refresh when the page is over a year old. The
+    // server dedups + rate-limits, so many visitors on the same stale page cause
+    // a single fetch; the freshened page shows up on a later visit. We do not
+    // reload here (no surprise reloads), we just nudge the queue.
+    if (Number.isFinite(ageDays) && ageDays > 365) {
+      refresh(cis).catch(() => {});
+    }
+  })();
+
   // A value is "set" only if it is a non-empty, non-placeholder string.
   function isSet(value) {
     return typeof value === "string" && value.length > 0 && !value.startsWith("{{");

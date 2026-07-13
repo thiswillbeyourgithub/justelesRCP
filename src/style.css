@@ -183,6 +183,17 @@ a:hover { text-decoration: underline; }
 .rcp-asof.stale {
   color: #b45309; border-color: #b45309; font-weight: 600;
 }
+/* On-demand refresh control (built by app-init.js when the companion service is
+   reachable). Understated so it sits quietly under the freshness banner. */
+.rcp-refresh { margin: -0.8rem 0 1.5rem; font-size: .85rem; }
+.rcp-refresh button {
+  font: inherit; cursor: pointer; color: var(--accent);
+  background: transparent; border: 1px solid var(--line);
+  border-radius: .4rem; padding: .3rem .7rem;
+}
+.rcp-refresh button:hover { border-color: var(--accent); }
+.rcp-refresh button:disabled { color: var(--muted); cursor: default; opacity: .7; }
+.rcp-refresh .msg { color: var(--muted); }
 /* Section titles are sidebar jump targets: keep them clear of the sticky bar. */
 .rcp .AmmAnnexeTitre1[id] { scroll-margin-top: 4rem; }
 .rcp p { margin: .5rem 0; }
