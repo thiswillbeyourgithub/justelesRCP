@@ -69,6 +69,31 @@ Key facts that aren't obvious from a single file:
   supported (that was the tradeoff for a zero-runtime static architecture).
 - **Names come from `CIS_bdpm.txt`**, falling back to the `AmmDenomination`
   parsed from the RCP HTML when the mapping is missing. See `load_names()`.
+- **Cross-drug backlinks link one RCP to another.** `build_xref_index()` builds,
+  once per build, a map `term -> (cis, slug, display)` of the single canonical
+  page to link a given drug/substance name to; `_linkify()` then wraps mentions
+  of those terms in each cleaned RCP body with `<a class="drug-xref">` and emits
+  a "Médicaments liés" `<details>` (`_xref_html`) into the `{{XREF}}` slot. Terms
+  come from each drug's brand root plus, for **mono-substance drugs only**, its
+  active-substance tokens; the target per term is picked by prescription
+  frequency (mono preferred), reusing the SAME scoring as the scrape queue. That
+  scoring + tokenising now lives in a shared, pure-stdlib **`bdpm.py`** imported
+  by BOTH `build.py` and `scrape-rcp.py` (build.py can't cheaply import
+  scrape-rcp.py, which needs httpx/loguru/click; bdpm.py has no third-party
+  deps). Matching is deliberately conservative on medical text: whole-word,
+  accent-folded via a **length-preserving** fold (so match offsets map back onto
+  the original text), `>= _XREF_MIN_LEN` chars, capped at `_XREF_MAX_LINKS`/page,
+  each term once, never self-linking, and **gated on the frequency list of real
+  drug/substance names** (the primary false-positive guard: it stops descriptive
+  words baked into substance denominations, e.g. STAMARIL's "virus de la fièvre
+  jaune", from linkifying "fièvre") plus an `_XREF_STOP` salt/dosage-form
+  stoplist. The whole index is folded into the incremental-build `_global_key`
+  (a page's links depend on the WHOLE index, not just its own inputs), so a
+  changed dictionary busts the cache but an unchanged rebuild still reuses
+  everything. Keep the contract in sync across `build_xref_index`/`_linkify`/
+  `_xref_html`, the `{{XREF}}` slot in `src/rcp.html`, and `.drug-xref` /
+  `.drug-xref-list` in `style.css`. The refresh service builds the same index at
+  startup so a refreshed page keeps its backlinks (see the runtime bullet).
 - **The ANSM HTML keeps its `Amm*` CSS class hooks** (e.g. `AmmAnnexeTitre1`,
   `AmmDenomination`). `clean_rcp()` strips decoration (BackToTop images,
   inline `font-*` styles, scripts) but preserves those classes; `style.css`
@@ -123,6 +148,10 @@ Key facts that aren't obvious from a single file:
   build logic: it imports `scrape-rcp.py` and `build.py` by path (importlib) and
   reuses `fetch_one` -> `extract_rcp` -> `write_overlay` -> `render_record` to
   fetch one live page and rebuild just that one `dist/rcp/<slug>.html` (+ .gz/.br).
+  It also calls `build_xref_index()` once at startup and passes the result into
+  `build._init_worker`, so a refreshed page keeps the SAME cross-drug backlinks a
+  full build makes (that index needs the COMPO/GENER/frequency files, mounted
+  read-only, see the hardening notes; absent them it degrades to no backlinks).
   A single worker thread serialises every outbound ANSM fetch behind a GLOBAL rate
   limit (`REFRESH_RATE_SECONDS` + jitter) and a per-CIS min-interval floor
   (`REFRESH_MIN_INTERVAL_SECONDS`, default 1h), so repeat clicks and many visitors
@@ -193,7 +222,7 @@ cp docker/env.example docker/.env                      # optional: umami analyti
 docker compose -f docker/docker-compose.yml up -d      # serve ./dist on :8459 + refresh service (read-only, hardened)
 docker compose -f docker/docker-compose.yml up --build # after changing Caddyfile/compose/refresh.Dockerfile
                                                        # OR the scripts baked into the refresh image
-                                                       # (build.py / scrape-rcp.py / refresh-service.py / src/rcp.html):
+                                                       # (build.py / scrape-rcp.py / refresh-service.py / bdpm.py / src/rcp.html):
                                                        # a plain `up` reuses the old image and ships stale code
 ```
 
@@ -236,13 +265,18 @@ Restart is not needed (Caddy reads the mounted dir live), but a
   `no-new-privileges`, tmpfs `/tmp`, and is NOT published to the host (no `ports:`);
   it is only reachable through Caddy's `/api/*` proxy. Its ONLY writable mounts are
   the three narrow paths it must write (`data/rcp`, `dist/rcp`, and the
-  `data/.scrape-manifest.json` file); everything else, including the CIS->name map
-  (`data/CIS_bdpm.txt`), is mounted read-only. Note BOTH single-file mounts
-  (`data/.scrape-manifest.json` AND `data/CIS_bdpm.txt`) must exist as real files on
-  the host before `up`, else Docker auto-creates a *directory* in their place and the
-  service crashes at startup (`load_manifest` / `load_names` hit IsADirectoryError).
-  `deploy.sh` handles both (heals a stray directory, writes `{}` for the manifest,
-  and rsyncs `CIS_bdpm.txt` since the main rsync excludes `/data`). It runs as
+  `data/.scrape-manifest.json` file); everything else is mounted read-only: the
+  CIS->name map (`data/CIS_bdpm.txt`) plus the backlink-index inputs
+  (`data/CIS_COMPO_bdpm.txt`, `data/CIS_GENER_bdpm.txt`, `data/drugs_frequency.jsonl`).
+  Note the single-file mounts (`data/.scrape-manifest.json`, `data/CIS_bdpm.txt`,
+  and those three backlink files) must exist as real files on the host before `up`,
+  else Docker auto-creates a *directory* in their place. The manifest still crashes
+  the service if it is a directory, but the CIS_bdpm/COMPO/GENER/frequency reads are
+  now `is_file`-guarded (`load_names` tolerates it; `build_xref_index` /
+  `bdpm.column_tokens` degrade to fewer/no backlinks) rather than raising
+  IsADirectoryError. `deploy.sh` handles all of them (heals a stray directory, writes
+  `{}` for the manifest, and rsyncs `CIS_bdpm.txt` + the three backlink files since
+  the main rsync excludes `/data`). It runs as
   `${REFRESH_UID:-1000}:${REFRESH_GID:-1000}` so
   the overlays and rebuilt pages it writes stay owned by the host user (clean
   ownership + Syncthing). The manifest is bind-mounted as a single file, so it must
@@ -260,7 +294,7 @@ Restart is not needed (Caddy reads the mounted dir live), but a
   root `.dockerignore` is REQUIRED to exclude `dist/` (~720M) and `data/` (~260M);
   without it every `up --build` ships ~1GB to the daemon and can fail the build on a
   small VPS ("no space left on device"), leaving no containers. The Dockerfile only
-  needs `build.py` / `scrape-rcp.py` / `refresh-service.py` / `src/rcp.html`.
+  needs `build.py` / `scrape-rcp.py` / `refresh-service.py` / `bdpm.py` / `src/rcp.html`.
 
 ## Gotchas
 
