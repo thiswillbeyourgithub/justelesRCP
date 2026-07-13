@@ -77,9 +77,12 @@ background and writes a per-medicine overlay file (`data/rcp/<cis>.html.gz`,
 gzipped by default) that `build.py` prefers over the 2022 dump. Nothing dynamic
 runs at serve time.
 
-Every RCP page shows how old its data is ("Informations à jour au …"), computed
-from the fetch date (or 2 May 2022 for the baseline), with a warning shown when
-the data is more than a year old.
+Every RCP page headlines ANSM's own revision date for that RCP ("Informations à
+jour au …", read from the RCP body), plus a small "Version vérifiée par
+justelesRCP le …" line for when we last checked the copy against ANSM. A warning
+appears only when *our copy* has not been re-checked in over a year, not because
+ANSM's text is old: an RCP ANSM last revised in 2021 but never changed is still
+the current official text, so its age alone is not staleness.
 
 ```bash
 uv run scrape-rcp.py --limit 60   # refresh 60 drugs (most-read first)
@@ -105,7 +108,7 @@ coming from the automatic queue ("timer").
 ### Refresh an RCP on demand (optional service)
 
 Every RCP page has a "Rafraîchir maintenant" (refresh now) button, and a page whose
-data is more than a year old refreshes itself on load. Both call a small companion
+copy we last captured more than a year ago refreshes itself on load. Both call a small companion
 service (`refresh-service.py`, `POST /api/refresh/<cis>`) that fetches the live ANSM
 page, writes the overlay and rebuilds that one page. It is **the only dynamic part**
 of the project: it runs in a separate, hardened container (read-only except three

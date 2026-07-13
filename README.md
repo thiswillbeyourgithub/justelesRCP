@@ -82,9 +82,14 @@ un fichier de surcharge par médicament (`data/rcp/<cis>.html.gz`, gzip par déf
 que `build.py` préfère au dump de 2022. Rien de dynamique ne tourne au moment de
 servir les pages.
 
-Chaque page RCP indique depuis quand ses informations datent (« Informations à
-jour au … »), calculé à partir de la date de récupération (ou du 2 mai 2022 pour
-le socle), avec un avertissement affiché quand les données ont plus d'un an.
+Chaque page RCP affiche en tête la date de révision du RCP par l'ANSM
+(« Informations à jour au … », lue dans le corps du RCP), plus une petite ligne
+« Version vérifiée par justelesRCP le … » indiquant quand nous avons contrôlé
+cette copie auprès de l'ANSM pour la dernière fois. Un avertissement n'apparaît
+que si *notre copie* n'a pas été recontrôlée depuis plus d'un an, et non parce
+que le texte de l'ANSM est ancien : un RCP révisé en 2021 mais jamais modifié
+reste le texte officiel en vigueur, son ancienneté seule n'est pas de
+l'obsolescence.
 
 ```bash
 uv run scrape-rcp.py --limit 60   # rafraîchit 60 médicaments (les plus consultés d'abord)
@@ -111,8 +116,9 @@ issue de la file automatique (« timer »).
 
 ### Rafraîchir un RCP à la demande (service optionnel)
 
-Chaque page RCP possède un bouton « Rafraîchir maintenant », et une page dont les
-données ont plus d'un an se rafraîchit automatiquement au chargement. Les deux
+Chaque page RCP possède un bouton « Rafraîchir maintenant », et une page dont
+notre copie a été récupérée il y a plus d'un an se rafraîchit automatiquement au
+chargement. Les deux
 appellent un petit service compagnon (`refresh-service.py`, `POST
 /api/refresh/<cis>`) qui récupère la page ANSM en direct, écrit la surcharge et
 régénère cette seule page. C'est **la seule partie dynamique** du projet : elle

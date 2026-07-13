@@ -135,18 +135,31 @@ Key facts that aren't obvious from a single file:
   guard `__main__`, so importing them must stay import-safe (no side effects at
   module load); the refresh service depends on that.
 - **Every RCP page shows a freshness banner ("Informations à jour au …").**
-  `build.py` bakes the *absolute* as-of date into the page as
-  `data-rcp-asof="YYYY-MM-DD"` (`_asof_html`): `BASELINE_DATE` (`2022-05-02`) for
-  a baseline CSV cell, or the scrape date for an overlay file (from
-  `.scrape-manifest.json`'s `last_fetch`, else the overlay file's mtime; see
-  `_load_scrape_dates`/`_overlay_date`). Baking the absolute date (not the age)
-  keeps pages cacheable; `src/app-init.js` rewrites it client-side to a relative
-  age ("il y a X mois") and adds a `.stale` warning class when the data is older
-  than a year. The `asof` value is folded into each CIS's build-cache hash
-  (`_record_hash`), so a re-scrape that changes the date re-renders the page.
-  Keep the `data-rcp-asof` contract in sync between `_asof_html`, the
-  `{{ASOF}}` slot in `src/rcp.html`, `.rcp-asof` in `style.css`, and the
-  enhancer in `src/app-init.js`.
+  It bakes TWO distinct *absolute* dates (not the age, so pages stay
+  cacheable; `src/app-init.js` turns each into a relative "il y a X" client-side):
+  1. **ANSM's own revision date** (the headline) = `data-rcp-ansm`, extracted by
+     `_ansm_date()` from the RCP body's `<span class="DateNotif">ANSM - Mis à jour
+     le : DD/MM/YYYY</span>` (present on all ~12k pages and every live scrape).
+     This is *when the official text was last revised*, which is the meaningful
+     date for the reader: a drug ANSM last touched in 2021 is still its current
+     text, so an old ANSM date is NOT staleness.
+  2. **Our capture date** = `data-rcp-asof` = `BASELINE_DATE` (`2022-05-02`) for a
+     baseline CSV cell, or the scrape date for an overlay (from
+     `.scrape-manifest.json`'s `last_fetch`, else the overlay mtime; see
+     `_load_scrape_dates`/`_overlay_date`). Shown as a small "Version vérifiée par
+     justelesRCP le …" line (`.rcp-checked`). `app-init.js` also keys the `.stale`
+     "notre copie" notice AND the on-demand refresh trigger off THIS date only
+     (not the ANSM date): a copy we have not re-checked in >1 year may lag ANSM's
+     live version. So `data-rcp-asof` MUST stay on the element even though
+     `data-rcp-ansm` is headlined; the refresh button/service compare against it.
+  `_asof_html(ansm, asof)` builds the banner (headline `.rcp-primary` + optional
+  `.rcp-checked`); it falls back to the capture date as headline if the ANSM date
+  is somehow missing, so the banner is never dateless. The ANSM date derives from
+  the RCP HTML (already in each CIS's `_record_hash` via `raw`), and the `asof`
+  value is also folded into that hash, so a re-scrape that changes either
+  re-renders the page. Keep the contract in sync across `_asof_html`/`_ansm_date`,
+  the `{{ASOF}}` slot in `src/rcp.html`, `.rcp-asof`/`.rcp-checked`/`.rcp-warn` in
+  `style.css`, and the enhancer in `src/app-init.js`.
 - **`/a-propos` is a static About page** (`src/a-propos.html`, shipped as a
   static asset): what the site is, the author, a privacy/hosting note, and a
   direct link to the GitHub repo. (`SOURCE_URL` still drives the separate "Code
