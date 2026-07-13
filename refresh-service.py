@@ -192,11 +192,31 @@ class Refresher:
                     with self._lock:
                         self._manifest[cis] = {"last_fetch": scrape._now_iso(),
                                                "status": "error", "error": str(exc)[:200]}
-                        scrape.save_manifest(self._manifest)
+                    self._persist_manifest()
                 finally:
                     with self._lock:
                         self._pending.discard(cis)
                     self._queue.task_done()
+
+    def _persist_manifest(self) -> None:
+        """Persist the scrape manifest, best-effort and NEVER fatal.
+
+        The manifest is only a TTL cache (build.py re-derives each page's capture
+        date from the overlay itself), so a failure to write it must not sink a
+        refresh. It is snapshotted under the lock and written outside it, and is
+        always called AFTER the page has been re-rendered, so the user-visible
+        page update lands even when /app/data cannot be written. save_manifest
+        already falls back to an in-place write when its atomic temp+rename cannot
+        work (an EROFS .tmp on the read-only refresh rootfs); this additionally
+        swallows even that fallback failing, logging instead of raising.
+        """
+        with self._lock:
+            snapshot = dict(self._manifest)
+        try:
+            scrape.save_manifest(snapshot)
+        except OSError as exc:
+            logger.warning("could not persist scrape manifest ({}); "
+                           "refresh already applied", exc)
 
     def _process(self, client, cis: str) -> None:
         self._throttle()
@@ -211,16 +231,22 @@ class Refresher:
         with self._lock:
             self._manifest[cis] = {"last_fetch": scrape._now_iso(), "hash": digest,
                                    "status": "ok", "http": status}
-            scrape.save_manifest(self._manifest)
+        # Re-render this ONE page (writes dist/rcp/<slug>.html + .gz/.br) BEFORE
+        # persisting the manifest. The rebuilt page, carrying today's "vérifiée
+        # par justelesRCP le" capture date, IS the point of the refresh; the
+        # manifest is merely a TTL cache. So persistence is a best-effort LAST
+        # step that can never abort the refresh: a manifest-write failure (e.g.
+        # EROFS on the read-only /app/data) no longer leaves the page stuck on
+        # its old capture date, which is exactly the bug this ordering fixes.
         if rcp == "":
             logger.info("refreshed {} -> no RCP (empty overlay)", cis)
-            return
-        # Re-render just this page (writes dist/rcp/<slug>.html + .gz/.br).
-        row = build.render_record((cis, rcp, asof))
-        if row is None:
-            logger.warning("refreshed {} but render produced nothing", cis)
         else:
-            logger.info("refreshed {} -> {} ({} bytes)", cis, row["slug"], len(rcp))
+            row = build.render_record((cis, rcp, asof))
+            if row is None:
+                logger.warning("refreshed {} but render produced nothing", cis)
+            else:
+                logger.info("refreshed {} -> {} ({} bytes)", cis, row["slug"], len(rcp))
+        self._persist_manifest()
 
 
 class _Handler(BaseHTTPRequestHandler):
