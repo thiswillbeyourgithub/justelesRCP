@@ -196,6 +196,20 @@ a:hover { text-decoration: underline; }
 .rcp-refresh button:hover { border-color: var(--accent); }
 .rcp-refresh button:disabled { color: var(--muted); cursor: default; opacity: .7; }
 .rcp-refresh .msg { color: var(--muted); }
+/* Cross-drug backlinks: inline links to other drugs' pages injected into the RCP
+   body by build.py (_linkify), and the "Médicaments liés" list at the foot
+   (_xref_html). Inline links get a dotted underline so a reader can tell they
+   were added by us, not by the ANSM source text. */
+.rcp .drug-xref { text-decoration: underline dotted; text-underline-offset: 2px; }
+.rcp .drug-xref:hover { text-decoration: underline; }
+.drug-xref-list {
+  margin: 2.5rem 0 1rem; padding: .6rem .9rem; font-size: .9rem;
+  background: var(--card); border: 1px solid var(--line); border-radius: .4rem;
+}
+.drug-xref-list > summary { cursor: pointer; font-weight: 600; color: var(--fg); }
+.drug-xref-list ul { margin: .6rem 0 .3rem; padding-left: 1.2rem; }
+.drug-xref-list li { margin: .2rem 0; }
+.drug-xref-note { margin: .5rem 0 0; font-size: .8rem; color: var(--muted); }
 /* Section titles are sidebar jump targets: keep them clear of the sticky bar. */
 .rcp .AmmAnnexeTitre1[id] { scroll-margin-top: 4rem; }
 .rcp p { margin: .5rem 0; }

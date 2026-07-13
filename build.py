@@ -44,7 +44,9 @@ from pathlib import Path
 import brotli
 from lxml import html as lxml_html
 
-__version__ = "0.10.2"  # single source of truth; bump patch/minor per change
+import bdpm  # shared, pure-stdlib BDPM tokenising + frequency scoring
+
+__version__ = "0.11.0"  # single source of truth; bump patch/minor per change
 
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
@@ -53,6 +55,15 @@ DIST = ROOT / "dist"
 
 CSV_PATH = DATA / "CIS_RCP.csv"
 BDPM_PATH = DATA / "CIS_bdpm.txt"
+# Optional BDPM joins + the frequency list, used ONLY to build the cross-drug
+# backlink index (build_xref_index): the active-substance composition (to seed
+# substance link terms and detect mono-substance drugs) and the frequency list
+# (to pick, per term, the single most-prescribed target page). All optional; when
+# absent the backlink index just covers fewer terms (or none). Same files
+# scrape-rcp.py uses to order its scrape queue.
+COMPO_PATH = DATA / "CIS_COMPO_bdpm.txt"
+GENER_PATH = DATA / "CIS_GENER_bdpm.txt"
+FREQUENCY_PATH = DATA / "drugs_frequency.jsonl"
 # Freshness overlay written by scrape-rcp.py: one <cis>.html per drug re-fetched
 # from the live ANSM site. The CSV above is a frozen 2022 baseline (the only bulk
 # RCP dump that exists); the overlay lets us serve current RCPs without abandoning
@@ -88,12 +99,21 @@ def _code_fingerprint() -> bytes:
     return re.sub(r"(?m)^__version__\s*=.*$", "", src).encode("utf-8")
 
 
-def _global_key(page_tpl: str) -> str:
-    """Cache key that invalidates every record when build code/template change."""
+def _global_key(page_tpl: str, xref: dict[str, tuple[str, str, str]]) -> str:
+    """Cache key that invalidates every record when the build code, the template,
+    OR the cross-drug backlink index change.
+
+    The backlink dictionary must be folded in because a page's injected links
+    depend on the WHOLE index, not just that record's own inputs (which
+    _record_hash covers): adding a drug can introduce a new term that changes an
+    unrelated page's body, so a changed index has to bust the whole cache."""
     h = hashlib.sha256()
     h.update(_code_fingerprint())
     h.update(b"\0")
     h.update(page_tpl.encode("utf-8"))
+    h.update(b"\0")
+    fp = sorted((term, slug) for term, (_, slug, _) in xref.items())
+    h.update(json.dumps(fp, ensure_ascii=False).encode("utf-8"))
     return h.hexdigest()
 
 
@@ -253,6 +273,249 @@ def _overlay_date(cis: str) -> str:
         return ""
 
 
+# --- cross-drug backlinks (xref) --------------------------------------------
+# An RCP body often names OTHER drugs or active substances (e.g. a
+# contraindication mentioning "ritonavir"). build_xref_index() builds, once per
+# build, a map of linkable term -> the single canonical page to link it to, and
+# _linkify() wraps those mentions in the RCP body with <a> links (plus a
+# "Médicaments liés" section, see _xref_html). Matching is deliberately
+# conservative: whole-word, accent-folded, >= _XREF_MIN_LEN chars, a curated
+# stoplist of common French/pharmaceutical words, each term linked only once per
+# page, capped at _XREF_MAX_LINKS, and never linking a page to itself.
+_XREF_MIN_LEN = 6
+_XREF_MAX_LINKS = 15
+
+# Common French + pharmaceutical words that occur inside substance/brand names
+# (salts, dosage forms, generic vocabulary) but must NEVER become links: they are
+# frequent in RCP prose and would produce noisy, wrong cross-links.
+_XREF_STOP = frozenset("""
+SODIUM CHLORHYDRATE SULFATE ACIDE POTASSIUM CALCIUM MAGNESIUM MONOHYDRATE
+DIHYDRATE ANHYDRE HYDROXYDE PHOSPHATE CITRATE TARTRATE MALEATE MESILATE
+BROMHYDRATE ACETATE CHLORURE GLUCOSE FUMARATE GLUCONATE LACTATE NITRATE
+BENZOATE STEARATE OXALATE SUCCINATE DIPROPIONATE
+COMPRIME COMPRIMES GELULE GELULES POUDRE SUSPENSION INJECTABLE PELLICULE
+PELLICULEE ENROBE ENROBEE SECABLE DISPERSIBLE EFFERVESCENT EFFERVESCENTE
+LIBERATION PROLONGEE MODIFIEE FLACON AMPOULE SACHET BUVABLE ORALE RECTALE
+NASALE CUTANEE VAGINALE OPHTALMIQUE SOLUTION SOLVANT EMULSION DISPERSION
+GRANULES POMMADE COLLYRE GOUTTES UNIDOSE RECIPIENT PERFUSION SIROP CREME
+MICROGRAMMES MILLIGRAMMES GASTRORESISTANT GASTRORESISTANTE LYOPHILISAT
+INHIBITEUR INHIBITEURS ENZYME RECEPTEUR RECEPTEURS SYSTEME TRAITEMENT
+PATIENT PATIENTS EFFETS INDICATION POSOLOGIE GROSSESSE ALLAITEMENT VITAMINE
+VITAMINES HORMONE PROTEINE PROTEINES HUMAINE HUMAIN ADULTE ADULTES ENFANT
+ENFANTS ASSOCIATION RESISTANT PLAQUETTAIRE PLASMATIQUE SANGUINE CELLULE
+CELLULES DILUTION DILUTIONS DEGRE COMPRISE COMPRISES HERBA PLANTA RADIX
+FOLIUM RECOMBINANT ACTIVITE BYPASSING FACTEUR COAGULATION IMMUNOGLOBULINE
+ALLERGENIQUE POLYOSIDE
+""".split())
+
+
+def _make_fold_table() -> dict[int, int]:
+    """Length-preserving fold: lowercase -> uppercase, accented Latin -> base
+    ASCII, everything else unchanged. Used so a text node's folded form aligns
+    1:1 (same length) with the original, letting match offsets on the folded
+    string index straight back into the original text (which keeps its case and
+    accents in the visible link)."""
+    table: dict[int, int] = {lo: lo - 32 for lo in range(ord("a"), ord("z") + 1)}
+    for chars, base in (
+        ("àâäáãå", "A"), ("ç", "C"), ("èéêë", "E"), ("ìíîï", "I"),
+        ("ñ", "N"), ("òóôöõ", "O"), ("ùúûü", "U"), ("ýÿ", "Y"),
+    ):
+        for c in chars:
+            table[ord(c)] = ord(base)
+            table[ord(c.upper())] = ord(base)
+    return table
+
+
+_FOLD_TABLE = _make_fold_table()
+
+
+def build_xref_index(names: dict[str, str]) -> dict[str, tuple[str, str, str]]:
+    """Map a linkable term (accent-folded uppercase word) -> canonical target
+    ``(cis, slug, display_name)``.
+
+    Terms come from two sources: each drug's BRAND ROOT (the first clean word of
+    its denomination, e.g. DOLIPRANE) and, for MONO-substance drugs only, its
+    ACTIVE-SUBSTANCE tokens (e.g. RITONAVIR). Restricting substances to
+    mono-substance drugs keeps "paracétamol" pointing at a paracetamol drug
+    rather than some combination product that merely contains it. A term is only
+    kept if it also appears in the frequency list of real drug/substance names:
+    that whitelist is what stops descriptive words baked into substance
+    denominations (e.g. STAMARIL's "virus de la fièvre jaune", HOLOCLAR's
+    "cellules ... contenant ...") from turning common words like "fièvre" or
+    "contenant" into links. Per term the target is chosen by prescription
+    frequency (mono targets preferred, then the frequency score from the same
+    list scrape-rcp.py uses, then file order), so e.g. RITONAVIR -> NORVIR,
+    OMEPRAZOLE -> MOPRAL. Returns {} when CIS_bdpm.txt or the frequency list is
+    missing (nothing safe to link)."""
+    if not BDPM_PATH.exists() or not FREQUENCY_PATH.exists():
+        return {}
+    catalog = bdpm.read_catalog(BDPM_PATH)
+    signals = bdpm.substance_signals(catalog, COMPO_PATH, GENER_PATH)
+    single, multi, p25 = bdpm.load_frequency(FREQUENCY_PATH)
+    scores, _ = bdpm.score_catalog(signals, single, multi, p25)
+    # Only real drug/substance names (single-word frequency terms) may become
+    # link terms; this whitelist is the primary false-positive guard.
+    whitelist = set(single)
+    order = {cis: i for i, (cis, _) in enumerate(catalog)}
+    keep = {cis for cis, _ in catalog}
+
+    # Composition: per CIS, the count of distinct active principles (distinct
+    # "numéro de liaison SA/FT", column 7 -> mono when 1) and the union of
+    # active-substance-denomination tokens (column 3).
+    liaisons: dict[str, set[str]] = {}
+    sub_tokens: dict[str, set[str]] = {}
+    if COMPO_PATH.exists():
+        with COMPO_PATH.open(encoding="latin-1") as fh:
+            for line in fh:
+                parts = line.split("\t")
+                if len(parts) <= 7:
+                    continue
+                cis = parts[0].strip()
+                if cis not in keep:
+                    continue
+                liaisons.setdefault(cis, set()).add(parts[7].strip())
+                sub_tokens.setdefault(cis, set()).update(bdpm.tokens(parts[3]))
+
+    best: dict[str, tuple[tuple, str]] = {}
+
+    def consider(term: str, cis: str, mono: bool) -> None:
+        if (len(term) < _XREF_MIN_LEN or term not in whitelist
+                or term in _XREF_STOP or not term.isalpha()):
+            return
+        key = (mono, scores.get(cis, 0.0), -order[cis])
+        cur = best.get(term)
+        if cur is None or key > cur[0]:
+            best[term] = (key, cis)
+
+    for cis, denom in catalog:
+        head = denom.split(",")[0].strip()
+        if not head:
+            continue
+        first = head.split()[0]  # brand root: a single clean alpha word only
+        if first.isalpha():  # False for combos like "LOPINAVIR/RITONAVIR"
+            mono = len(liaisons.get(cis, ())) <= 1
+            for t in bdpm.tokens(first):
+                consider(t, cis, mono)
+    for cis, toks in sub_tokens.items():
+        if len(liaisons.get(cis, ())) == 1:  # substances: mono-substance drugs only
+            for t in toks:
+                consider(t, cis, True)
+
+    xref: dict[str, tuple[str, str, str]] = {}
+    for term, (_, cis) in best.items():
+        name = names.get(cis)
+        if name:  # only link to a page we can name (and thus slug) deterministically
+            xref[term] = (cis, f"{cis}-{slugify(name)}", name)
+    return xref
+
+
+def _skip_text(el) -> bool:
+    """True for elements whose text must not be linkified: existing anchors (no
+    nested links) and section headings / the denomination (keep titles clean)."""
+    tag = el.tag
+    if not isinstance(tag, str):
+        return True  # comments / processing instructions
+    if tag.lower() == "a":
+        return True
+    cls = el.get("class") or ""
+    return "AmmAnnexeTitre" in cls or "AmmDenomination" in cls
+
+
+def _match_spans(text: str, xref, cur_cis, state):
+    """Find non-overlapping term matches in ``text``: a list of
+    ``(start, end, matched_text, slug)`` or None. Whole-word (matches run on the
+    accent-folded text, whose runs of [A-Z0-9] are whole words), each term linked
+    once per page, self-links dropped, budget in ``state`` respected."""
+    folded = text.translate(_FOLD_TABLE)
+    spans = []
+    for m in re.finditer(r"[A-Z0-9]+", folded):
+        if state["left"] <= 0:
+            break
+        word = m.group()
+        if word in state["terms"]:
+            continue  # link each term only once per page (first occurrence)
+        hit = xref.get(word)
+        if hit is None:
+            continue
+        cis, slug, disp = hit
+        if cis == cur_cis:
+            continue  # never link a page to itself
+        s, e = m.start(), m.end()
+        spans.append((s, e, text[s:e], slug))
+        state["terms"].add(word)
+        state["left"] -= 1
+        if slug not in state["slugs"]:
+            state["slugs"].add(slug)
+            state["links"].append((slug, disp))
+    return spans or None
+
+
+def _linkify(inner, xref, cur_cis) -> list[tuple[str, str]]:
+    """Wrap dictionary-term mentions in ``inner`` (an lxml element) with <a>
+    links, in place, and return the ordered distinct ``(slug, display)`` targets
+    linked (for the "Médicaments liés" section). No-op returning [] when the xref
+    index is empty."""
+    if not xref:
+        return []
+    state = {"terms": set(), "slugs": set(), "links": [], "left": _XREF_MAX_LINKS}
+    # Snapshot text carriers BEFORE mutating (inserting <a> nodes changes the
+    # tree): each element's own text, and each child's tail (text after it in the
+    # parent). Insertion positions are recomputed at apply time, so processing
+    # order is safe.
+    carriers = []  # (parent, child_or_None, text); child None => parent.text
+    for el in inner.iter():
+        if not _skip_text(el) and el.text:
+            carriers.append((el, None, el.text))
+        for child in el:
+            if child.tail:
+                carriers.append((el, child, child.tail))
+    for parent, child, text in carriers:
+        if state["left"] <= 0:
+            break
+        spans = _match_spans(text, xref, cur_cis, state)
+        if not spans:
+            continue
+        anchors = []
+        for i, (s, e, mtext, slug) in enumerate(spans):
+            a = lxml_html.Element("a")
+            a.set("class", "drug-xref")
+            a.set("href", f"/rcp/{slug}")
+            a.text = mtext
+            nxt = spans[i + 1][0] if i + 1 < len(spans) else len(text)
+            a.tail = text[e:nxt]
+            anchors.append(a)
+        head = text[: spans[0][0]]
+        if child is None:  # parent.text: links go at the front, before any children
+            parent.text = head
+            for j, a in enumerate(anchors):
+                parent.insert(j, a)
+        else:  # child.tail: links go right after that child
+            child.tail = head
+            idx = parent.index(child)
+            for j, a in enumerate(anchors):
+                parent.insert(idx + 1 + j, a)
+    return state["links"]
+
+
+def _xref_html(links: list[tuple[str, str]]) -> str:
+    """The bottom-of-page "Médicaments liés" section listing the distinct drugs
+    linked from this RCP's text. Empty string when nothing was linked."""
+    if not links:
+        return ""
+    items = "".join(
+        f'<li><a href="/rcp/{_esc(slug)}">{_esc(disp)}</a></li>' for slug, disp in links
+    )
+    return (
+        '<details class="drug-xref-list">'
+        "<summary>Médicaments liés cités dans ce texte</summary>"
+        f"<ul>{items}</ul>"
+        '<p class="drug-xref-note">Liens ajoutés automatiquement par justelesRCP '
+        "d'après les noms de médicaments et de substances cités ci-dessus ; "
+        "ils ne font pas partie du texte officiel de l'ANSM.</p>"
+        "</details>"
+    )
+
+
 # ANSM cruft we strip so a single stylesheet can own the look.
 _STRIP_XPATH = (
     "//img[contains(@src, 'BackToTop')]"  # "back to top" arrows
@@ -298,12 +561,17 @@ def _build_toc(inner) -> list[tuple[str, str]]:
     return toc
 
 
-def clean_rcp(raw: str) -> tuple[str, str, list[tuple[str, str]]]:
-    """Return (denomination, cleaned_inner_html, toc) for one RCP document.
+def clean_rcp(
+    raw: str, cis: str = "", xref: dict[str, tuple[str, str, str]] | None = None
+) -> tuple[str, str, list[tuple[str, str]], list[tuple[str, str]]]:
+    """Return (denomination, cleaned_inner_html, toc, xref_links) for one RCP.
 
     Keeps the semantic structure (section anchors, headings, paragraphs) but
     removes ANSM decoration and inline font styling so style.css can reskin it.
-    The toc is the list of top-level sections for the sidebar navigation.
+    The toc is the list of top-level sections for the sidebar navigation; when an
+    ``xref`` index is given, mentions of other drugs/substances in the body are
+    wrapped in <a> links (skipping ``cis``'s own page) and the distinct targets
+    are returned as ``xref_links`` for the "Médicaments liés" section.
     """
     doc = lxml_html.fromstring(raw)
     for node in doc.xpath(_STRIP_XPATH):
@@ -323,10 +591,13 @@ def clean_rcp(raw: str) -> tuple[str, str, list[tuple[str, str]]]:
     body = doc.xpath("//div[@id='textDocument']")
     inner = body[0] if body else doc
     toc = _build_toc(inner)
+    # Inject cross-drug backlinks after the toc is built (so section ids/titles
+    # are captured from the untouched headings) but before serialisation.
+    xref_links = _linkify(inner, xref or {}, cis)
     cleaned = "".join(
         lxml_html.tostring(c, encoding="unicode") for c in inner.iterchildren()
     )
-    return denom, cleaned, toc
+    return denom, cleaned, toc, xref_links
 
 
 # --- A-Z browse pages -------------------------------------------------------
@@ -434,11 +705,14 @@ def compress(path: Path) -> None:
 # --- per-record rendering, run in a worker process pool ---------------------
 _NAMES: dict[str, str] = {}
 _TPL = ""
+_XREF: dict[str, tuple[str, str, str]] = {}
 
 
-def _init_worker(names: dict[str, str], tpl: str) -> None:
-    global _NAMES, _TPL
-    _NAMES, _TPL = names, tpl
+def _init_worker(
+    names: dict[str, str], tpl: str, xref: dict[str, tuple[str, str, str]] | None = None
+) -> None:
+    global _NAMES, _TPL, _XREF
+    _NAMES, _TPL, _XREF = names, tpl, xref or {}
 
 
 def _toc_html(toc: list[tuple[str, str]]) -> str:
@@ -504,7 +778,7 @@ def render_record(item: tuple[str, str, str]) -> dict[str, str] | None:
     """Clean one RCP, write its page + precompressed siblings, return index row."""
     cis, raw, asof = item
     try:
-        denom, cleaned, toc = clean_rcp(raw)
+        denom, cleaned, toc, xref_links = clean_rcp(raw, cis, _XREF)
     except Exception:  # a few dumps have malformed markup
         return None
     name = _NAMES.get(cis) or denom or f"RCP {cis}"
@@ -515,6 +789,7 @@ def render_record(item: tuple[str, str, str]) -> dict[str, str] | None:
         .replace("{{TOC}}", _toc_html(toc))
         .replace("{{ASOF}}", _asof_html(_ansm_date(cleaned), asof))
         .replace("{{CONTENT}}", cleaned)
+        .replace("{{XREF}}", _xref_html(xref_links))
     )
     out = DIST / "rcp" / f"{slug}.html"
     out.write_text(page, encoding="utf-8")
@@ -530,6 +805,10 @@ def main() -> None:
 
     print(f"build justelesRCP v{__version__}")
     names = load_names()
+    # Cross-drug backlink index (term -> canonical target page). Built once and
+    # shared read-only with every worker; empty when the BDPM inputs are absent.
+    xref = build_xref_index(names)
+    print(f"  cross-drug backlink terms: {len(xref)}")
     # Per-CIS scrape dates stamp overlay pages with a real "as of" date; baseline
     # pages fall back to BASELINE_DATE. Loaded once, read inside records().
     scrape_dates = _load_scrape_dates()
@@ -541,7 +820,7 @@ def main() -> None:
     # Incremental cache: reuse a record's page when its inputs are unchanged and
     # its output files still exist. A build-code or template change flips the
     # global key and forces a full rebuild; a version-only bump does not.
-    global_key = _global_key(page_tpl)
+    global_key = _global_key(page_tpl, xref)
     prev = _load_manifest()
     prev_records = prev.get("records", {}) if prev.get("global") == global_key else {}
 
@@ -642,7 +921,7 @@ def main() -> None:
     # Parsing + brotli are CPU-bound and independent per record -> fan out.
     workers = max(1, (os.cpu_count() or 2) - 1)
     print(f"  rendering with {workers} workers ({len(prev_records)} cached)...")
-    with Pool(workers, initializer=_init_worker, initargs=(names, page_tpl)) as pool:
+    with Pool(workers, initializer=_init_worker, initargs=(names, page_tpl, xref)) as pool:
         for i, entry in enumerate(
             pool.imap_unordered(render_record, misses(), chunksize=8)
         ):
