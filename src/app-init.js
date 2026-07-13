@@ -20,20 +20,23 @@
     });
   }
 
-  // RCP freshness banner: turn the baked absolute "as of" date into a relative
-  // age ("il y a X") and flag data older than a year. Runs only on RCP pages
-  // (the [data-rcp-asof] element is absent elsewhere). build.py bakes the
-  // absolute date so no-JS readers still see it; we only enhance it here, which
-  // keeps the page cacheable while the age stays correct without a rebuild.
+  // RCP freshness banner. Two baked dates, distinct on purpose (see build.py
+  // _asof_html): data-rcp-ansm is ANSM's own revision date (the headline "à jour
+  // au …", .rcp-primary), and data-rcp-asof is when WE last captured the copy
+  // (.rcp-checked line). We turn each absolute date into a relative age here
+  // (page stays cacheable) and, keyed on OUR capture age only, add a soft
+  // "notre copie" notice: a stable old RCP is still ANSM's current text, but a
+  // copy we have not re-checked in over a year may lag their live version.
+  // Runs only on RCP pages (the element is absent elsewhere).
   (function () {
-    const el = document.querySelector("[data-rcp-asof]");
+    const el = document.querySelector("[data-rcp-asof], [data-rcp-ansm]");
     if (!el) return;
-    const iso = (el.getAttribute("data-rcp-asof") || "").trim();
-    const when = new Date(iso + "T00:00:00Z");
-    if (isNaN(when.getTime())) return;
-    const days = Math.floor((Date.now() - when.getTime()) / 86400000);
-    if (days < 0) return; // future date (clock skew): leave the baked text alone
 
+    function ageDays(iso) {
+      const when = new Date(iso + "T00:00:00Z");
+      if (isNaN(when.getTime())) return NaN;
+      return Math.floor((Date.now() - when.getTime()) / 86400000);
+    }
     function humanAge(d) {
       if (d < 1) return "aujourd'hui";
       if (d < 31) return "il y a " + d + " jour" + (d > 1 ? "s" : "");
@@ -41,23 +44,57 @@
       const yr = Math.floor(d / 365);
       return "il y a " + yr + " an" + (yr > 1 ? "s" : "");
     }
-
-    try {
-      const dateStr = new Intl.DateTimeFormat("fr-FR", {
-        day: "numeric",
-        month: "long",
-        year: "numeric",
-      }).format(when);
-      el.textContent =
-        "Informations à jour au " + dateStr + " (" + humanAge(days) + ").";
-    } catch (_) {
-      /* Intl unavailable: keep build.py's baked absolute date. */
+    function frDate(iso) {
+      try {
+        return new Intl.DateTimeFormat("fr-FR", {
+          day: "numeric",
+          month: "long",
+          year: "numeric",
+        }).format(new Date(iso + "T00:00:00Z"));
+      } catch (_) {
+        return null; // Intl unavailable: keep build.py's baked absolute date
+      }
     }
-    if (days > 365) {
+
+    const ansmIso = (el.getAttribute("data-rcp-ansm") || "").trim();
+    const asofIso = (el.getAttribute("data-rcp-asof") || "").trim();
+
+    // Headline: ANSM's revision date when known, else our capture date.
+    const headIso = ansmIso || asofIso;
+    const headDays = ageDays(headIso);
+    const primary = el.querySelector(".rcp-primary");
+    if (primary && !isNaN(headDays) && headDays >= 0) {
+      const d = frDate(headIso);
+      if (d) {
+        primary.textContent =
+          "Informations à jour au " + d + " (" + humanAge(headDays) + ").";
+      }
+    }
+
+    // Small secondary line: when justelesRCP last verified the copy against ANSM.
+    const checked = el.querySelector(".rcp-checked");
+    const asofDays = ageDays(asofIso);
+    if (checked && !isNaN(asofDays) && asofDays >= 0) {
+      const d = frDate(asofIso);
+      if (d) {
+        checked.textContent =
+          "Version vérifiée par justelesRCP le " +
+          d +
+          " (" +
+          humanAge(asofDays) +
+          ").";
+      }
+    }
+
+    // "Our copy is old" notice, keyed on OUR capture age (never the ANSM
+    // revision age). The refresh button below fetches the live version on demand.
+    if (!isNaN(asofDays) && asofDays > 365) {
       el.classList.add("stale");
-      el.append(
-        " Ces informations datent de plus d'un an ; vérifiez une source à jour."
-      );
+      const warn = document.createElement("span");
+      warn.className = "rcp-warn";
+      warn.textContent =
+        "Notre copie n'a pas été actualisée depuis plus d'un an ; utilisez « Rafraîchir maintenant » pour récupérer la dernière version publiée par l'ANSM.";
+      el.append(warn);
     }
   })();
 

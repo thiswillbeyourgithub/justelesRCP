@@ -172,17 +172,19 @@ a:hover { text-decoration: underline; }
 }
 
 .rcp .cis { color: var(--muted); font-size: .85rem; margin: 0 0 1.5rem; }
-/* Freshness banner: how old the shown RCP data is (see app-init.js). ".stale"
-   is added client-side when the data is older than a year. */
+/* Freshness banner: ANSM's own revision date (.rcp-primary, the headline) plus
+   a small "verified by us" line (.rcp-checked); see app-init.js. ".stale" is
+   added client-side when OUR copy (not ANSM's text) is older than a year, which
+   surfaces the .rcp-warn notice. */
 .rcp-asof {
   margin: 0 0 1.5rem; padding: .5rem .8rem; font-size: .85rem;
   color: var(--muted); background: var(--card);
   border: 1px solid var(--line); border-left: 3px solid var(--muted);
   border-radius: .4rem;
 }
-.rcp-asof.stale {
-  color: #b45309; border-color: #b45309; font-weight: 600;
-}
+.rcp-checked { display: block; margin-top: .3rem; font-size: .9em; opacity: .75; }
+.rcp-asof.stale { border-color: #b45309; border-left-color: #b45309; }
+.rcp-warn { display: block; margin-top: .5rem; color: #b45309; font-weight: 600; }
 /* On-demand refresh control (built by app-init.js when the companion service is
    reachable). Understated so it sits quietly under the freshness banner. */
 .rcp-refresh { margin: -0.8rem 0 1.5rem; font-size: .85rem; }

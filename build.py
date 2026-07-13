@@ -44,7 +44,7 @@ from pathlib import Path
 import brotli
 from lxml import html as lxml_html
 
-__version__ = "0.9.3"  # single source of truth; bump patch/minor per change
+__version__ = "0.10.0"  # single source of truth; bump patch/minor per change
 
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
@@ -158,6 +158,35 @@ def _fr_date(iso: str) -> str:
     """'2022-05-02' -> '2 mai 2022' (human French date for the freshness banner)."""
     year, month, day = iso.split("-")
     return f"{int(day)} {_FR_MONTHS[int(month) - 1]} {year}"
+
+
+# ANSM stamps every RCP body with its own revision date, e.g.
+# <span class="DateNotif">ANSM - Mis à jour le : 07/02/2022</span>. All ~12k
+# baseline pages and every live scrape carry it. We anchor on the class and grab
+# the first DD/MM/YYYY in that element, tolerating extra classes/whitespace/
+# entities without depending on the exact "Mis à jour le" wording.
+_ANSM_DATE_RE = re.compile(
+    r'class="[^"]*\bDateNotif\b[^"]*"[^>]*>[^<]*?(\d{1,2})/(\d{1,2})/(\d{4})'
+)
+
+
+def _ansm_date(html: str) -> str:
+    """ANSM's own 'Mis à jour le' revision date (from the DateNotif element),
+    as ISO 'YYYY-MM-DD', or '' if absent/unparseable.
+
+    This is when the *official text* was last revised, which is distinct from our
+    capture/scrape date (see _asof_html): a drug ANSM last touched in 2021 is
+    still its current official text, so this is the meaningful headline date to
+    show the reader. Parsed from the cleaned HTML so it matches what is on the
+    page byte-for-byte."""
+    m = _ANSM_DATE_RE.search(html)
+    if not m:
+        return ""
+    day, month, year = (int(g) for g in m.groups())
+    try:
+        return date(year, month, day).isoformat()
+    except ValueError:  # a malformed date like 32/13/2022
+        return ""
 
 
 def _load_scrape_dates() -> dict[str, str]:
@@ -434,17 +463,40 @@ def _toc_html(toc: list[tuple[str, str]]) -> str:
     )
 
 
-def _asof_html(asof: str) -> str:
-    """Top-of-page freshness banner: the absolute 'as of' date, baked so that
-    no-JS readers still see it. app-init.js turns it into a relative age
-    ('il y a X') and flags data older than a year, client-side, so the page stays
-    cacheable and the age stays correct without a rebuild. Empty string when the
-    date is unknown (nothing to show)."""
-    if not asof:
+def _asof_html(ansm: str, asof: str) -> str:
+    """Top-of-page freshness banner, built from two distinct dates:
+
+    - ``ansm``: ANSM's own 'Mis à jour le' revision date (see _ansm_date). This
+      is the headline 'à jour au' date the reader sees, because it is when the
+      official text was last revised. Baked as ``data-rcp-ansm``.
+    - ``asof``: OUR capture date (BASELINE_DATE for the 2022 dump, or the scrape
+      ``last_fetch`` for an overlay). Shown as a small 'vérifiée par justelesRCP
+      le' line and baked as ``data-rcp-asof``; app-init.js also keys the >1-year
+      'notre copie' notice AND the on-demand refresh off it, so it MUST stay on
+      the element even though ``ansm`` is what we headline.
+
+    Absolute dates are baked so no-JS readers still see them; app-init.js turns
+    each into a relative age client-side, keeping the page cacheable. Returns ''
+    when no date is known (nothing to show). If ANSM's date is somehow missing
+    the capture date becomes the headline, so the banner is never dateless."""
+    if not ansm and not asof:
         return ""
+    attrs = ""
+    if ansm:
+        attrs += f' data-rcp-ansm="{_esc(ansm)}"'
+    if asof:
+        attrs += f' data-rcp-asof="{_esc(asof)}"'
+    head = ansm or asof
+    checked = (
+        f'<span class="rcp-checked">Version vérifiée par justelesRCP le '
+        f"{_esc(_fr_date(asof))}.</span>"
+        if ansm and asof  # only worth showing when it differs from the headline
+        else ""
+    )
     return (
-        f'<p class="rcp-asof" data-rcp-asof="{_esc(asof)}">'
-        f"Informations à jour au {_esc(_fr_date(asof))}.</p>"
+        f'<p class="rcp-asof"{attrs}>'
+        f'<span class="rcp-primary">Informations à jour au '
+        f"{_esc(_fr_date(head))}.</span>{checked}</p>"
     )
 
 
@@ -461,7 +513,7 @@ def render_record(item: tuple[str, str, str]) -> dict[str, str] | None:
         _TPL.replace("{{TITLE}}", _esc(name))
         .replace("{{CIS}}", _esc(cis))
         .replace("{{TOC}}", _toc_html(toc))
-        .replace("{{ASOF}}", _asof_html(asof))
+        .replace("{{ASOF}}", _asof_html(_ansm_date(cleaned), asof))
         .replace("{{CONTENT}}", cleaned)
     )
     out = DIST / "rcp" / f"{slug}.html"
