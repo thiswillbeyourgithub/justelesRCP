@@ -16,9 +16,11 @@ for-profit medicine sites.
 - Client-side instant search over ~15,600 medicines, plus crawlable A-Z browse
   pages.
 - Cross-drug backlinks: each RCP page automatically links the drug and substance
-  names it mentions (e.g. "ritonavir", "carbamazépine") to those drugs' own
-  pages, with a "Médicaments liés" (related medicines) box at the foot. These
-  links are added by justelesRCP and are not part of the official ANSM text.
+  names it mentions (e.g. "oméprazole", "carbamazépine") to those drugs' own
+  pages, with a "Médicaments liés" (related medicines) box at the foot. Only
+  substances that have an RCP page in the dataset are linked (never a dead
+  link). These links are added by justelesRCP and are not part of the official
+  ANSM text.
 - Precompressed (brotli + gzip), served by a hardened, read-only Caddy
   container.
 - Privacy-respecting analytics (umami: no cookies, no ad tracking). Hosted in

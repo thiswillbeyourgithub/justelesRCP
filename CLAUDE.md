@@ -87,7 +87,19 @@ Key facts that aren't obvious from a single file:
   drug/substance names** (the primary false-positive guard: it stops descriptive
   words baked into substance denominations, e.g. STAMARIL's "virus de la fièvre
   jaune", from linkifying "fièvre") plus an `_XREF_STOP` salt/dosage-form
-  stoplist. The whole index is folded into the incremental-build `_global_key`
+  stoplist. It is ALSO restricted to link **only CIS that actually render a
+  page**: ~15% of CIS have an empty RCP and are pageless, so a target drawn from
+  the full name catalog can 404 (e.g. HELICOBACTER's only carriers are pageless
+  breath-test diagnostics, and NORVIR/ritonavir is EMA-centrally-authorized with
+  an empty ANSM RCP). `build_xref_index(names, page_cis)` rejects any target not
+  in `page_cis`; a term whose best-scored carrier is pageless falls back to its
+  best carrier that has a page, or drops out. The full build computes `page_cis`
+  via `_present_cis()` (the baseline CSV presence set, cached in
+  `dist/.rcp-present.json` keyed by the frozen CSV's size+mtime so it is not
+  reparsed every build, then adjusted by overlays exactly as `records()` resolves
+  them); the refresh service, which has no CSV, uses `page_cis_from_dist()` (glob
+  of the already-built `dist/rcp/*.html`). The whole index is folded into the
+  incremental-build `_global_key`
   (a page's links depend on the WHOLE index, not just its own inputs), so a
   changed dictionary busts the cache but an unchanged rebuild still reuses
   everything. Keep the contract in sync across `build_xref_index`/`_linkify`/
@@ -148,10 +160,13 @@ Key facts that aren't obvious from a single file:
   build logic: it imports `scrape-rcp.py` and `build.py` by path (importlib) and
   reuses `fetch_one` -> `extract_rcp` -> `write_overlay` -> `render_record` to
   fetch one live page and rebuild just that one `dist/rcp/<slug>.html` (+ .gz/.br).
-  It also calls `build_xref_index()` once at startup and passes the result into
-  `build._init_worker`, so a refreshed page keeps the SAME cross-drug backlinks a
-  full build makes (that index needs the COMPO/GENER/frequency files, mounted
-  read-only, see the hardening notes; absent them it degrades to no backlinks).
+  It also calls `build_xref_index(names, page_cis)` once at startup and passes the
+  result into `build._init_worker`, so a refreshed page keeps the SAME cross-drug
+  backlinks a full build makes (that index needs the COMPO/GENER/frequency files,
+  mounted read-only, see the hardening notes; absent them it degrades to no
+  backlinks). Its `page_cis` comes from `build.page_cis_from_dist()` (a glob of the
+  mounted `dist/rcp/*.html`), not the CSV (which this container does not mount), so
+  its links target only pages that exist, same as the full build.
   A single worker thread serialises every outbound ANSM fetch behind a GLOBAL rate
   limit (`REFRESH_RATE_SECONDS` + jitter) and a per-CIS min-interval floor
   (`REFRESH_MIN_INTERVAL_SECONDS`, default 1h), so repeat clicks and many visitors

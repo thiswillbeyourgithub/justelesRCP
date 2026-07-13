@@ -17,10 +17,11 @@ ANSM / BDPM. Conçu comme une alternative légère aux sites de médicaments len
 - Recherche instantanée côté client sur ~15 600 médicaments, plus des pages de
   navigation A-Z indexables par les moteurs de recherche.
 - Liens croisés entre médicaments : chaque page RCP relie automatiquement les
-  noms de médicaments et de substances qu'elle cite (par ex. « ritonavir »,
+  noms de médicaments et de substances qu'elle cite (par ex. « oméprazole »,
   « carbamazépine ») vers leurs propres pages, avec un encart « Médicaments
-  liés » en bas. Ces liens sont ajoutés par justelesRCP et ne font pas partie
-  du texte officiel de l'ANSM.
+  liés » en bas. Seules les substances qui ont une page RCP dans le jeu de
+  données sont liées (jamais un lien mort). Ces liens sont ajoutés par
+  justelesRCP et ne font pas partie du texte officiel de l'ANSM.
 - Précompressé (brotli + gzip), servi par un conteneur Caddy durci en lecture
   seule.
 - Mesure d'audience respectueuse de la vie privée (umami : sans cookies, sans
