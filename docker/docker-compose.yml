@@ -73,6 +73,14 @@ services:
     build:
       context: ..
       dockerfile: docker/refresh.Dockerfile
+      args:
+        # Stamp the built image with the deploying commit so deploy.sh can verify
+        # what is actually live on the VPS (see refresh.Dockerfile's git.sha
+        # LABEL). deploy.sh exports GIT_SHA into the `docker compose up --build`
+        # environment; a plain local build with no GIT_SHA set falls back to
+        # "unknown". This is build-time only: it is NOT a runtime env var, so it
+        # deliberately stays out of env_file / env.example.
+        GIT_SHA: ${GIT_SHA:-unknown}
     container_name: justelesrcp-refresh
     restart: unless-stopped
     # Match the host user that owns ../data and ../dist so files the service

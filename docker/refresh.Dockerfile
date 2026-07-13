@@ -24,6 +24,17 @@ COPY src/rcp.html ./src/rcp.html
 # reach `docker logs` immediately.
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 
+# Stamp the git commit this image was built from, so deploy.sh can read it back
+# off the running container and confirm the VPS is running current code. This
+# guards against a stale/mismatched build, e.g. one baked from a mid-Syncthing
+# working tree (a new refresh-service.py alongside an old scrape-rcp.py). Declared
+# this late on purpose: when the SHA changes it only rebuilds this trivial
+# metadata layer, never the pip-install / COPY layers above. compose passes it via
+# build.args (deploy.sh -> GIT_SHA); a plain build with no SHA in the environment
+# falls back to "unknown" (the label is purely informational).
+ARG GIT_SHA=unknown
+LABEL git.sha=$GIT_SHA
+
 EXPOSE 8460
 # Listen on all interfaces so Caddy (same compose network) can reach it; it is
 # NOT published to the host (see compose: no ports:), only reachable via the proxy.
