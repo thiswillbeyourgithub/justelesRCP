@@ -109,6 +109,23 @@ Le script journalise une barre de progression avec estimation du temps restant e
 indique à chaque page si elle est demandée manuellement (`--only`, « user ») ou
 issue de la file automatique (« timer »).
 
+### Rafraîchir un RCP à la demande (service optionnel)
+
+Chaque page RCP possède un bouton « Rafraîchir maintenant », et une page dont les
+données ont plus d'un an se rafraîchit automatiquement au chargement. Les deux
+appellent un petit service compagnon (`refresh-service.py`, `POST
+/api/refresh/<cis>`) qui récupère la page ANSM en direct, écrit la surcharge et
+régénère cette seule page. C'est **la seule partie dynamique** du projet : elle
+tourne dans un conteneur séparé et durci (en lecture seule sauf trois chemins
+précis) pour que le serveur web, lui, reste entièrement en lecture seule, et un
+limiteur de débit global plus un plancher par médicament (plusieurs visiteurs sur
+la même page ne déclenchent qu'une seule requête) évitent de solliciter le site de
+l'ANSM. Tout est **facultatif** : `docker compose ... up` démarre le service, mais
+`docker compose ... up web` le laisse de côté ; sans lui, `/api/*` renvoie une
+erreur et le bouton signale simplement l'indisponibilité, le site restant 100 %
+statique. Les réglages (`REFRESH_*`) sont dans `docker/.env` ; voir
+`docker/env.example`.
+
 ## Source des données et licence
 
 Les données proviennent de la

@@ -102,6 +102,20 @@ between requests, with a random jitter added). The script logs a progress bar wi
 a time estimate and tags each page as manually requested (`--only`, "user") or
 coming from the automatic queue ("timer").
 
+### Refresh an RCP on demand (optional service)
+
+Every RCP page has a "Rafraîchir maintenant" (refresh now) button, and a page whose
+data is more than a year old refreshes itself on load. Both call a small companion
+service (`refresh-service.py`, `POST /api/refresh/<cis>`) that fetches the live ANSM
+page, writes the overlay and rebuilds that one page. It is **the only dynamic part**
+of the project: it runs in a separate, hardened container (read-only except three
+narrow paths) so the web server itself can stay fully read-only, and a global rate
+limit plus a per-drug floor (many visitors on the same page trigger a single fetch)
+keep it gentle on the ANSM site. It is entirely **optional**: `docker compose ... up`
+starts it, but `docker compose ... up web` leaves it out; without it, `/api/*`
+returns an error and the button simply reports it as unavailable, the site staying
+100% static. Tuning (`REFRESH_*`) lives in `docker/.env`; see `docker/env.example`.
+
 ## Data source and licence
 
 The data comes from the

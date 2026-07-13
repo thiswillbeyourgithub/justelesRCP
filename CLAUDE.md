@@ -7,8 +7,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 justelesRCP is a fast, ad-free static site serving the **RCP** (résumés des
 caractéristiques du produit) of medicines sold in France, sourced from the ANSM
 BDPM public dataset. It exists to be a lightweight alternative to slow, for-profit
-sites like vidal.fr. The whole thing is precomputed to static files; there is no
-application server at runtime.
+sites like vidal.fr. The whole thing is precomputed to static files; the only
+runtime code is an optional companion refresh service (see the architecture note
+below) that re-scrapes a single drug on demand behind a rate limit. Leave it out
+and the site is 100% static.
 
 **Language convention:** the website (page text, UI strings) is in French; the
 code, comments, and developer docs are in English. `README.md` is the French
@@ -112,6 +114,26 @@ Key facts that aren't obvious from a single file:
   nothing dynamic runs at serve time. `data/.scrape-manifest.json` holds per-CIS
   `last_fetch`/hash for the TTL. Keep the extraction envelope in sync with
   `clean_rcp`'s `div#textDocument` lookup if either changes.
+- **The on-demand refresh service is the only runtime component** (`refresh-service.py`,
+  a `uv` PEP 723 script; opt-in, off by default). The site is otherwise fully
+  static, but each RCP page has a "Rafraîchir maintenant" button and a >1-year
+  auto-refresh (both in `src/app-init.js`) that `POST /api/refresh/<cis>`. Caddy
+  reverse-proxies `/api/*` to this service, which runs as a SEPARATE hardened
+  container so the web server stays read-only. It does NOT duplicate the scrape or
+  build logic: it imports `scrape-rcp.py` and `build.py` by path (importlib) and
+  reuses `fetch_one` -> `extract_rcp` -> `write_overlay` -> `render_record` to
+  fetch one live page and rebuild just that one `dist/rcp/<slug>.html` (+ .gz/.br).
+  A single worker thread serialises every outbound ANSM fetch behind a GLOBAL rate
+  limit (`REFRESH_RATE_SECONDS` + jitter) and a per-CIS min-interval floor
+  (`REFRESH_MIN_INTERVAL_SECONDS`, default 1h), so repeat clicks and many visitors
+  on one stale page collapse to a single fetch; a bounded queue (`REFRESH_QUEUE_MAX`)
+  sheds load as "busy". Endpoints: `GET /api/health`, `GET /api/status/<cis>`
+  (asof + pending), `POST /api/refresh/<cis>` (returns fresh|queued|busy). It is
+  same-origin, so the strict `connect-src 'self'` CSP covers the button's fetches.
+  If the service is absent, `/api/*` just 502s and the button degrades gracefully,
+  so static-only deploys omit it entirely. Both `build.py` and `scrape-rcp.py`
+  guard `__main__`, so importing them must stay import-safe (no side effects at
+  module load); the refresh service depends on that.
 - **Every RCP page shows a freshness banner ("Informations à jour au …").**
   `build.py` bakes the *absolute* as-of date into the page as
   `data-rcp-asof="YYYY-MM-DD"` (`_asof_html`): `BASELINE_DATE` (`2022-05-02`) for
@@ -153,9 +175,10 @@ uv run scrape-rcp.py --limit 60   # refresh N RCPs from live ANSM into data/rcp/
                                   # RCP_SCRAPE_RATE_SECONDS (base gap between fetches);
                                   # logs a progress bar + ETA and the trigger (user/timer)
 uv run build.py           # build ./dist from ./data (overlay wins over the 2022 CSV)
-cp docker/env.example docker/.env                      # optional: umami analytics / DEV banner
-docker compose -f docker/docker-compose.yml up -d      # serve ./dist on :8459 (read-only, hardened)
-docker compose -f docker/docker-compose.yml up --build # after changing Caddyfile/compose
+uv run refresh-service.py # optional: run the on-demand refresh API on :8460 (behind Caddy /api/*)
+cp docker/env.example docker/.env                      # optional: umami analytics / DEV banner / refresh knobs
+docker compose -f docker/docker-compose.yml up -d      # serve ./dist on :8459 + refresh service (read-only, hardened)
+docker compose -f docker/docker-compose.yml up --build # after changing Caddyfile/compose/refresh.Dockerfile
 ```
 
 To rebuild after a data refresh: re-run `download-data.sh` then `uv run build.py`;
@@ -191,6 +214,19 @@ Restart is not needed (Caddy reads the mounted dir live), but a
 - `ANALYTICS_URL` must point at the umami **script** (`.../script.js`), not the
   instance base URL. `entrypoint.sh` validates this at startup (reachable AND
   serves JavaScript) and refuses to start otherwise, so a misconfig fails loud.
+- **The refresh service is a second, separately-hardened container** (compose
+  `refresh`, `docker/refresh.Dockerfile`), kept apart from `web` precisely so the
+  web server can stay fully read-only. It is `read_only: true`, `cap_drop: ALL`,
+  `no-new-privileges`, tmpfs `/tmp`, and is NOT published to the host (no `ports:`);
+  it is only reachable through Caddy's `/api/*` proxy. Its ONLY writable mounts are
+  the three narrow paths it must write (`data/rcp`, `dist/rcp`, and the
+  `data/.scrape-manifest.json` file); everything else, including the CIS->name map,
+  is mounted read-only. It runs as `${REFRESH_UID:-1000}:${REFRESH_GID:-1000}` so
+  the overlays and rebuilt pages it writes stay owned by the host user (clean
+  ownership + Syncthing). The manifest is bind-mounted as a single file, so it must
+  exist on the host before first `up` (run `scrape-rcp.py` once, or
+  `touch data/.scrape-manifest.json`), else Docker creates a directory in its place.
+  Runtime knobs come from `docker/.env` (`env_file`) as `REFRESH_*` / `RCP_OVERLAY_GZIP`.
 
 ## Gotchas
 
