@@ -58,12 +58,9 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
-import math
 import os
 import random
-import re
 import time
-import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -71,6 +68,8 @@ import click
 import httpx
 from loguru import logger
 from lxml import html as lxml_html
+
+import bdpm  # shared, pure-stdlib BDPM tokenising + frequency scoring
 
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
@@ -202,165 +201,6 @@ def save_manifest(manifest: dict) -> None:
         MANIFEST_PATH.write_text(payload, encoding="utf-8")
 
 
-def read_catalog() -> list[tuple[str, str]]:
-    """Return ``(cis, denomination)`` pairs from ``CIS_bdpm.txt`` in file order.
-
-    The official BDPM file is latin-1, tab-separated: column 0 is the 8-digit
-    CIS, column 1 the drug name (same source build.load_names reads for names).
-    File order is preserved and used as the stable tiebreak for equal scores.
-    """
-    catalog: list[tuple[str, str]] = []
-    with BDPM_PATH.open(encoding="latin-1") as fh:
-        for line in fh:
-            parts = line.split("\t")
-            cis = parts[0].strip()
-            if cis:
-                name = parts[1].strip() if len(parts) > 1 else ""
-                catalog.append((cis, name))
-    return catalog
-
-
-def _tokens(text: str) -> set[str]:
-    """Normalise a drug name/term to a set of comparable word tokens.
-
-    Uppercases, strips accents (paracétamol -> PARACETAMOL) and splits on any
-    non-alphanumeric run, so a term matches a denomination regardless of case,
-    accents, dosage punctuation or word order.
-    """
-    folded = unicodedata.normalize("NFKD", text.upper())
-    folded = folded.encode("ascii", "ignore").decode("ascii")
-    return {tok for tok in re.split(r"[^A-Z0-9]+", folded) if tok}
-
-
-def read_substance_signals(catalog: list[tuple[str, str]]) -> dict[str, set[str]]:
-    """Build, per CIS, the token pool used to match it against the frequency list.
-
-    Commercial names alone match only ~73% of drugs, because many brands hide
-    their active substance (XENAZINE, REMINYL, ENANTYUM ...). Two extra BDPM
-    exports recover a large slice of the rest by adding, to each CIS's name
-    tokens:
-
-    * ``CIS_COMPO_bdpm`` - the active-substance denomination(s) (column 3), so a
-      brand matches a *substance* frequency term (e.g. a REMINYL generic ->
-      GALANTAMINE).
-    * ``CIS_GENER_bdpm`` - the generic-group label, which reads
-      ``"<substance> <dose> - <reference brand> <dose>, <form>"``; folding it in
-      lets a generic also match its *reference brand* term.
-
-    Both files are optional. When neither is present this returns exactly the
-    name tokens, so matching degrades gracefully to the previous behaviour.
-    Only CIS already in ``catalog`` are populated (foreign CIS are ignored).
-    """
-    signals: dict[str, set[str]] = {cis: _tokens(name) for cis, name in catalog}
-
-    def _fold_column(path: Path, cis_col: int, text_col: int) -> None:
-        if not path.exists():
-            return
-        with path.open(encoding="latin-1") as fh:
-            for line in fh:
-                parts = line.split("\t")
-                if len(parts) <= max(cis_col, text_col):
-                    continue
-                cis = parts[cis_col].strip()
-                bucket = signals.get(cis)
-                if bucket is not None:
-                    bucket |= _tokens(parts[text_col])
-
-    _fold_column(COMPO_PATH, 0, 3)  # CIS -> substance denomination
-    _fold_column(GENER_PATH, 2, 1)  # generic-group label -> its member CIS
-    return signals
-
-
-def _percentile(values: list[float], pct: float) -> float:
-    """Linear-interpolated percentile (numpy default method); pct in [0, 1]."""
-    if not values:
-        return 0.0
-    ordered = sorted(values)
-    k = (len(ordered) - 1) * pct
-    lo = math.floor(k)
-    hi = math.ceil(k)
-    if lo == hi:
-        return float(ordered[lo])
-    return ordered[lo] * (hi - k) + ordered[hi] * (k - lo)
-
-
-def load_frequency(path: Path) -> tuple[dict[str, float], list[tuple[frozenset[str], float]], float]:
-    """Load a frequency list and return matchers plus the 25th-percentile score.
-
-    The file is JSONL with at least ``term`` (a drug/substance name) and ``score``
-    (higher = higher scrape priority), e.g.
-    ``{"term": "DOLIPRANE", "type": "brand", "score": 10}``. Terms are normalised
-    to tokens; single-word terms go into a fast ``{token: score}`` map and
-    multi-word terms into a ``[(token_set, score)]`` list matched by subset (so
-    "ACETYLSALICYLIQUE ACIDE" still matches "... ACIDE ACETYLSALICYLIQUE ..."). A
-    term seen twice keeps its highest score.
-
-    Returns ``(single, multi, p25)`` where ``p25`` is the 25th percentile of all
-    scores, used as the fallback priority for drugs no term matches.
-    """
-    single: dict[str, float] = {}
-    multi: list[tuple[frozenset[str], float]] = []
-    scores: list[float] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        row = json.loads(line)
-        term, score = row.get("term"), row.get("score")
-        if term is None or score is None:
-            continue
-        score = float(score)
-        scores.append(score)
-        toks = _tokens(term)
-        if len(toks) == 1:
-            word = next(iter(toks))
-            single[word] = max(single.get(word, score), score)
-        elif toks:
-            multi.append((frozenset(toks), score))
-    return single, multi, _percentile(scores, 0.25)
-
-
-def score_catalog(
-    signals: dict[str, set[str]],
-    single: dict[str, float],
-    multi: list[tuple[frozenset[str], float]],
-    fallback: float,
-) -> tuple[dict[str, float], set[str]]:
-    """Score every CIS by the best frequency term matching its signal tokens.
-
-    ``signals`` maps CIS -> token pool (name + substance + generic label, see
-    ``read_substance_signals``). A CIS scores the max over: single-word terms
-    present in its tokens, and multi-word terms whose whole token set is a subset
-    of its tokens. A CIS no term matches gets ``fallback`` (the p25 priority), so
-    it is still scraped at a middling rank rather than starved to the queue end.
-
-    Returns ``(scores, matched)`` where ``matched`` is the set of CIS that hit a
-    real term. This is tracked explicitly instead of inferred as ``score !=
-    fallback``: many terms carry a score equal to the p25 fallback, so a genuine
-    match at that score is indistinguishable from the fallback by value alone
-    (that conflation is what made the old queue under-report its own coverage).
-    """
-    scores: dict[str, float] = {}
-    matched: set[str] = set()
-    for cis, toks in signals.items():
-        best = max((single[t] for t in toks if t in single), default=None)
-        for term_toks, score in multi:
-            if (best is None or score > best) and term_toks <= toks:
-                best = score
-        if best is None:
-            scores[cis] = fallback
-        else:
-            scores[cis] = best
-            matched.add(cis)
-    return scores, matched
-
-
-def order_by_score(catalog: list[tuple[str, str]], scores: dict[str, float]) -> list[str]:
-    """Order CIS by descending score, breaking ties by original file order."""
-    order = {cis: i for i, (cis, _) in enumerate(catalog)}
-    return sorted((cis for cis, _ in catalog), key=lambda c: (-scores[c], order[c]))
-
-
 def is_due(entry: dict | None, ttl_days: int) -> bool:
     """Return True if a CIS should be (re)fetched given its manifest entry.
 
@@ -481,15 +321,15 @@ def main(limit: int, fetch_all: bool, only: tuple[str, ...], ttl_days: int,
     else:
         if not BDPM_PATH.exists():
             raise SystemExit(f"missing {BDPM_PATH} (run download-data.sh first)")
-        catalog = read_catalog()
+        catalog = bdpm.read_catalog(BDPM_PATH)
         # Order the queue by frequency score (falling back to CIS_bdpm file order
         # when no list is given): popular drugs get refreshed first.
         freq_path = frequency or (DEFAULT_FREQUENCY if DEFAULT_FREQUENCY.exists() else None)
         if freq_path:
-            signals = read_substance_signals(catalog)
-            single, multi, p25 = load_frequency(freq_path)
-            scores, matched = score_catalog(signals, single, multi, p25)
-            ordered = order_by_score(catalog, scores)
+            signals = bdpm.substance_signals(catalog, COMPO_PATH, GENER_PATH)
+            single, multi, p25 = bdpm.load_frequency(freq_path)
+            scores, matched = bdpm.score_catalog(signals, single, multi, p25)
+            ordered = bdpm.order_by_score(catalog, scores)
             if not COMPO_PATH.exists():
                 logger.warning(
                     "{} absent: matching on drug names only (re-run download-data.sh "
