@@ -89,6 +89,13 @@ services:
       # Read-only: the CIS -> name map (for page titles) and the RCP template are
       # baked into the image, but names must be current, so mount the map RO.
       - ../data/CIS_bdpm.txt:/app/data/CIS_bdpm.txt:ro
+      # Read-only: the composition + generic joins + frequency list, so a
+      # refreshed page gets the SAME cross-drug backlinks a full build produces
+      # (build_xref_index reads them). All optional; if a file is missing the
+      # rebuilt page just has fewer/no backlinks. deploy.sh rsyncs them.
+      - ../data/CIS_COMPO_bdpm.txt:/app/data/CIS_COMPO_bdpm.txt:ro
+      - ../data/CIS_GENER_bdpm.txt:/app/data/CIS_GENER_bdpm.txt:ro
+      - ../data/drugs_frequency.jsonl:/app/data/drugs_frequency.jsonl:ro
       # The ONLY writable locations (the "write just here" compromise): the
       # overlay dir, the rebuilt-page dir, and the scrape manifest file. The
       # manifest must exist on the host first (run scrape-rcp.py once, or

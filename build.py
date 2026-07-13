@@ -347,7 +347,9 @@ def build_xref_index(names: dict[str, str]) -> dict[str, tuple[str, str, str]]:
     list scrape-rcp.py uses, then file order), so e.g. RITONAVIR -> NORVIR,
     OMEPRAZOLE -> MOPRAL. Returns {} when CIS_bdpm.txt or the frequency list is
     missing (nothing safe to link)."""
-    if not BDPM_PATH.exists() or not FREQUENCY_PATH.exists():
+    # is_file (not exists): a missing OR stray-directory single-file mount (a bad
+    # bind mount in the refresh container) degrades to no backlinks, never a crash.
+    if not BDPM_PATH.is_file() or not FREQUENCY_PATH.is_file():
         return {}
     catalog = bdpm.read_catalog(BDPM_PATH)
     signals = bdpm.substance_signals(catalog, COMPO_PATH, GENER_PATH)
@@ -364,7 +366,7 @@ def build_xref_index(names: dict[str, str]) -> dict[str, tuple[str, str, str]]:
     # active-substance-denomination tokens (column 3).
     liaisons: dict[str, set[str]] = {}
     sub_tokens: dict[str, set[str]] = {}
-    if COMPO_PATH.exists():
+    if COMPO_PATH.is_file():
         with COMPO_PATH.open(encoding="latin-1") as fh:
             for line in fh:
                 parts = line.split("\t")

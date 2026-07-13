@@ -98,11 +98,17 @@ class Refresher:
         self._pending: set[str] = set()  # queued or currently being fetched
         self._manifest = scrape.load_manifest()
         self._last_fetch_monotonic = 0.0
-        # Prime build.py's render globals (names + page template) once, so
-        # render_record() can run outside its normal pool worker.
+        # Prime build.py's render globals (names + page template + cross-drug
+        # backlink index) once, so render_record() can run outside its normal pool
+        # worker AND a refreshed page carries the same "Médicaments liés" links a
+        # full build would produce (build_xref_index needs the BDPM composition +
+        # frequency files, mounted read-only into this container; absent them it
+        # returns {} and the rebuilt page simply has no backlinks).
         names = build.load_names()
         tpl = (build.SRC / "rcp.html").read_text(encoding="utf-8")
-        build._init_worker(names, tpl)
+        xref = build.build_xref_index(names)
+        logger.info("primed render: {} names, {} backlink terms", len(names), len(xref))
+        build._init_worker(names, tpl, xref)
         self._worker = threading.Thread(target=self._run, name="refresher", daemon=True)
 
     def start(self) -> None:

@@ -15,8 +15,9 @@ RUN pip install --no-cache-dir httpx lxml brotli loguru click
 WORKDIR /app
 # The service imports build.py and scrape-rcp.py by path and renders pages from
 # the RCP template, so all three scripts plus src/rcp.html must be in the image.
-# Everything else (data, dist) is bind-mounted at runtime by compose.
-COPY build.py scrape-rcp.py refresh-service.py ./
+# build.py and scrape-rcp.py both import the shared bdpm.py helper module, so it
+# ships too. Everything else (data, dist) is bind-mounted at runtime by compose.
+COPY build.py scrape-rcp.py refresh-service.py bdpm.py ./
 COPY src/rcp.html ./src/rcp.html
 
 # Read-only rootfs at runtime: don't try to write .pyc; log unbuffered so lines

@@ -69,7 +69,7 @@ def column_tokens(
     per CIS to seed link terms).
     """
     out: dict[str, set[str]] = {}
-    if not path.exists():
+    if not path.is_file():  # missing, or a stray dir from a bad single-file mount
         return out
     with path.open(encoding="latin-1") as fh:
         for line in fh:
