@@ -223,8 +223,14 @@ Restart is not needed (Caddy reads the mounted dir live), but a
   `no-new-privileges`, tmpfs `/tmp`, and is NOT published to the host (no `ports:`);
   it is only reachable through Caddy's `/api/*` proxy. Its ONLY writable mounts are
   the three narrow paths it must write (`data/rcp`, `dist/rcp`, and the
-  `data/.scrape-manifest.json` file); everything else, including the CIS->name map,
-  is mounted read-only. It runs as `${REFRESH_UID:-1000}:${REFRESH_GID:-1000}` so
+  `data/.scrape-manifest.json` file); everything else, including the CIS->name map
+  (`data/CIS_bdpm.txt`), is mounted read-only. Note BOTH single-file mounts
+  (`data/.scrape-manifest.json` AND `data/CIS_bdpm.txt`) must exist as real files on
+  the host before `up`, else Docker auto-creates a *directory* in their place and the
+  service crashes at startup (`load_manifest` / `load_names` hit IsADirectoryError).
+  `deploy.sh` handles both (heals a stray directory, writes `{}` for the manifest,
+  and rsyncs `CIS_bdpm.txt` since the main rsync excludes `/data`). It runs as
+  `${REFRESH_UID:-1000}:${REFRESH_GID:-1000}` so
   the overlays and rebuilt pages it writes stay owned by the host user (clean
   ownership + Syncthing). The manifest is bind-mounted as a single file, so it must
   exist on the host before first `up` (run `scrape-rcp.py` once, or
@@ -237,6 +243,11 @@ Restart is not needed (Caddy reads the mounted dir live), but a
   `scrape.save_manifest` writes it in place when its atomic temp+rename cannot work
   (a `.tmp` sibling is EROFS / renaming onto a bind-mount point is EBUSY); keep that
   fallback. Runtime knobs come from `docker/.env` (`env_file`) as `REFRESH_*` / `RCP_OVERLAY_GZIP`.
+  The refresh image's build context is the repo ROOT (compose `context: ..`), so a
+  root `.dockerignore` is REQUIRED to exclude `dist/` (~720M) and `data/` (~260M);
+  without it every `up --build` ships ~1GB to the daemon and can fail the build on a
+  small VPS ("no space left on device"), leaving no containers. The Dockerfile only
+  needs `build.py` / `scrape-rcp.py` / `refresh-service.py` / `src/rcp.html`.
 
 ## Gotchas
 
