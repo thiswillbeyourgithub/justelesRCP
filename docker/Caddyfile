@@ -31,9 +31,11 @@
 		# (zero runtime CPU). Falls back to on-the-fly encode above.
 		file_server {
 			precompressed br gzip
-			# Build-internal incremental-cache manifest (written into dist by
-			# build.py); never expose it over HTTP.
+			# Build-internal caches (written into dist by build.py): the
+			# incremental-build manifest and the baseline RCP-presence cache.
+			# Never expose them over HTTP.
 			hide .build-manifest.json
+			hide .rcp-present.json
 		}
 		# Pretty RCP URLs are stored as .html files.
 		try_files {path} {path}.html {path}/index.html
