@@ -179,6 +179,9 @@ uv run refresh-service.py # optional: run the on-demand refresh API on :8460 (be
 cp docker/env.example docker/.env                      # optional: umami analytics / DEV banner / refresh knobs
 docker compose -f docker/docker-compose.yml up -d      # serve ./dist on :8459 + refresh service (read-only, hardened)
 docker compose -f docker/docker-compose.yml up --build # after changing Caddyfile/compose/refresh.Dockerfile
+                                                       # OR the scripts baked into the refresh image
+                                                       # (build.py / scrape-rcp.py / refresh-service.py / src/rcp.html):
+                                                       # a plain `up` reuses the old image and ships stale code
 ```
 
 To rebuild after a data refresh: re-run `download-data.sh` then `uv run build.py`;
@@ -225,8 +228,15 @@ Restart is not needed (Caddy reads the mounted dir live), but a
   the overlays and rebuilt pages it writes stay owned by the host user (clean
   ownership + Syncthing). The manifest is bind-mounted as a single file, so it must
   exist on the host before first `up` (run `scrape-rcp.py` once, or
-  `touch data/.scrape-manifest.json`), else Docker creates a directory in its place.
-  Runtime knobs come from `docker/.env` (`env_file`) as `REFRESH_*` / `RCP_OVERLAY_GZIP`.
+  `touch data/.scrape-manifest.json`), else Docker creates a *directory* in its
+  place. `deploy.sh` heals this automatically (removes a stray directory and writes
+  `{}` before `up`), and `scrape.load_manifest` now tolerates a directory / empty /
+  invalid file (returns `{}`) so a misconfig degrades instead of crash-looping the
+  service; but a manual `docker compose up` on a fresh host still needs the file to
+  pre-exist. Because the container's `/app/data` is read-only except that one file,
+  `scrape.save_manifest` writes it in place when its atomic temp+rename cannot work
+  (a `.tmp` sibling is EROFS / renaming onto a bind-mount point is EBUSY); keep that
+  fallback. Runtime knobs come from `docker/.env` (`env_file`) as `REFRESH_*` / `RCP_OVERLAY_GZIP`.
 
 ## Gotchas
 
