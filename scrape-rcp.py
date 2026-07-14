@@ -280,6 +280,67 @@ def _progress(done: int, total: int, start: float, width: int = 24) -> str:
     return f"[{bar}] {frac * 100:3.0f}% {done}/{total} elapsed {_fmt_dur(elapsed)} eta {_fmt_dur(eta)}"
 
 
+def build_queue(
+    ttl_days: int,
+    *,
+    force: bool = False,
+    frequency: Path | None = None,
+    restrict: set[str] | None = None,
+) -> list[str]:
+    """Ordered list of CIS due to be (re)fetched, most-important-first.
+
+    Single source of truth for the scrape queue, shared by this script's batch
+    CLI (``main``) and the refresh service's optional startup freshening batch,
+    so both order by the SAME frequency scoring and honour the SAME TTL instead
+    of duplicating the logic.
+
+    Ordering is the frequency list (popular drugs first), falling back to the
+    ``CIS_bdpm`` file order when no list is present. ``restrict``, when given,
+    keeps only those CIS afterwards: the refresh service passes the set of CIS
+    that actually render a page, since it has no ``CIS_RCP.csv`` and must not
+    enqueue a pageless drug. A CIS is "due" when it was never fetched, previously
+    errored, or last fetched longer ago than ``ttl_days`` (see ``is_due``);
+    ``force`` returns every candidate regardless of the manifest.
+    """
+    if not BDPM_PATH.exists():
+        raise SystemExit(f"missing {BDPM_PATH} (run download-data.sh first)")
+    catalog = bdpm.read_catalog(BDPM_PATH)
+    # Order the queue by frequency score (falling back to CIS_bdpm file order
+    # when no list is given): popular drugs get refreshed first.
+    freq_path = frequency or (DEFAULT_FREQUENCY if DEFAULT_FREQUENCY.exists() else None)
+    if freq_path:
+        signals = bdpm.substance_signals(catalog, COMPO_PATH, GENER_PATH)
+        single, multi, p25 = bdpm.load_frequency(freq_path)
+        scores, matched = bdpm.score_catalog(signals, single, multi, p25)
+        ordered = bdpm.order_by_score(catalog, scores)
+        if not COMPO_PATH.exists():
+            logger.warning(
+                "{} absent: matching on drug names only (re-run download-data.sh "
+                "to add the substance/generic join)", COMPO_PATH.name,
+            )
+        logger.info(
+            "frequency {}: {} single + {} multi terms, p25={} fallback; "
+            "{}/{} CIS matched a term ({}%)",
+            freq_path.name, len(single), len(multi), p25,
+            len(matched), len(catalog), round(100 * len(matched) / len(catalog)),
+        )
+    else:
+        ordered = [cis for cis, _ in catalog]
+        logger.warning("no --frequency file; using CIS_bdpm file order")
+    if restrict is not None:
+        keep = set(restrict)
+        ordered = [c for c in ordered if c in keep]
+    manifest = load_manifest()
+    due = ordered if force else [c for c in ordered if is_due(manifest.get(c), ttl_days)]
+    logger.info(
+        "{} CIS in catalog{}, {} due (ttl={}d)",
+        len(catalog),
+        f", {len(ordered)} with a page" if restrict is not None else "",
+        len(due), ttl_days,
+    )
+    return due
+
+
 @click.command(context_settings={"help_option_names": ["-h", "--help"]})
 @click.option("--limit", type=int, default=60, show_default=True,
               help="Max drugs to (re)fetch this run. Ignored with --all/--only.")
@@ -319,38 +380,11 @@ def main(limit: int, fetch_all: bool, only: tuple[str, ...], ttl_days: int,
         targets = list(dict.fromkeys(only))  # dedupe, keep order
         logger.info("scraping {} explicitly requested CIS", len(targets))
     else:
-        if not BDPM_PATH.exists():
-            raise SystemExit(f"missing {BDPM_PATH} (run download-data.sh first)")
-        catalog = bdpm.read_catalog(BDPM_PATH)
-        # Order the queue by frequency score (falling back to CIS_bdpm file order
-        # when no list is given): popular drugs get refreshed first.
-        freq_path = frequency or (DEFAULT_FREQUENCY if DEFAULT_FREQUENCY.exists() else None)
-        if freq_path:
-            signals = bdpm.substance_signals(catalog, COMPO_PATH, GENER_PATH)
-            single, multi, p25 = bdpm.load_frequency(freq_path)
-            scores, matched = bdpm.score_catalog(signals, single, multi, p25)
-            ordered = bdpm.order_by_score(catalog, scores)
-            if not COMPO_PATH.exists():
-                logger.warning(
-                    "{} absent: matching on drug names only (re-run download-data.sh "
-                    "to add the substance/generic join)", COMPO_PATH.name,
-                )
-            logger.info(
-                "frequency {}: {} single + {} multi terms, p25={} fallback; "
-                "{}/{} CIS matched a term ({}%)",
-                freq_path.name, len(single), len(multi), p25,
-                len(matched), len(catalog), round(100 * len(matched) / len(catalog)),
-            )
-        else:
-            ordered = [cis for cis, _ in catalog]
-            logger.warning("no --frequency file; using CIS_bdpm file order")
-        manifest = load_manifest()
-        due = ordered if force else [c for c in ordered if is_due(manifest.get(c), ttl_days)]
+        # Ordering + TTL selection is shared with the refresh service's startup
+        # batch, so it lives in build_queue (single source of truth).
+        due = build_queue(ttl_days, force=force, frequency=frequency)
         targets = due if fetch_all else due[:limit]
-        logger.info(
-            "{} CIS in catalog, {} due (ttl={}d), fetching {} this run",
-            len(catalog), len(due), ttl_days, len(targets),
-        )
+        logger.info("fetching {} this run", len(targets))
 
     if not targets:
         logger.info("nothing due; done")
