@@ -188,8 +188,8 @@ Key facts that aren't obvious from a single file:
   `self._lock` (it re-reads the manifest under the same non-reentrant lock:
   that path deadlocked before). `REFRESH_LOG_LEVEL` (default INFO) sets the
   level; `/api/health` is never logged at any level (it fires every 30s from the
-  container healthcheck). An OPTIONAL startup batch (`REFRESH_STARTUP_BATCH`, 0 =
-  off; `REFRESH_TTL_DAYS`, default 30) enqueues up to N of the stalest pages at
+  container healthcheck). A startup batch (`REFRESH_STARTUP_BATCH`, default 60,
+  set 0 to disable; `REFRESH_TTL_DAYS`, default 30) enqueues up to N of the stalest pages at
   boot via `enqueue_startup_batch()`, which reuses `scrape.build_queue(ttl_days,
   restrict=page_cis)` (the SAME frequency ordering + TTL as the batch scraper,
   hence the extracted `build_queue`), so it targets only real pages and shares
@@ -252,8 +252,8 @@ uv run scrape-rcp.py --limit 60   # refresh N RCPs from live ANSM into data/rcp/
 uv run build.py           # build ./dist from ./data (overlay wins over the 2022 CSV)
 uv run refresh-service.py # optional: run the on-demand refresh API on :8460 (behind Caddy /api/*)
                           # knobs (env): REFRESH_LOG_LEVEL (default INFO, health never logged),
-                          # REFRESH_STARTUP_BATCH (0=off) + REFRESH_TTL_DAYS (30) for a boot-time
-                          # freshen of the stalest pages; GET /api/stats returns crawl counters
+                          # REFRESH_STARTUP_BATCH (default 60, 0=off) + REFRESH_TTL_DAYS (30) for a
+                          # boot-time freshen of the stalest pages; GET /api/stats returns crawl counters
 cp docker/env.example docker/.env                      # optional: umami analytics / DEV banner / refresh knobs
 docker compose -f docker/docker-compose.yml up -d      # serve ./dist on :8459 + refresh service (read-only, hardened)
 docker compose -f docker/docker-compose.yml up --build # after changing Caddyfile/compose/refresh.Dockerfile

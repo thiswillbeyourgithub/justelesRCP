@@ -483,11 +483,11 @@ REFRESHER: Refresher | None = None  # set in main(), read by _Handler
 @click.option("--queue-max", type=int, default=200, show_default=True,
               envvar="REFRESH_QUEUE_MAX",
               help="Max pending refreshes; further requests get 'busy' (env REFRESH_QUEUE_MAX).")
-@click.option("--startup-batch", type=int, default=0, show_default=True,
+@click.option("--startup-batch", type=int, default=60, show_default=True,
               envvar="REFRESH_STARTUP_BATCH",
               help="On startup, enqueue up to N stalest pages for a background "
                    "freshen behind the same rate limit (env REFRESH_STARTUP_BATCH). "
-                   "0 disables it. TTL-gated (see --ttl-days), so a quick restart "
+                   "Set 0 to disable. TTL-gated (see --ttl-days), so a quick restart "
                    "re-fetches nothing.")
 @click.option("--ttl-days", type=int, default=30, show_default=True,
               envvar="REFRESH_TTL_DAYS",
