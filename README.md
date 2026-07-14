@@ -31,7 +31,7 @@ ANSM / BDPM. Conçu comme une alternative légère aux sites de médicaments len
   traçage publicitaire). Site hébergé en France.
 
 > [!CAUTION]
-> **Prototype en développement précoce.** Ce site est à un stade précoce :
+> **Prototype en développement.** Ce site est à un stade précoce :
 > certaines fonctionnalités manquent, des bugs sont probables et les données
 > peuvent être incomplètes ou obsolètes.
 
