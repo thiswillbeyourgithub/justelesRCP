@@ -37,6 +37,7 @@ import re
 import shutil
 import sys
 import unicodedata
+import urllib.parse
 from datetime import date, datetime
 from multiprocessing import Pool
 from pathlib import Path
@@ -46,7 +47,7 @@ from lxml import html as lxml_html
 
 import bdpm  # shared, pure-stdlib BDPM tokenising + frequency scoring
 
-__version__ = "0.14.3"  # single source of truth; bump patch/minor per change
+__version__ = "0.15.0"  # single source of truth; bump patch/minor per change
 
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
@@ -883,6 +884,7 @@ def render_record(item: tuple[str, str, str]) -> dict[str, str] | None:
     slug = f"{cis}-{slugify(name)}"
     page = (
         _TPL.replace("{{TITLE}}", _esc(name))
+        .replace("{{HEADEXTRA}}", "")  # RCP pages are indexable; only /eu/ stubs opt out
         .replace("{{CIS}}", _esc(cis))
         .replace("{{TOC}}", _toc_html(toc))
         .replace("{{ASOF}}", _asof_html(_ansm_date(cleaned), asof))
@@ -893,6 +895,195 @@ def render_record(item: tuple[str, str, str]) -> dict[str, str] | None:
     out.write_text(page, encoding="utf-8")
     compress(out)
     return {"cis": cis, "name": name, "slug": slug}
+
+
+# --- EU-authorization stub pages -------------------------------------------
+# ~15% of CIS have an empty ANSM RCP; a large share of those are centrally
+# authorized (EMA "procédure centralisée"), whose RCP text lives at the EMA, not
+# the ANSM (e.g. ABILIFY/aripiprazole, many biologics and oncology drugs). They
+# render no normal page and so were unfindable by search. build_stubs() gives
+# each a lightweight /eu/ landing that (a) keeps it in search-index.json so a
+# search for the brand resolves, (b) links to the official RCP on the EMA site,
+# and (c) when a same-substance generic actually renders here, links to it. Stubs
+# are noindex, kept out of /browse, and kept out of the RCP cross-link graph (own
+# /eu/ path, so page_cis_from_dist's dist/rcp glob never picks them up). NO EMA
+# content is fetched: the EMA link is a search URL by brand name (never a dead
+# deep link), so this stays 100% static and scrape-free.
+_EU_NUM_RE = re.compile(r"EU/\d/\d{2}/\d+")
+_EMA_SEARCH = "https://www.ema.europa.eu/en/medicines?search_api_fulltext="
+
+
+def _brand_root(name: str) -> str:
+    """Leading brand words of a drug name, up to the first token containing a digit.
+
+    'ABILIFY MAINTENA 300 mg, poudre...' -> 'ABILIFY MAINTENA'; 'ABILIFY 10 mg,
+    comprimé' -> 'ABILIFY'. Used as the EMA search query so the link targets the
+    product family, not one strength. Falls back to the full name when it opens
+    with a number (e.g. '5-FLUOROURACILE ...')."""
+    words: list[str] = []
+    for tok in name.replace(",", " ").split():
+        if any(ch.isdigit() for ch in tok):
+            break
+        words.append(tok)
+    return " ".join(words) or name
+
+
+def _ema_search_url(name: str) -> str:
+    """EMA medicines-search URL for a drug's brand root. In a browser it filters
+    the EMA medicine finder to the product; with JS off it still lands on the
+    valid finder page. A search (not a constructed EPAR deep link) so it can never
+    404, and it fetches nothing from the EMA at build time."""
+    return _EMA_SEARCH + urllib.parse.quote_plus(_brand_root(name))
+
+
+def load_cap_meta() -> dict[str, tuple[str, str, str]]:
+    """CIS -> (name, eu_number, holder) for centrally-authorized products.
+
+    A row qualifies when it carries an EU/x/xx/xxx marketing-authorization number
+    or its procedure column says 'centralisée'. eu_number/holder are '' when
+    absent (holder is the field right after the EU number). Returns {} when
+    CIS_bdpm.txt is missing. Parses the same latin-1 TSV as load_names but is kept
+    separate so load_names' contract (also used by the refresh service) is
+    untouched."""
+    if not BDPM_PATH.is_file():
+        return {}
+    meta: dict[str, tuple[str, str, str]] = {}
+    with BDPM_PATH.open(encoding="latin-1") as fh:
+        for row in csv.reader(fh, delimiter="\t"):
+            if len(row) < 2 or not row[0].strip():
+                continue
+            m = _EU_NUM_RE.search("\t".join(row))
+            if not (m or any("centralis" in c.lower() for c in row)):
+                continue
+            eu = m.group(0) if m else ""
+            holder = ""
+            if m:
+                for i, c in enumerate(row):
+                    if _EU_NUM_RE.search(c) and i + 1 < len(row):
+                        holder = row[i + 1].strip()
+                        break
+            meta[row[0].strip()] = (row[1].strip(), eu, holder)
+    return meta
+
+
+def _stub_content(name: str, eu: str, holder: str, generic: str | None) -> str:
+    """Body HTML for one /eu/ stub (fills the RCP template's {{CONTENT}} slot)."""
+    out = [
+        '<div class="rcp-stub">',
+        f"<h1>{_esc(name)}</h1>",
+        '<p class="stub-lead">Ce médicament bénéficie d\'une autorisation de mise '
+        "sur le marché (AMM) <strong>européenne centralisée</strong>. Son résumé "
+        "des caractéristiques du produit (RCP) n'est pas publié par l'ANSM, mais "
+        "par l'Agence européenne des médicaments (EMA).</p>",
+    ]
+    bits = []
+    if eu:
+        bits.append(f"N° d'AMM européenne : <strong>{_esc(eu)}</strong>")
+    if holder:
+        bits.append(f"Titulaire : {_esc(holder)}")
+    if bits:
+        out.append('<p class="stub-meta">' + "<br>".join(bits) + "</p>")
+    out.append(
+        '<p class="stub-actions"><a class="stub-ema" href="'
+        f'{_esc(_ema_search_url(name))}" target="_blank" rel="noopener">'
+        "Consulter le RCP officiel sur le site de l'EMA →</a></p>"
+    )
+    if generic:
+        q = urllib.parse.quote_plus(generic)
+        out.append(
+            '<p class="stub-generics">Génériques à base de '
+            f"<strong>{_esc(generic.capitalize())}</strong> disponibles sur ce "
+            f'site : <a href="/?q={q}">voir les résultats</a>.</p>'
+        )
+    out.append(
+        '<p class="stub-note">Cette page existe pour que ce médicament reste '
+        "trouvable ici ; le texte réglementaire complet reste sur le site de "
+        "l'EMA.</p></div>"
+    )
+    return "".join(out)
+
+
+def build_stubs(
+    real_index: list[dict[str, str]], page_tpl: str, prev_records: dict
+) -> tuple[list[dict], dict, int, int]:
+    """Render /eu/ landing pages for centrally-authorized, page-less drugs.
+
+    Returns (stub_index, stub_records, reused, rendered). stub_index rows carry
+    eu=1 so search.js routes them to /eu/ and write_browse can exclude them;
+    stub_records feed the SAME incremental manifest as real pages (stub CIS never
+    collide with RCP CIS: one has an empty RCP, the other does not). Reuses a
+    cached output when its content hash is unchanged, exactly like render_record.
+    The content hash omits the template/code, which the global key already
+    guards."""
+    cap = load_cap_meta()
+    eu_dir = DIST / "eu"
+
+    def _prune(keep: set[str]) -> None:
+        if not eu_dir.is_dir():
+            return
+        for page in eu_dir.glob("*.html"):
+            if page.stem not in keep:
+                page.unlink()
+                page.with_suffix(".html.gz").unlink(missing_ok=True)
+                page.with_suffix(".html.br").unlink(missing_ok=True)
+
+    if not cap:  # no BDPM file: build nothing, sweep away any prior stubs
+        _prune(set())
+        return [], {}, 0, 0
+
+    rendered_cis = {e["cis"] for e in real_index}
+    stub_cis = [c for c in cap if c not in rendered_cis]
+    # A generics link is offered ONLY when a same-substance drug actually renders
+    # here: intersect each stub's active-substance tokens (COMPO col 3, reusing
+    # bdpm) with tokens present in real page names, dropping salts/short words.
+    page_tokens: set[str] = set()
+    for e in real_index:
+        page_tokens |= bdpm.tokens(e["name"])
+    compo = bdpm.column_tokens(COMPO_PATH, 0, 3, keep=set(stub_cis))
+
+    eu_dir.mkdir(parents=True, exist_ok=True)
+    stub_index: list[dict] = []
+    stub_records: dict = {}
+    reused = 0
+    for cis in stub_cis:
+        name, eu, holder = cap[cis]
+        hits = {
+            t for t in compo.get(cis, set())
+            if len(t) >= _XREF_MIN_LEN and t not in _XREF_STOP
+        } & page_tokens
+        # Longest token, breaking ties alphabetically. The alphabetical tiebreak
+        # is load-bearing: `hits` is a set, whose iteration order varies between
+        # runs (hash randomization), so `max(..., key=len)` alone would pick a
+        # different term on ties each build, churning the incremental cache.
+        generic = max(hits, key=lambda t: (len(t), t)).lower() if hits else None
+        slug = f"{cis}-{slugify(name)}"
+        content = _stub_content(name, eu, holder, generic)
+        h = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        out = eu_dir / f"{slug}.html"
+        prev = prev_records.get(cis)
+        if (
+            prev and prev.get("h") == h and out.exists()
+            and out.with_suffix(".html.gz").exists()
+            and out.with_suffix(".html.br").exists()
+        ):
+            reused += 1
+        else:
+            page = (
+                page_tpl.replace("{{TITLE}}", _esc(name))
+                .replace("{{HEADEXTRA}}", '<meta name="robots" content="noindex">')
+                .replace("{{CIS}}", _esc(cis))
+                .replace("{{TOC}}", "")
+                .replace("{{ASOF}}", "")
+                .replace("{{CONTENT}}", content)
+                .replace("{{XREF}}", "")
+            )
+            out.write_text(page, encoding="utf-8")
+            compress(out)
+        stub_index.append({"cis": cis, "name": name, "slug": slug, "eu": 1})
+        stub_records[cis] = {"h": h, "name": name, "slug": slug, "eu": 1}
+
+    _prune({e["slug"] for e in stub_index})
+    return stub_index, stub_records, reused, len(stub_cis) - reused
 
 
 def main() -> None:
@@ -1039,6 +1230,16 @@ def main() -> None:
             if (i + 1) % 2000 == 0:
                 print(f"  {i + 1} rendered...")
 
+    # EU-authorization stubs: findable landing pages for centrally-authorized
+    # drugs whose RCP lives at the EMA (empty ANSM cell -> no normal RCP page).
+    # Built after the real index so we know which CIS already render a page. Their
+    # records share the same manifest; their pages live under dist/eu (own URL
+    # space, so they stay out of the RCP cross-link graph). See build_stubs.
+    stub_index, stub_records, stub_reused, stub_rendered = build_stubs(
+        index, page_tpl, prev_records
+    )
+    new_records.update(stub_records)
+
     # Prune outputs left behind by renamed slugs or CIS dropped from the source.
     keep = {e["slug"] for e in index}
     pruned = 0
@@ -1053,11 +1254,12 @@ def main() -> None:
         json.dumps({"global": global_key, "records": new_records}), encoding="utf-8"
     )
 
-    # Homepage + assets. Sorted by CIS so search-index.json is stable across runs
-    # (imap_unordered returns pages in arbitrary order); a stable file avoids
-    # needless recompression churn and rsync transfers on unchanged data.
-    index.sort(key=lambda e: e["cis"])
-    idx_json = json.dumps(index, ensure_ascii=False, separators=(",", ":"))
+    # Homepage + assets. search-index.json = real RCP pages + EU stubs, sorted by
+    # CIS so the file is stable across runs (imap_unordered returns pages in
+    # arbitrary order); a stable file avoids needless recompression churn and rsync
+    # transfers on unchanged data. Browse (below) gets the real RCP pages only.
+    search_rows = sorted(index + stub_index, key=lambda e: e["cis"])
+    idx_json = json.dumps(search_rows, ensure_ascii=False, separators=(",", ":"))
     (DIST / "search-index.json").write_text(idx_json, encoding="utf-8")
     # The version is served at runtime (window.__APP_VERSION__) and injected into
     # the page by src/app-init.js, so it is NOT baked into page HTML. This keeps
@@ -1088,6 +1290,7 @@ def main() -> None:
 
     print(
         f"done: {len(index)} RCP pages ({reused} reused, {pruned} pruned) "
+        f"+ {len(stub_index)} EU stubs ({stub_reused} reused, {stub_rendered} built) "
         f"+ {browse_pages} browse pages ({skipped_empty} empty CIS skipped) -> {DIST}"
     )
 
