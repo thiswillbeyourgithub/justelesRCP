@@ -40,6 +40,7 @@ import importlib.util
 import json
 import queue
 import re
+import sys
 import threading
 import time
 from datetime import datetime, timezone
@@ -283,6 +284,12 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def log_message(self, fmt: str, *args) -> None:  # route through loguru
+        # The container healthcheck hits /api/health every 30s forever; logging
+        # it would bury the meaningful lines, so drop it entirely (even at DEBUG).
+        # Everything else is DEBUG, so it stays quiet at the default INFO level
+        # but is available when REFRESH_LOG_LEVEL=DEBUG for troubleshooting.
+        if self.path == "/api/health":
+            return
         logger.debug("http {} - {}", self.address_string(), fmt % args)
 
     def do_GET(self) -> None:
@@ -334,10 +341,22 @@ REFRESHER: Refresher | None = None  # set in main(), read by _Handler
               help="Store overlays gzip-compressed (matches scrape-rcp.py; env RCP_OVERLAY_GZIP).")
 @click.option("--user-agent", "user_agent", default=None,
               help="Override the HTTP User-Agent sent to the ANSM site.")
+@click.option("--log-level", default="INFO", show_default=True, envvar="REFRESH_LOG_LEVEL",
+              type=click.Choice(
+                  ["TRACE", "DEBUG", "INFO", "SUCCESS", "WARNING", "ERROR", "CRITICAL"],
+                  case_sensitive=False),
+              help="Minimum log level (env REFRESH_LOG_LEVEL). Default INFO keeps the "
+                   "per-request DEBUG chatter (status polls, refresh POSTs) out of the "
+                   "logs; the /api/health check is never logged at any level.")
 def main(host: str, port: int, rate: float, min_interval: float, queue_max: int,
-         timeout: float, gzip_overlay: bool, user_agent: str | None) -> None:
+         timeout: float, gzip_overlay: bool, user_agent: str | None, log_level: str) -> None:
     """Run the on-demand RCP refresh service (see module docstring)."""
     global REFRESHER
+    # Replace loguru's default DEBUG sink with one at the chosen level, so the
+    # noisy per-request lines (and the every-30s healthcheck) stay out of the
+    # container logs unless someone raises the level for troubleshooting.
+    logger.remove()
+    logger.add(sys.stderr, level=log_level.upper())
     ua = user_agent or ("justelesRCP-refresh/1.0 (RCP freshness bot; "
                         "contact hedv10g9@mailer.me)")
     REFRESHER = Refresher(rate=rate, min_interval=min_interval, timeout=timeout,
