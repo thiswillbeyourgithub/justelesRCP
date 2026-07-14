@@ -13,6 +13,11 @@
 // production looks normal unless explicitly enabled. Plain script, loaded after
 // app-config.js so window.__APP_CONFIG__ exists. Self-contained: it creates its
 // own element and inline styling, so no HTML/CSS changes are required.
+//
+// Clicking it dismisses it, and the dismissal is remembered per-device
+// (localStorage) scoped to the current STARTED_AT, so it stays closed across page
+// navigations and browser restarts and only reappears after the next container
+// restart (new deployment).
 (function () {
   const cfg = window.__APP_CONFIG__ || {};
   // Enabled only on an exact "1" so an unset/placeholder value never trips it.
@@ -20,6 +25,25 @@
 
   const startedAt = Number(cfg.startedAt);
   const hasStart = Number.isFinite(startedAt) && startedAt > 0;
+
+  // Persisted dismissal, scoped to THIS deployment. The token is the container's
+  // STARTED_AT: dismissing stores it in localStorage (so the banner stays closed on
+  // this device across page navigations AND a browser restart), and it reappears
+  // only when a new deployment stamps a new STARTED_AT (i.e. "until the next
+  // restart", the very event the banner reports). Absent a real stamp
+  // ("Déploiement en cours") the token is empty and nothing is persisted, so the
+  // WIP notice keeps showing until a real deployment lands.
+  const DISMISS_KEY = "justelesRCP.devBannerDismissed";
+  const deployToken = hasStart ? String(startedAt) : "";
+  function isDismissed() {
+    if (!deployToken) return false;
+    try {
+      return window.localStorage.getItem(DISMISS_KEY) === deployToken;
+    } catch (_) {
+      return false; // storage blocked/unavailable: fall back to always showing
+    }
+  }
+  if (isDismissed()) return;
 
   // Human "il y a X minutes/heures/jours" from a count of elapsed seconds.
   function humanAgo(seconds) {
@@ -81,12 +105,19 @@
   // Keep the "il y a X" fresh without a reload while the tab stays open.
   const timer = hasStart ? setInterval(render, 60 * 1000) : null;
 
-  // Clicking hides it for the current view only; the dismissal is NOT persisted,
-  // so a reload brings it back (while DEV=1 the WIP signal should keep showing by
-  // default rather than be silenced for the session by one click).
+  // Clicking hides it and remembers the dismissal on this device (see isDismissed):
+  // it stays closed across page navigations and browser restarts, and only returns
+  // when the container restarts under a new STARTED_AT.
   banner.addEventListener("click", (e) => {
     if (e.target.closest("a")) return; // let the source link navigate
     banner.remove();
     if (timer) clearInterval(timer);
+    if (deployToken) {
+      try {
+        window.localStorage.setItem(DISMISS_KEY, deployToken);
+      } catch (_) {
+        // storage blocked (private mode, quota): dismissal just won't persist
+      }
+    }
   });
 })();
