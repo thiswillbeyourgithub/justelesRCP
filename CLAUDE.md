@@ -211,7 +211,11 @@ Key facts that aren't obvious from a single file:
   sends `?src=user`/`?src=auto` and the service records counts by source and outcome
   (ok/empty/error) plus on-demand queue depth/ETA, logged as per-item +
   rolling-aggregate lines and exposed at `GET /api/stats` (which also carries a
-  `crawl` gauge: `{enabled,total,idx,ttl_days,idle}`). `request()` must NOT call
+  `crawl` gauge: `{enabled,total,idx,ttl_days,idle,due,eta_seconds}`, where `due`
+  is the still-due page count and `eta_seconds` the sweep ETA = `due` x the crawl
+  rate; the crawl/aggregate log lines print the same `sweep-eta`, distinct from
+  the on-demand `eta` which drains the button/auto queue and reads 00:00 when no
+  clicks are pending). `request()` must NOT call
   `asof_of()` while holding `self._lock` (it re-reads the manifest under the same
   non-reentrant lock: that path deadlocked before). `REFRESH_LOG_LEVEL` (default
   INFO) sets the level; `/api/health` is never logged at any level (it fires every

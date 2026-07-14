@@ -242,15 +242,38 @@ class Refresher:
         """
         return n * (self.demand_rate + min(self.demand_rate, 10.0) / 2 + 1.0)
 
+    def _due_count_locked(self) -> int:
+        """Count crawl pages still due per the crawl TTL. CALLER MUST HOLD ``_lock``.
+
+        A live sweep-size hint: how many pages the crawler still has to fetch
+        before it goes idle. O(len(order)) but cheap (a dict lookup + one ISO
+        parse each), and only ever run under the lock the callers already hold.
+        """
+        if not self._crawl:
+            return 0
+        return sum(1 for cis in self._crawl_order
+                   if scrape.is_due(self._manifest.get(cis), self._crawl_ttl_days))
+
+    def _crawl_eta_seconds(self, due: int) -> float:
+        """Rough seconds to finish the current crawl sweep of ``due`` pages.
+
+        The crawler is serial on the slow ``rate`` lane: each due page costs the
+        base rate plus, on average, half the 0..min(rate,10)s jitter. Mirrors
+        ``_eta_seconds`` for the on-demand lane. Zero when nothing is due (idle).
+        """
+        return due * (self.rate + min(self.rate, 10.0) / 2)
+
     def stats(self) -> dict:
         """Snapshot of the crawl counters (served at GET /api/stats)."""
         with self._lock:
             snap = dict(self._stats)
             queued = self._demand.qsize()
             pending = len(self._pending)
+            due = self._due_count_locked()
             crawl = {"enabled": self._crawl, "total": len(self._crawl_order),
                      "idx": self._crawl_idx, "ttl_days": self._crawl_ttl_days,
-                     "idle": self._crawl_idle}
+                     "idle": self._crawl_idle, "due": due,
+                     "eta_seconds": round(self._crawl_eta_seconds(due), 1)}
         snap["done"] = snap["ok"] + snap["empty"] + snap["error"]
         snap["queued"] = queued  # on-demand (button/auto) requests waiting
         snap["pending"] = pending
@@ -493,10 +516,10 @@ class Refresher:
         """Tally one completed refresh and emit its progress line.
 
         ``outcome`` is 'ok' | 'empty' | 'error'. A crawler item logs its position
-        in the frequency rotation; an on-demand item logs the live on-demand queue
-        depth + ETA. A compact aggregate line follows at the first completion and
-        every 10th, so the overall run is visible at INFO without the per-request
-        DEBUG chatter.
+        in the frequency rotation plus the sweep ETA (still-due pages x the crawl
+        rate); an on-demand item logs the live on-demand queue depth + ETA. A
+        compact aggregate line follows at the first completion and every 10th, so
+        the overall run is visible at INFO without the per-request DEBUG chatter.
         """
         with self._lock:
             self._stats[outcome] += 1
@@ -504,20 +527,22 @@ class Refresher:
             snap = dict(self._stats)
             to_go = self._demand.qsize()
             idx, total = self._crawl_idx, len(self._crawl_order)
+            due = self._due_count_locked()
         done = snap["ok"] + snap["empty"] + snap["error"]
+        crawl_eta = scrape._fmt_dur(self._crawl_eta_seconds(due))
         if source == "crawl":
-            logger.info("crawl {}/{} {} -> {} | on-demand to-go={}",
-                        idx, total, cis, result, to_go)
+            logger.info("crawl {}/{} {} -> {} | due~{} sweep-eta {} | on-demand to-go={}",
+                        idx, total, cis, result, due, crawl_eta, to_go)
         else:
             logger.info("refreshed {} [{}] -> {} | on-demand to-go={} eta {}", cis, source,
                         result, to_go, scrape._fmt_dur(self._eta_seconds(to_go)))
         if done == 1 or done % 10 == 0:
             logger.info(
                 "stats | done={} (crawl={} auto={} user={}) ok={} empty={} err={} "
-                "| on-demand to-go={} eta {}",
+                "| crawl due~{} sweep-eta {} | on-demand to-go={} eta {}",
                 done, snap["crawl"], snap["auto"], snap["user"],
                 snap["ok"], snap["empty"], snap["error"],
-                to_go, scrape._fmt_dur(self._eta_seconds(to_go)),
+                due, crawl_eta, to_go, scrape._fmt_dur(self._eta_seconds(to_go)),
             )
 
     def _process(self, client, cis: str, source: str) -> None:
