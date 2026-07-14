@@ -44,13 +44,16 @@ One request every ``--rate`` seconds (default 2.0, env ``RCP_SCRAPE_RATE_SECONDS
 plus up to ``min(rate, 10)`` seconds of random jitter, redirects followed, an
 identifying User-Agent. Set a larger ``--rate`` (e.g. 120) for a slow background
 trickle of one RCP every couple of minutes. A one-time full scrape (``--all``) of
-~15k drugs at 2 s each is ~8 h; the routine cron freshener does a small
-``--limit`` batch. Progress (a bar with elapsed/ETA) and the trigger of each
-fetch ("user" for ``--only``, "timer" for the automatic queue) are logged per
-drug; add finer per-step detail at DEBUG.
+~15k drugs at 2 s each is ~8 h. Progress (a bar with elapsed/ETA) and the trigger
+of each fetch ("user" for ``--only``, "timer" for the automatic queue) are logged
+per drug; add finer per-step detail at DEBUG.
 
+Routine freshening no longer needs this script: the refresh service
+(``refresh-service.py``) runs a perpetual, frequency-ordered crawler that keeps the
+whole catalog under its TTL on its own. This CLI stays useful for a one-time ``--all``
+seed, an ad-hoc ``--only`` batch, or a scrape on a host with no refresh service.
 After a run, rebuild with ``uv run build.py`` (incremental: only changed drugs
-re-render). Typical cron: ``uv run scrape-rcp.py --limit 60 && uv run build.py``.
+re-render), e.g. ``uv run scrape-rcp.py --all && uv run build.py``.
 """
 
 from __future__ import annotations

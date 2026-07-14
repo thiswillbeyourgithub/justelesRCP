@@ -168,34 +168,47 @@ Key facts that aren't obvious from a single file:
   mounted `dist/rcp/*.html`), not the CSV (which this container does not mount), so
   its links target only pages that exist, same as the full build.
   A single worker thread serialises every outbound ANSM fetch behind a GLOBAL rate
-  limit (`REFRESH_RATE_SECONDS` + jitter) and a per-CIS min-interval floor
-  (`REFRESH_MIN_INTERVAL_SECONDS`, default 1h), so repeat clicks and many visitors
-  on one stale page collapse to a single fetch; a bounded queue (`REFRESH_QUEUE_MAX`)
-  sheds load as "busy". Endpoints: `GET /api/health`, `GET /api/status/<cis>`
-  (asof + pending), `GET /api/stats` (crawl counters), `POST /api/refresh/<cis>`
-  (returns fresh|queued|busy). It is
+  limit (`REFRESH_RATE_SECONDS` + jitter, default 120s) and a per-CIS min-interval
+  floor (`REFRESH_MIN_INTERVAL_SECONDS`, default 1h), so repeat clicks and many
+  visitors on one stale page collapse to a single fetch. Two sources feed that one
+  worker via `_next_task()`: an ON-DEMAND lane (`_demand`, the button + the >1yr
+  auto-refresh) that has PRIORITY (drained before the crawler, so a click jumps
+  ahead) and is bounded by `REFRESH_QUEUE_MAX` (sheds load as "busy"), and the
+  perpetual CRAWLER below. A click still waits at most one rate-gap because both
+  lanes share the one limiter. Endpoints: `GET /api/health`, `GET /api/status/<cis>`
+  (asof + pending), `GET /api/stats` (crawl counters + `crawl` gauge), `POST
+  /api/refresh/<cis>[?src=user|auto]` (returns fresh|queued|busy). It is
   same-origin, so the strict `connect-src 'self'` CSP covers the button's fetches.
   If the service is absent, `/api/*` just 502s and the button degrades gracefully,
   so static-only deploys omit it entirely. Both `build.py` and `scrape-rcp.py`
   guard `__main__`, so importing them must stay import-safe (no side effects at
   module load); the refresh service depends on that.
+  **The perpetual crawler.** With `REFRESH_CRAWL` on (default), the worker builds
+  a frequency-ordered list of every page once (`_build_crawl_order()` reuses
+  `scrape.build_queue(force=True, restrict=page_cis)`, the SAME ordering the batch
+  scraper CLI uses, restricted to CIS that actually render a page) and then rotates
+  a cursor through it (`_claim_next_crawl()`): it picks the next page that is due
+  per `scrape.is_due` against `REFRESH_CRAWL_TTL_DAYS` (default 365 ~= 12mo) and is
+  not already queued on-demand, marks it pending as `crawl`, and refreshes it. When
+  a full rotation finds nothing due, it flips to idle and `_idle_wait_seconds()`
+  sleeps until the oldest fresh page next crosses the TTL (capped so it re-polls at
+  least hourly), then resumes. So the crawler keeps the whole catalog no staler
+  than the TTL, sweeping (~15k pages / one-per-`rate`) then idling, and needs no
+  cron. It shares the one rate-limited worker with on-demand clicks. Missing BDPM
+  inputs degrade it to off (empty order) rather than crashing; `REFRESH_CRAWL=0`
+  disables it, leaving only button/auto refreshes.
   **Crawl statistics + logging.** Each refresh is tagged with its trigger
-  *source* (`user` = button, `auto` = the >1yr page-load refresh, `startup` =
-  the boot batch below); `app-init.js` sends `?src=user`/`?src=auto` and the
-  service records counts by source and outcome (ok/empty/error) plus queue
-  depth/ETA, logged as per-item + rolling-aggregate lines and exposed at
-  `GET /api/stats`. `request()` must NOT call `asof_of()` while holding
-  `self._lock` (it re-reads the manifest under the same non-reentrant lock:
-  that path deadlocked before). `REFRESH_LOG_LEVEL` (default INFO) sets the
-  level; `/api/health` is never logged at any level (it fires every 30s from the
-  container healthcheck). A startup batch (`REFRESH_STARTUP_BATCH`, default 60,
-  set 0 to disable; `REFRESH_TTL_DAYS`, default 30) enqueues up to N of the stalest pages at
-  boot via `enqueue_startup_batch()`, which reuses `scrape.build_queue(ttl_days,
-  restrict=page_cis)` (the SAME frequency ordering + TTL as the batch scraper,
-  hence the extracted `build_queue`), so it targets only real pages and shares
-  the one rate-limited worker. Keep the `src` values in sync across
-  `app-init.js`, `_SOURCES`/`request()`, and the `{{...}}`-free `/api/stats`
-  shape.
+  *source* (`user` = button, `auto` = the >1yr page-load refresh, `crawl` = the
+  perpetual crawler, set internally and NOT acceptable from a caller); `app-init.js`
+  sends `?src=user`/`?src=auto` and the service records counts by source and outcome
+  (ok/empty/error) plus on-demand queue depth/ETA, logged as per-item +
+  rolling-aggregate lines and exposed at `GET /api/stats` (which also carries a
+  `crawl` gauge: `{enabled,total,idx,ttl_days,idle}`). `request()` must NOT call
+  `asof_of()` while holding `self._lock` (it re-reads the manifest under the same
+  non-reentrant lock: that path deadlocked before). `REFRESH_LOG_LEVEL` (default
+  INFO) sets the level; `/api/health` is never logged at any level (it fires every
+  30s from the container healthcheck). Keep the `src` values in sync across
+  `app-init.js`, `_SOURCES`/`request()`, and the `/api/stats` shape.
 - **Every RCP page shows a freshness banner ("Informations à jour au …").**
   It bakes TWO distinct *absolute* dates (not the age, so pages stay
   cacheable; `src/app-init.js` turns each into a relative "il y a X" client-side):
@@ -245,15 +258,18 @@ Key facts that aren't obvious from a single file:
 
 ```bash
 ./download-data.sh        # fetch data/CIS_RCP.csv + data/CIS_bdpm.txt (see TODOs in it)
-uv run scrape-rcp.py --limit 60   # refresh N RCPs from live ANSM into data/rcp/ overlay
+uv run scrape-rcp.py --limit 60   # OPTIONAL manual/one-time bulk scrape into data/rcp/ overlay
+                                  # (the refresh service's perpetual crawler now does routine
+                                  #  freshening; use this for a first --all seed or an ad-hoc batch)
                                   # env: RCP_OVERLAY_GZIP (gzip overlays, default on),
                                   # RCP_SCRAPE_RATE_SECONDS (base gap between fetches);
                                   # logs a progress bar + ETA and the trigger (user/timer)
 uv run build.py           # build ./dist from ./data (overlay wins over the 2022 CSV)
-uv run refresh-service.py # optional: run the on-demand refresh API on :8460 (behind Caddy /api/*)
-                          # knobs (env): REFRESH_LOG_LEVEL (default INFO, health never logged),
-                          # REFRESH_STARTUP_BATCH (default 60, 0=off) + REFRESH_TTL_DAYS (30) for a
-                          # boot-time freshen of the stalest pages; GET /api/stats returns crawl counters
+uv run refresh-service.py # optional: run the refresh API on :8460 (behind Caddy /api/*)
+                          # runs a perpetual frequency-ordered crawler + on-demand button/auto refreshes
+                          # knobs (env): REFRESH_RATE_SECONDS (default 120), REFRESH_CRAWL (1=on) +
+                          # REFRESH_CRAWL_TTL_DAYS (365), REFRESH_LOG_LEVEL (INFO, health never logged);
+                          # GET /api/stats returns crawl counters + a crawl gauge
 cp docker/env.example docker/.env                      # optional: umami analytics / DEV banner / refresh knobs
 docker compose -f docker/docker-compose.yml up -d      # serve ./dist on :8459 + refresh service (read-only, hardened)
 docker compose -f docker/docker-compose.yml up --build # after changing Caddyfile/compose/refresh.Dockerfile
