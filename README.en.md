@@ -15,6 +15,9 @@ for-profit medicine sites.
 - No application server, no database: every page is a precomputed static file.
 - Client-side instant search over ~15,600 medicines, plus crawlable A-Z browse
   pages.
+- *(Planned)* Semantic (embeddings) search within a given RCP page, computed
+  entirely in the browser (client-side), so privacy-respecting: no query is ever
+  sent to a server.
 - Cross-drug backlinks: each RCP page automatically links the drug and substance
   names it mentions (e.g. "oméprazole", "carbamazépine") to those drugs' own
   pages, with a "Médicaments liés" (related medicines) box at the foot. Only

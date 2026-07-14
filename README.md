@@ -16,6 +16,9 @@ ANSM / BDPM. Conçu comme une alternative légère aux sites de médicaments len
   statique précalculé.
 - Recherche instantanée côté client sur ~15 600 médicaments, plus des pages de
   navigation A-Z indexables par les moteurs de recherche.
+- *(Prévu)* Recherche sémantique par embeddings à l'intérieur d'une page RCP
+  donnée, calculée entièrement dans le navigateur (côté client), donc
+  respectueuse de la vie privée : aucune requête n'est envoyée à un serveur.
 - Liens croisés entre médicaments : chaque page RCP relie automatiquement les
   noms de médicaments et de substances qu'elle cite (par ex. « oméprazole »,
   « carbamazépine ») vers leurs propres pages, avec un encart « Médicaments
