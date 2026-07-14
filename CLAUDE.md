@@ -213,7 +213,8 @@ Key facts that aren't obvious from a single file:
   rolling-aggregate lines and exposed at `GET /api/stats` (which also carries a
   `crawl` gauge: `{enabled,total,idx,ttl_days,idle,due,eta_seconds}`, where `due`
   is the still-due page count and `eta_seconds` the sweep ETA = `due` x the crawl
-  rate; the crawl/aggregate log lines print the same `sweep-eta`, distinct from
+  rate; the crawl/aggregate log lines print the same value as `sweep-eta` in
+  `DdHhMm` form (`_fmt_dhm`, since a full sweep spans days), distinct from
   the on-demand `eta` which drains the button/auto queue and reads 00:00 when no
   clicks are pending). `request()` must NOT call
   `asof_of()` while holding `self._lock` (it re-reads the manifest under the same

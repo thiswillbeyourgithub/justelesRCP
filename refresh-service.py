@@ -97,6 +97,20 @@ def _asof_today() -> str:
     return datetime.now(timezone.utc).date().isoformat()
 
 
+def _fmt_dhm(seconds: float) -> str:
+    """Format a duration as ``DdHhMm`` (days/hours/minutes), e.g. ``7d5h36m``.
+
+    For the crawl sweep ETA, which spans days at the slow crawl rate: scrape's
+    H:MM:SS (fine for the seconds-to-minutes on-demand queue) would read as an
+    unwieldy hour count there (e.g. 347:13:20 instead of 14d11h13m).
+    """
+    total = int(max(0.0, seconds))
+    d, rem = divmod(total, 86400)
+    h, rem = divmod(rem, 3600)
+    m = rem // 60
+    return f"{d}d{h}h{m}m"
+
+
 class Refresher:
     """Serialises refreshes behind TWO rate-limited worker threads, one per lane.
 
@@ -529,7 +543,7 @@ class Refresher:
             idx, total = self._crawl_idx, len(self._crawl_order)
             due = self._due_count_locked()
         done = snap["ok"] + snap["empty"] + snap["error"]
-        crawl_eta = scrape._fmt_dur(self._crawl_eta_seconds(due))
+        crawl_eta = _fmt_dhm(self._crawl_eta_seconds(due))
         if source == "crawl":
             logger.info("crawl {}/{} {} -> {} | due~{} sweep-eta {} | on-demand to-go={}",
                         idx, total, cis, result, due, crawl_eta, to_go)
