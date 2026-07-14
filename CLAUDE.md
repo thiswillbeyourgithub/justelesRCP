@@ -167,15 +167,22 @@ Key facts that aren't obvious from a single file:
   backlinks). Its `page_cis` comes from `build.page_cis_from_dist()` (a glob of the
   mounted `dist/rcp/*.html`), not the CSV (which this container does not mount), so
   its links target only pages that exist, same as the full build.
-  A single worker thread serialises every outbound ANSM fetch behind a GLOBAL rate
-  limit (`REFRESH_RATE_SECONDS` + jitter, default 120s) and a per-CIS min-interval
+  TWO separate worker threads, one per lane, each with its OWN rate limit, so a
+  click is NOT stuck behind the crawler's slow gap (that decoupling is the whole
+  point). The ON-DEMAND lane (`_demand`, worker `_demand_run`; the button + the >1yr
+  auto-refresh) is throttled by the small `REFRESH_DEMAND_RATE_SECONDS` (default 5s),
+  so a lone click after an idle period fetches almost at once, and is bounded by
+  `REFRESH_QUEUE_MAX` (sheds load as "busy"). The perpetual CRAWLER (worker
+  `_crawl_run`) trickles on the large `REFRESH_RATE_SECONDS` (+ jitter, default 120s).
+  Both lanes are still SERIAL (one worker each) and share the per-CIS min-interval
   floor (`REFRESH_MIN_INTERVAL_SECONDS`, default 1h), so repeat clicks and many
-  visitors on one stale page collapse to a single fetch. Two sources feed that one
-  worker via `_next_task()`: an ON-DEMAND lane (`_demand`, the button + the >1yr
-  auto-refresh) that has PRIORITY (drained before the crawler, so a click jumps
-  ahead) and is bounded by `REFRESH_QUEUE_MAX` (sheds load as "busy"), and the
-  perpetual CRAWLER below. A click still waits at most one rate-gap because both
-  lanes share the one limiter. Endpoints: `GET /api/health`, `GET /api/status/<cis>`
+  visitors on one stale page collapse to a single fetch. The two workers share
+  `_pending` (under `_lock`, so the same CIS is never fetched by both at once) and a
+  `_persist_lock` (so their manifest writes don't race on `save_manifest`'s one temp
+  path). Each throttle mark (`_last_demand_fetch`/`_last_crawl_fetch`) is touched only
+  by its own thread, so `_wait_rate(since, rate)` needs no lock. `_process` is
+  throttle-free (each worker waits on its lane's rate before calling `_handle`, which
+  wraps `_process` with the shared error/pending bookkeeping). Endpoints: `GET /api/health`, `GET /api/status/<cis>`
   (asof + pending), `GET /api/stats` (crawl counters + `crawl` gauge), `POST
   /api/refresh/<cis>[?src=user|auto]` (returns fresh|queued|busy). It is
   same-origin, so the strict `connect-src 'self'` CSP covers the button's fetches.
@@ -194,9 +201,10 @@ Key facts that aren't obvious from a single file:
   sleeps until the oldest fresh page next crosses the TTL (capped so it re-polls at
   least hourly), then resumes. So the crawler keeps the whole catalog no staler
   than the TTL, sweeping (~15k pages / one-per-`rate`) then idling, and needs no
-  cron. It shares the one rate-limited worker with on-demand clicks. Missing BDPM
-  inputs degrade it to off (empty order) rather than crashing; `REFRESH_CRAWL=0`
-  disables it, leaving only button/auto refreshes.
+  cron. It runs on its OWN worker/rate limit, separate from the on-demand lane (a
+  click never waits behind it). Missing BDPM inputs degrade it to off (empty order,
+  the `_crawl_run` worker just exits) rather than crashing; `REFRESH_CRAWL=0`
+  disables it (crawl worker not started), leaving only button/auto refreshes.
   **Crawl statistics + logging.** Each refresh is tagged with its trigger
   *source* (`user` = button, `auto` = the >1yr page-load refresh, `crawl` = the
   perpetual crawler, set internally and NOT acceptable from a caller); `app-init.js`

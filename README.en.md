@@ -118,19 +118,21 @@ copy we last captured more than a year ago refreshes itself on load. Both call a
 service (`refresh-service.py`, `POST /api/refresh/<cis>`) that fetches the live ANSM
 page, writes the overlay and rebuilds that one page. It is **the only dynamic part**
 of the project: it runs in a separate, hardened container (read-only except three
-narrow paths) so the web server itself can stay fully read-only, and a global rate
-limit plus a per-drug floor (many visitors on the same page trigger a single fetch)
+narrow paths) so the web server itself can stay fully read-only, and per-lane rate
+limits plus a per-drug floor (many visitors on the same page trigger a single fetch)
 keep it gentle on the ANSM site. It is entirely **optional**: `docker compose ... up`
 starts it, but `docker compose ... up web` leaves it out; without it, `/api/*`
 returns an error and the button simply reports it as unavailable, the site staying
 100% static. In the background, a **crawler** continuously walks every page in
 frequency (sold-units) order and refreshes any whose copy is older than the
 staleness threshold (`REFRESH_CRAWL_TTL_DAYS`, 12 months by default), then idles
-until the oldest one crosses it again; a "Rafraîchir maintenant" click is
-prioritised and jumps ahead of the crawler (while sharing the same rate limit,
-~2 min by default). It keeps crawl statistics by trigger (button / automatic /
-crawler) available at `GET /api/stats`. Tuning (`REFRESH_*`) lives in `docker/.env`;
-see `docker/env.example`.
+until the oldest one crosses it again. The crawler and the "Rafraîchir maintenant"
+clicks run on **two separate worker lanes with their own rate limits**, so a click is
+scraped almost at once on its fast lane (`REFRESH_DEMAND_RATE_SECONDS`, ~5 s) instead
+of waiting behind the crawler's slow trickle (`REFRESH_RATE_SECONDS`, ~2 min); both
+lanes stay serial and gentle. It keeps crawl statistics by trigger (button /
+automatic / crawler) available at `GET /api/stats`. Tuning (`REFRESH_*`) lives in
+`docker/.env`; see `docker/env.example`.
 
 ## Data source and licence
 

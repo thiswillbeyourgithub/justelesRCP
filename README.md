@@ -129,8 +129,8 @@ appellent un petit service compagnon (`refresh-service.py`, `POST
 /api/refresh/<cis>`) qui récupère la page ANSM en direct, écrit la surcharge et
 régénère cette seule page. C'est **la seule partie dynamique** du projet : elle
 tourne dans un conteneur séparé et durci (en lecture seule sauf trois chemins
-précis) pour que le serveur web, lui, reste entièrement en lecture seule, et un
-limiteur de débit global plus un plancher par médicament (plusieurs visiteurs sur
+précis) pour que le serveur web, lui, reste entièrement en lecture seule, et des
+limiteurs de débit par voie plus un plancher par médicament (plusieurs visiteurs sur
 la même page ne déclenchent qu'une seule requête) évitent de solliciter le site de
 l'ANSM. Tout est **facultatif** : `docker compose ... up` démarre le service, mais
 `docker compose ... up web` le laisse de côté ; sans lui, `/api/*` renvoie une
@@ -138,9 +138,12 @@ erreur et le bouton signale simplement l'indisponibilité, le site restant 100 %
 statique. En arrière-plan, un **crawler** parcourt en continu toutes les pages par
 ordre de fréquence (unités vendues) et rafraîchit celles dont la copie dépasse le
 seuil d'ancienneté (`REFRESH_CRAWL_TTL_DAYS`, 12 mois par défaut), puis se met en
-veille jusqu'à ce que la plus ancienne repasse ce seuil ; un clic sur « Rafraîchir
-maintenant » est prioritaire et passe devant le crawler (tout en partageant le même
-limiteur de débit, ~2 min par défaut). Il tient des statistiques de crawl par
+veille jusqu'à ce que la plus ancienne repasse ce seuil. Le crawler et les clics
+« Rafraîchir maintenant » tournent sur **deux voies distinctes, chacune avec son
+propre limiteur de débit** : un clic est donc récupéré quasi immédiatement sur sa
+voie rapide (`REFRESH_DEMAND_RATE_SECONDS`, ~5 s) au lieu d'attendre derrière le
+filet lent du crawler (`REFRESH_RATE_SECONDS`, ~2 min) ; les deux voies restent
+séquentielles et douces. Il tient des statistiques de crawl par
 origine (bouton / automatique / crawler) consultables via `GET /api/stats`. Les
 réglages (`REFRESH_*`) sont dans `docker/.env` ; voir `docker/env.example`.
 
