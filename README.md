@@ -31,15 +31,8 @@ ANSM / BDPM. Conçu comme une alternative légère aux sites de médicaments len
   traçage publicitaire). Site hébergé en France.
 
 > [!CAUTION]
-> **Prototype en développement.** Ce site est à un stade précoce :
-> certaines fonctionnalités manquent, des bugs sont probables et les données
-> peuvent être incomplètes ou obsolètes.
-
-> [!WARNING]
-> **Le contenu des RCP n'est pas à jour.** Le dernier dépôt du jeu de données sur
-> data.gouv.fr date du **2 mai 2022**, donc les pages reflètent des informations
-> médicaments potentiellement obsolètes. Vérifiez toujours une source faisant
-> autorité et à jour avant de vous fier à une information présente ici.
+> **Prototype en développement.** Certaines fonctionnalités manquent et des
+> bugs sont probables.
 
 ## Démarrage rapide
 
