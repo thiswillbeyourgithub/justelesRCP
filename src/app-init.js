@@ -121,8 +121,10 @@
       ? Math.floor((Date.now() - new Date(bakedAsof + "T00:00:00Z").getTime()) / 86400000)
       : NaN;
 
-    function refresh(cisId) {
-      return fetch("/api/refresh/" + cisId, {
+    // src labels the trigger for the service's crawl stats: "user" for the
+    // button below, "auto" for the fire-and-forget >1-year refresh further down.
+    function refresh(cisId, src) {
+      return fetch("/api/refresh/" + cisId + "?src=" + src, {
         method: "POST",
         headers: { Accept: "application/json" },
       });
@@ -175,7 +177,7 @@
       if (polling) return;
       btn.disabled = true;
       setMsg("mise à jour demandée…");
-      refresh(cis)
+      refresh(cis, "user")
         .then((r) => r.json())
         .then((s) => {
           if (s.status === "fresh") {
@@ -205,7 +207,7 @@
     // a single fetch; the freshened page shows up on a later visit. We do not
     // reload here (no surprise reloads), we just nudge the queue.
     if (Number.isFinite(ageDays) && ageDays > 365) {
-      refresh(cis).catch(() => {});
+      refresh(cis, "auto").catch(() => {});
     }
   })();
 

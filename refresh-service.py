@@ -46,6 +46,7 @@ import time
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 import click
 from loguru import logger
@@ -70,6 +71,11 @@ scrape = _load_module("scrape-rcp.py", "scrape_rcp")
 build = _load_module("build.py", "build_mod")
 
 CIS_RE = re.compile(r"\d{8}")
+# Trigger sources tracked for the crawl stats: a manual button click ("user"),
+# the >1-year auto-refresh a page fires on load ("auto"), and the optional
+# startup batch ("startup", set internally). Any other value a caller passes is
+# treated as "auto".
+_SOURCES = ("user", "auto", "startup")
 
 
 def _asof_today() -> str:
@@ -96,9 +102,23 @@ class Refresher:
         self.user_agent = user_agent
         self._queue: queue.Queue[str] = queue.Queue(maxsize=queue_max)
         self._lock = threading.Lock()
-        self._pending: set[str] = set()  # queued or currently being fetched
+        # cis -> trigger source ("user" | "auto" | "startup") while queued/in flight
+        self._pending: dict[str, str] = {}
         self._manifest = scrape.load_manifest()
         self._last_fetch_monotonic = 0.0
+        # Crawl statistics, surfaced in the logs and at GET /api/stats. Counts of
+        # *completed* refreshes by outcome (ok/empty/error) and by trigger source
+        # (user = button, auto = >1yr page-load refresh, startup = boot batch),
+        # plus request-level short-circuits (fresh = min-interval hit, busy = queue
+        # full). ok+empty+error == user+auto+startup by construction.
+        self._stats = {"ok": 0, "empty": 0, "error": 0,
+                       "user": 0, "auto": 0, "startup": 0,
+                       "fresh": 0, "busy": 0}
+        # Startup freshening batch progress (see enqueue_startup_batch): total
+        # enqueued, how many have completed, and the monotonic start for the ETA.
+        self._batch_total = 0
+        self._batch_done = 0
+        self._batch_start = 0.0
         # Prime build.py's render globals (names + page template + cross-drug
         # backlink index) once, so render_record() can run outside its normal pool
         # worker AND a refreshed page carries the same "Médicaments liés" links a
@@ -162,26 +182,67 @@ class Refresher:
         with self._lock:
             return cis in self._pending
 
+    def _eta_seconds(self, n: int) -> float:
+        """Rough seconds to drain ``n`` queued fetches at the global rate limit.
+
+        Each fetch waits the base rate plus, on average, half the 0..min(rate,10)s
+        jitter, plus ~1s for the request itself. Good enough for an ETA hint.
+        """
+        return n * (self.rate + min(self.rate, 10.0) / 2 + 1.0)
+
+    def stats(self) -> dict:
+        """Snapshot of the crawl counters (served at GET /api/stats)."""
+        with self._lock:
+            snap = dict(self._stats)
+            queued = self._queue.qsize()
+            pending = len(self._pending)
+            batch = {"total": self._batch_total, "done": self._batch_done}
+        snap["done"] = snap["ok"] + snap["empty"] + snap["error"]
+        snap["queued"] = queued
+        snap["pending"] = pending
+        snap["eta_seconds"] = round(self._eta_seconds(queued), 1)
+        snap["startup_batch"] = batch
+        return snap
+
     # -- public API ----------------------------------------------------------
 
-    def request(self, cis: str) -> dict:
+    def request(self, cis: str, source: str = "auto") -> dict:
         """Enqueue a refresh for one CIS; return a small status dict.
+
+        ``source`` is the trigger, tallied for the crawl stats: "user" (button),
+        "auto" (the >1-year page-load refresh) or "startup" (boot batch); any
+        other value is treated as "auto". A manual click on an already-queued
+        item upgrades the recorded source to "user" so the stats credit the human
+        action.
 
         ``fresh``  - refreshed within min_interval, nothing to do.
         ``queued`` - accepted (either just now or already in flight).
         ``busy``   - the work queue is full; the caller should retry later.
         """
+        source = source if source in _SOURCES else "auto"
         if self._recently_fetched(cis):
+            with self._lock:
+                self._stats["fresh"] += 1
             return {"status": "fresh", "asof": self.asof_of(cis)}
+        # NB: asof_of() reads the manifest under self._lock, so it must NOT be
+        # called while we hold the lock here (self._lock is a plain, non-reentrant
+        # Lock; re-acquiring it on the same thread deadlocks). Decide under the
+        # lock, then read asof after releasing it.
         with self._lock:
-            if cis in self._pending:
-                return {"status": "queued", "asof": self.asof_of(cis)}
-            try:
-                self._queue.put_nowait(cis)
-            except queue.Full:
-                return {"status": "busy"}
-            self._pending.add(cis)
-        logger.info("queued {} (pending={})", cis, self._queue.qsize())
+            already = cis in self._pending
+            if already:
+                if source == "user":
+                    self._pending[cis] = "user"  # a click upgrades a queued auto/startup item
+            else:
+                try:
+                    self._queue.put_nowait(cis)
+                except queue.Full:
+                    self._stats["busy"] += 1
+                    return {"status": "busy"}
+                self._pending[cis] = source
+                pending_n = self._queue.qsize()
+        if not already:
+            logger.info("queued {} [{}] (pending={})", cis, source, pending_n)
         return {"status": "queued", "asof": self.asof_of(cis)}
 
     # -- worker --------------------------------------------------------------
@@ -200,17 +261,20 @@ class Refresher:
                                  headers=headers) as client:
             while True:
                 cis = self._queue.get()
+                with self._lock:
+                    source = self._pending.get(cis, "auto")
                 try:
-                    self._process(client, cis)
+                    self._process(client, cis, source)
                 except Exception as exc:  # never let the worker thread die
-                    logger.error("refresh {} failed: {}", cis, exc)
+                    logger.error("refresh {} [{}] failed: {}", cis, source, exc)
                     with self._lock:
                         self._manifest[cis] = {"last_fetch": scrape._now_iso(),
                                                "status": "error", "error": str(exc)[:200]}
                     self._persist_manifest()
+                    self._record(cis, source, "error", f"ERROR {str(exc)[:120]}")
                 finally:
                     with self._lock:
-                        self._pending.discard(cis)
+                        self._pending.pop(cis, None)
                     self._queue.task_done()
 
     def _persist_manifest(self) -> None:
@@ -233,9 +297,43 @@ class Refresher:
             logger.warning("could not persist scrape manifest ({}); "
                            "refresh already applied", exc)
 
-    def _process(self, client, cis: str) -> None:
+    def _record(self, cis: str, source: str, outcome: str, result: str) -> None:
+        """Tally one completed refresh and emit its progress line.
+
+        ``outcome`` is 'ok' | 'empty' | 'error'. A startup-batch item logs a
+        progress bar (done/total + ETA over the batch); an on-demand item logs
+        the live queue depth + ETA instead. A compact aggregate line follows at
+        the first completion, every 10th, and whenever the queue drains, so the
+        overall run is visible at INFO without the per-request DEBUG chatter.
+        """
+        with self._lock:
+            self._stats[outcome] += 1
+            self._stats[source] += 1
+            if source == "startup":
+                self._batch_done += 1
+            snap = dict(self._stats)
+            batch_done, batch_total = self._batch_done, self._batch_total
+            to_go = self._queue.qsize()
+        done = snap["ok"] + snap["empty"] + snap["error"]
+        if source == "startup" and batch_total:
+            logger.info("{} | startup {} -> {}",
+                        scrape._progress(batch_done, batch_total, self._batch_start),
+                        cis, result)
+        else:
+            logger.info("refreshed {} [{}] -> {} | to-go={} eta {}", cis, source,
+                        result, to_go, scrape._fmt_dur(self._eta_seconds(to_go)))
+        if done == 1 or done % 10 == 0 or to_go == 0:
+            logger.info(
+                "stats | done={} (startup={} auto={} user={}) ok={} empty={} err={} "
+                "| to-go={} eta {}",
+                done, snap["startup"], snap["auto"], snap["user"],
+                snap["ok"], snap["empty"], snap["error"],
+                to_go, scrape._fmt_dur(self._eta_seconds(to_go)),
+            )
+
+    def _process(self, client, cis: str, source: str) -> None:
         self._throttle()
-        logger.info("fetching {} from {}", cis, scrape.PAGE_URL.format(cis=cis))
+        logger.debug("fetching {} [{}] from {}", cis, source, scrape.PAGE_URL.format(cis=cis))
         page, status = scrape.fetch_one(client, cis)
         if status != 200:
             raise RuntimeError(f"HTTP {status}")
@@ -254,22 +352,24 @@ class Refresher:
         # EROFS on the read-only /app/data) no longer leaves the page stuck on
         # its old capture date, which is exactly the bug this ordering fixes.
         if rcp == "":
-            logger.info("refreshed {} -> no RCP (empty overlay)", cis)
+            self._record(cis, source, "empty", "no RCP (empty overlay)")
         else:
             row = build.render_record((cis, rcp, asof))
             if row is None:
-                logger.warning("refreshed {} but render produced nothing", cis)
+                logger.warning("render produced nothing for {}", cis)
+                self._record(cis, source, "empty", "render produced nothing")
             else:
-                logger.info("refreshed {} -> {} ({} bytes)", cis, row["slug"], len(rcp))
+                self._record(cis, source, "ok", f"{row['slug']} ({len(rcp)} bytes)")
         self._persist_manifest()
 
 
 class _Handler(BaseHTTPRequestHandler):
     """Minimal JSON API. Routes:
 
-    ``POST /api/refresh/<cis>`` - enqueue a refresh; -> {status, asof?}.
+    ``POST /api/refresh/<cis>[?src=user|auto]`` - enqueue a refresh; -> {status, asof?}.
     ``GET  /api/status/<cis>``  - {asof, pending} so the button can poll.
-    ``GET  /api/health``        - {ok: true} for container healthchecks.
+    ``GET  /api/stats``         - crawl counters by source + queue depth + ETA.
+    ``GET  /api/health``        - {ok: true} for container healthchecks (never logged).
     """
 
     server_version = "justelesRCP-refresh"
@@ -296,6 +396,9 @@ class _Handler(BaseHTTPRequestHandler):
         if self.path == "/api/health":
             self._send(200, {"ok": True})
             return
+        if self.path == "/api/stats":
+            self._send(200, REFRESHER.stats())
+            return
         m = re.fullmatch(r"/api/status/(\d{8})", self.path)
         if m:
             cis = m.group(1)
@@ -305,11 +408,13 @@ class _Handler(BaseHTTPRequestHandler):
         self._send(404, {"error": "not found"})
 
     def do_POST(self) -> None:
-        m = re.fullmatch(r"/api/refresh/(\d{8})", self.path)
+        parts = urlsplit(self.path)  # strip any ?src=... query before matching
+        m = re.fullmatch(r"/api/refresh/(\d{8})", parts.path)
         if not m:
             self._send(404, {"error": "not found"})
             return
-        result = REFRESHER.request(m.group(1))
+        src = parse_qs(parts.query).get("src", ["auto"])[0]
+        result = REFRESHER.request(m.group(1), src)
         code = 429 if result.get("status") == "busy" else 200
         self._send(code, result)
 
