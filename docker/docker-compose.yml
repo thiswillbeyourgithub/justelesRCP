@@ -89,8 +89,9 @@ services:
     # REFRESH_UID/REFRESH_GID in docker/.env if your host uid differs (e.g. VPS).
     user: "${REFRESH_UID:-1000}:${REFRESH_GID:-1000}"
     # Same env file as web. Tuning knobs (all optional, sane defaults in the
-    # script): REFRESH_RATE_SECONDS, REFRESH_MIN_INTERVAL_SECONDS,
-    # REFRESH_QUEUE_MAX, RCP_OVERLAY_GZIP. See docker/env.example.
+    # script): REFRESH_RATE_SECONDS (default 120), REFRESH_MIN_INTERVAL_SECONDS,
+    # REFRESH_QUEUE_MAX, REFRESH_CRAWL (perpetual crawler on/off) +
+    # REFRESH_CRAWL_TTL_DAYS, RCP_OVERLAY_GZIP. See docker/env.example.
     env_file:
       - .env
     volumes:

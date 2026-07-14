@@ -6,10 +6,16 @@
 
 The public site stays 100% static: Caddy serves precomputed files read-only and
 nothing dynamic runs to render a page. This service is the ONE runtime piece,
-deliberately minimal, behind two things:
+deliberately minimal, behind three things:
 
-  * the "Rafraichir maintenant" button on an RCP page, and
-  * the automatic background refresh a page older than a year triggers on load.
+  * the "Rafraichir maintenant" button on an RCP page (an on-demand, high-priority
+    refresh), and
+  * the automatic background refresh a page older than a year triggers on load, and
+  * a perpetual background CRAWLER that walks every page in frequency (sold-units)
+    order, refreshing any whose captured copy is older than the crawl TTL
+    (``REFRESH_CRAWL_TTL_DAYS``, default 365d), then idles until the oldest fresh
+    page ages past it again. On-demand button/auto requests jump ahead of it, but
+    every fetch (crawler or on-demand) shares the ONE global rate limit below.
 
 It exposes a handful of JSON endpoints (see ``_Handler``); the important one is
 ``POST /api/refresh/<cis>``. That re-scrapes ONE drug from the live ANSM site,
@@ -43,7 +49,7 @@ import re
 import sys
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -72,10 +78,10 @@ build = _load_module("build.py", "build_mod")
 
 CIS_RE = re.compile(r"\d{8}")
 # Trigger sources tracked for the crawl stats: a manual button click ("user"),
-# the >1-year auto-refresh a page fires on load ("auto"), and the optional
-# startup batch ("startup", set internally). Any other value a caller passes is
-# treated as "auto".
-_SOURCES = ("user", "auto", "startup")
+# the >1-year auto-refresh a page fires on load ("auto"), and the perpetual
+# background crawler ("crawl", set internally). Any other value a caller passes
+# on /api/refresh is treated as "auto"; "crawl" is never accepted from a caller.
+_SOURCES = ("user", "auto", "crawl")
 
 
 def _asof_today() -> str:
@@ -84,41 +90,56 @@ def _asof_today() -> str:
 
 
 class Refresher:
-    """Serialises on-demand refreshes behind one rate-limited worker thread.
+    """Serialises every refresh behind one rate-limited worker thread.
 
     A single worker means every outbound fetch is naturally ordered; the worker
     sleeps ``rate`` seconds (+ jitter) between fetches so the aggregate request
-    rate to ANSM is bounded no matter how many callers enqueue work. A CIS already
-    queued or in flight is not enqueued again (dedup), and a CIS refreshed within
-    ``min_interval`` seconds is reported "fresh" without any fetch at all.
+    rate to ANSM is bounded no matter what enqueues work. Two sources feed it:
+
+    * an ON-DEMAND lane (``_demand``) for the button and the >1-year auto-refresh.
+      A CIS already queued or in flight is not enqueued again (dedup), and a CIS
+      refreshed within ``min_interval`` seconds is reported "fresh" without any
+      fetch. This lane has PRIORITY: the worker drains it before the crawler.
+    * a perpetual CRAWLER that rotates through every page in frequency order,
+      picking the next one whose captured copy is older than ``crawl_ttl_days``.
+      When a full rotation finds nothing due, it idles until the oldest fresh
+      page ages past the TTL, then resumes. Set ``crawl=False`` to disable it.
     """
 
     def __init__(self, *, rate: float, min_interval: float, timeout: float,
-                 gzip_overlay: bool, user_agent: str, queue_max: int) -> None:
+                 gzip_overlay: bool, user_agent: str, queue_max: int,
+                 crawl: bool = True, crawl_ttl_days: int = 365) -> None:
         self.rate = rate
         self.min_interval = min_interval
         self.timeout = timeout
         self.gzip_overlay = gzip_overlay
         self.user_agent = user_agent
-        self._queue: queue.Queue[str] = queue.Queue(maxsize=queue_max)
+        # On-demand (button/auto) lane. It has priority over the crawler and is
+        # the only lane a caller can fill, so its bound is what sheds load as "busy".
+        self._demand: queue.Queue[str] = queue.Queue(maxsize=queue_max)
         self._lock = threading.Lock()
-        # cis -> trigger source ("user" | "auto" | "startup") while queued/in flight
+        # cis -> trigger source ("user" | "auto" | "crawl") while queued/in flight
         self._pending: dict[str, str] = {}
         self._manifest = scrape.load_manifest()
         self._last_fetch_monotonic = 0.0
+        # Perpetual crawler state (see _claim_next_crawl / _idle_wait_seconds).
+        # _crawl_order is the frequency-ordered list of pages to rotate through,
+        # built once in the worker thread; _crawl_idx is the rotating cursor;
+        # _crawl_idle records whether the last rotation found nothing due.
+        self._crawl = crawl
+        self._crawl_ttl_days = crawl_ttl_days
+        self._crawl_order: list[str] = []
+        self._crawl_idx = 0
+        self._crawl_idle = False
+        self._idle_logged = False
         # Crawl statistics, surfaced in the logs and at GET /api/stats. Counts of
         # *completed* refreshes by outcome (ok/empty/error) and by trigger source
-        # (user = button, auto = >1yr page-load refresh, startup = boot batch),
+        # (user = button, auto = >1yr page-load refresh, crawl = background crawler),
         # plus request-level short-circuits (fresh = min-interval hit, busy = queue
-        # full). ok+empty+error == user+auto+startup by construction.
+        # full). ok+empty+error == user+auto+crawl by construction.
         self._stats = {"ok": 0, "empty": 0, "error": 0,
-                       "user": 0, "auto": 0, "startup": 0,
+                       "user": 0, "auto": 0, "crawl": 0,
                        "fresh": 0, "busy": 0}
-        # Startup freshening batch progress (see enqueue_startup_batch): total
-        # enqueued, how many have completed, and the monotonic start for the ETA.
-        self._batch_total = 0
-        self._batch_done = 0
-        self._batch_start = 0.0
         # Prime build.py's render globals (names + page template + cross-drug
         # backlink index) once, so render_record() can run outside its normal pool
         # worker AND a refreshed page carries the same "Médicaments liés" links a
@@ -130,10 +151,9 @@ class Refresher:
         # Restrict link targets to CIS that already have a built page. This
         # container has no CIS_RCP.csv (only dist/rcp is mounted), so derive the
         # page set from the rendered files rather than the source. Prevents a
-        # backlink to a pageless CIS (which would 404, e.g. HELICOBACTER).
+        # backlink to a pageless CIS (which would 404, e.g. HELICOBACTER). The
+        # crawler is also restricted to this set (it never fetches a pageless CIS).
         page_cis = build.page_cis_from_dist()
-        # Kept for the optional startup batch: the set of CIS it may enqueue is
-        # exactly the pages that render here (never a pageless CIS).
         self._page_cis = page_cis
         xref = build.build_xref_index(names, page_cis)
         logger.info(
@@ -197,73 +217,149 @@ class Refresher:
         """Snapshot of the crawl counters (served at GET /api/stats)."""
         with self._lock:
             snap = dict(self._stats)
-            queued = self._queue.qsize()
+            queued = self._demand.qsize()
             pending = len(self._pending)
-            batch = {"total": self._batch_total, "done": self._batch_done}
+            crawl = {"enabled": self._crawl, "total": len(self._crawl_order),
+                     "idx": self._crawl_idx, "ttl_days": self._crawl_ttl_days,
+                     "idle": self._crawl_idle}
         snap["done"] = snap["ok"] + snap["empty"] + snap["error"]
-        snap["queued"] = queued
+        snap["queued"] = queued  # on-demand (button/auto) requests waiting
         snap["pending"] = pending
         snap["eta_seconds"] = round(self._eta_seconds(queued), 1)
-        snap["startup_batch"] = batch
+        snap["crawl"] = crawl
         return snap
 
-    def enqueue_startup_batch(self, limit: int, ttl_days: int) -> int:
-        """Queue up to ``limit`` of the stalest pages for a boot-time freshen.
+    # -- perpetual crawler ---------------------------------------------------
 
-        Reuses scrape.build_queue (the SAME frequency ordering + TTL the batch
-        scraper CLI uses), restricted to the CIS that actually render a page here,
-        so the service tops up the most out-of-date popular drugs in the
-        background behind the usual global rate limit. Returns the count enqueued.
-        It is TTL-gated, so a restart soon after a run enqueues nothing, and
-        bounded by REFRESH_QUEUE_MAX. Runs once at startup; on-demand button/auto
-        refreshes interleave normally. ``limit <= 0`` disables it.
+    def _build_crawl_order(self) -> None:
+        """Build the frequency-ordered page list the crawler rotates through.
+
+        Reuses scrape.build_queue (the SAME frequency ordering the batch scraper
+        CLI uses) with ``force=True`` so it returns EVERY page in priority order,
+        restricted to the CIS that actually render a page here (never a pageless
+        CIS). Runs once in the worker thread so the HTTP server can start serving
+        immediately; per-page due-ness is checked live in _claim_next_crawl, not
+        frozen here. Degrades to no crawler (empty order) if the BDPM inputs are
+        missing rather than crashing the service.
         """
-        if limit <= 0:
-            return 0
+        if not self._crawl:
+            return
         try:
-            due = scrape.build_queue(ttl_days, restrict=self._page_cis)
+            order = scrape.build_queue(self._crawl_ttl_days, force=True,
+                                       restrict=self._page_cis)
         except SystemExit as exc:  # e.g. missing CIS_bdpm; degrade, don't crash
-            logger.warning("startup batch skipped: {}", exc)
-            return 0
-        queued = 0
+            logger.warning("crawler disabled: {}", exc)
+            self._crawl = False
+            return
+        self._crawl_order = order
+        logger.info("crawler armed: {} pages in frequency order, ttl {}d, rate {}s",
+                    len(order), self._crawl_ttl_days, self.rate)
+
+    def _claim_next_crawl(self) -> str | None:
+        """Claim the next due page to crawl, or None if a full rotation finds none.
+
+        Rotates a cursor through the frequency-ordered page list, returning the
+        first CIS that is due per the crawl TTL (see scrape.is_due) and not already
+        queued/in flight on-demand. The claimed CIS is marked pending as "crawl" so
+        a concurrent button click for the SAME page dedups instead of double-fetching.
+        A full rotation with nothing due flips the crawler to idle and returns None.
+        """
         with self._lock:
-            self._batch_start = time.monotonic()
-            for cis in due:
-                if queued >= limit:
-                    break
+            n = len(self._crawl_order)
+            for _ in range(n):
+                cis = self._crawl_order[self._crawl_idx]
+                self._crawl_idx = (self._crawl_idx + 1) % n
                 if cis in self._pending:
-                    continue
+                    continue  # already queued/in flight on-demand
+                if scrape.is_due(self._manifest.get(cis), self._crawl_ttl_days):
+                    self._pending[cis] = "crawl"
+                    self._crawl_idle = False
+                    self._idle_logged = False
+                    return cis
+            self._crawl_idle = True
+            return None
+
+    def _idle_wait_seconds(self) -> float:
+        """Seconds until the oldest fresh page next crosses the crawl TTL (capped).
+
+        Called only after a full rotation found nothing due, so every page has a
+        recent last_fetch: wake at the soonest one's expiry so the crawler resumes
+        exactly when a page ages past the TTL, but re-poll at least hourly so a
+        manifest or clock change is noticed. A page with no/invalid timestamp is
+        due now (return ~immediately).
+        """
+        cap = 3600.0
+        now = datetime.now(timezone.utc)
+        ttl = timedelta(days=self._crawl_ttl_days)
+        soonest: float | None = None
+        with self._lock:
+            for cis in self._crawl_order:
+                last = (self._manifest.get(cis) or {}).get("last_fetch")
+                if not last:
+                    return 1.0
                 try:
-                    self._queue.put_nowait(cis)
-                except queue.Full:
-                    break
-                self._pending[cis] = "startup"
-                queued += 1
-            self._batch_total = queued
-        if queued:
-            logger.info("startup batch: enqueued {} of {} due page(s) (ttl={}d); "
-                        "eta {} at rate {}s", queued, len(due), ttl_days,
-                        scrape._fmt_dur(self._eta_seconds(queued)), self.rate)
-        else:
-            logger.info("startup batch: nothing due (ttl={}d)", ttl_days)
-        return queued
+                    secs = (datetime.fromisoformat(last) + ttl - now).total_seconds()
+                except ValueError:
+                    return 1.0
+                if soonest is None or secs < soonest:
+                    soonest = secs
+        if soonest is None:
+            return cap
+        return max(1.0, min(soonest, cap))
+
+    def _next_task(self) -> tuple[str, str]:
+        """Block until there is work, then return (cis, source) to fetch.
+
+        On-demand (button/auto) requests have PRIORITY: the demand lane is drained
+        before the crawler is consulted. When the crawler has nothing due, the
+        worker waits on the demand lane with a timeout equal to the next page's
+        TTL expiry, so it wakes for either a click or the next due page.
+        """
+        while True:
+            try:  # 1) on-demand lane first (priority)
+                cis = self._demand.get_nowait()
+                with self._lock:
+                    return cis, self._pending.get(cis, "auto")
+            except queue.Empty:
+                pass
+            if self._crawl:  # 2) perpetual background crawler
+                cis = self._claim_next_crawl()
+                if cis is not None:
+                    return cis, "crawl"
+                wait = self._idle_wait_seconds()  # 3) nothing due: idle-wait
+                if not self._idle_logged:
+                    logger.info("crawler idle: all {} pages within {}d; next due in {}",
+                                len(self._crawl_order), self._crawl_ttl_days,
+                                scrape._fmt_dur(wait))
+                    self._idle_logged = True
+            else:
+                wait = None  # no crawler: block until a click arrives
+            try:
+                cis = self._demand.get(timeout=wait)
+            except queue.Empty:
+                continue  # idle-wait elapsed: re-check crawl due-ness
+            with self._lock:
+                return cis, self._pending.get(cis, "auto")
 
     # -- public API ----------------------------------------------------------
 
     def request(self, cis: str, source: str = "auto") -> dict:
-        """Enqueue a refresh for one CIS; return a small status dict.
+        """Enqueue an on-demand refresh for one CIS; return a small status dict.
 
-        ``source`` is the trigger, tallied for the crawl stats: "user" (button),
-        "auto" (the >1-year page-load refresh) or "startup" (boot batch); any
-        other value is treated as "auto". A manual click on an already-queued
-        item upgrades the recorded source to "user" so the stats credit the human
-        action.
+        ``source`` is the trigger, tallied for the crawl stats: "user" (button) or
+        "auto" (the >1-year page-load refresh); any other value (including "crawl",
+        which only the background crawler sets internally) is treated as "auto". A
+        manual click on an already-queued item upgrades the recorded source to
+        "user" so the stats credit the human action, AND, because on-demand items
+        have priority over the crawler, guarantees the human wait is honoured next.
 
         ``fresh``  - refreshed within min_interval, nothing to do.
         ``queued`` - accepted (either just now or already in flight).
-        ``busy``   - the work queue is full; the caller should retry later.
+        ``busy``   - the on-demand lane is full; the caller should retry later.
         """
-        source = source if source in _SOURCES else "auto"
+        # "crawl" is an internal source the caller may not set; anything else
+        # unrecognised collapses to "auto". _SOURCES stays the canonical set.
+        source = source if source in _SOURCES and source != "crawl" else "auto"
         if self._recently_fetched(cis):
             with self._lock:
                 self._stats["fresh"] += 1
@@ -275,18 +371,20 @@ class Refresher:
         with self._lock:
             already = cis in self._pending
             if already:
+                # Upgrade a queued auto/crawl item to "user" so a human click both
+                # credits the stats and jumps ahead of the crawler on the next pick.
                 if source == "user":
-                    self._pending[cis] = "user"  # a click upgrades a queued auto/startup item
+                    self._pending[cis] = "user"
             else:
                 try:
-                    self._queue.put_nowait(cis)
+                    self._demand.put_nowait(cis)
                 except queue.Full:
                     self._stats["busy"] += 1
                     return {"status": "busy"}
                 self._pending[cis] = source
-                pending_n = self._queue.qsize()
+                pending_n = self._demand.qsize()
         if not already:
-            logger.info("queued {} [{}] (pending={})", cis, source, pending_n)
+            logger.info("queued {} [{}] (on-demand pending={})", cis, source, pending_n)
         return {"status": "queued", "asof": self.asof_of(cis)}
 
     # -- worker --------------------------------------------------------------
@@ -300,13 +398,16 @@ class Refresher:
         self._last_fetch_monotonic = time.monotonic()
 
     def _run(self) -> None:
+        # Build the crawler's frequency-ordered page list once, in this worker
+        # thread, so the HTTP server (started right after in main()) begins
+        # accepting immediately instead of blocking on the BDPM I/O. On-demand
+        # requests that arrive meanwhile just wait in the priority lane.
+        self._build_crawl_order()
         headers = {"User-Agent": self.user_agent}
         with scrape.httpx.Client(follow_redirects=True, timeout=self.timeout,
                                  headers=headers) as client:
             while True:
-                cis = self._queue.get()
-                with self._lock:
-                    source = self._pending.get(cis, "auto")
+                cis, source = self._next_task()
                 try:
                     self._process(client, cis, source)
                 except Exception as exc:  # never let the worker thread die
@@ -319,7 +420,6 @@ class Refresher:
                 finally:
                     with self._lock:
                         self._pending.pop(cis, None)
-                    self._queue.task_done()
 
     def _persist_manifest(self) -> None:
         """Persist the scrape manifest, best-effort and NEVER fatal.
@@ -344,33 +444,30 @@ class Refresher:
     def _record(self, cis: str, source: str, outcome: str, result: str) -> None:
         """Tally one completed refresh and emit its progress line.
 
-        ``outcome`` is 'ok' | 'empty' | 'error'. A startup-batch item logs a
-        progress bar (done/total + ETA over the batch); an on-demand item logs
-        the live queue depth + ETA instead. A compact aggregate line follows at
-        the first completion, every 10th, and whenever the queue drains, so the
-        overall run is visible at INFO without the per-request DEBUG chatter.
+        ``outcome`` is 'ok' | 'empty' | 'error'. A crawler item logs its position
+        in the frequency rotation; an on-demand item logs the live on-demand queue
+        depth + ETA. A compact aggregate line follows at the first completion and
+        every 10th, so the overall run is visible at INFO without the per-request
+        DEBUG chatter.
         """
         with self._lock:
             self._stats[outcome] += 1
             self._stats[source] += 1
-            if source == "startup":
-                self._batch_done += 1
             snap = dict(self._stats)
-            batch_done, batch_total = self._batch_done, self._batch_total
-            to_go = self._queue.qsize()
+            to_go = self._demand.qsize()
+            idx, total = self._crawl_idx, len(self._crawl_order)
         done = snap["ok"] + snap["empty"] + snap["error"]
-        if source == "startup" and batch_total:
-            logger.info("{} | startup {} -> {}",
-                        scrape._progress(batch_done, batch_total, self._batch_start),
-                        cis, result)
+        if source == "crawl":
+            logger.info("crawl {}/{} {} -> {} | on-demand to-go={}",
+                        idx, total, cis, result, to_go)
         else:
-            logger.info("refreshed {} [{}] -> {} | to-go={} eta {}", cis, source,
+            logger.info("refreshed {} [{}] -> {} | on-demand to-go={} eta {}", cis, source,
                         result, to_go, scrape._fmt_dur(self._eta_seconds(to_go)))
-        if done == 1 or done % 10 == 0 or to_go == 0:
+        if done == 1 or done % 10 == 0:
             logger.info(
-                "stats | done={} (startup={} auto={} user={}) ok={} empty={} err={} "
-                "| to-go={} eta {}",
-                done, snap["startup"], snap["auto"], snap["user"],
+                "stats | done={} (crawl={} auto={} user={}) ok={} empty={} err={} "
+                "| on-demand to-go={} eta {}",
+                done, snap["crawl"], snap["auto"], snap["user"],
                 snap["ok"], snap["empty"], snap["error"],
                 to_go, scrape._fmt_dur(self._eta_seconds(to_go)),
             )
@@ -471,10 +568,12 @@ REFRESHER: Refresher | None = None  # set in main(), read by _Handler
               help="Bind address (env REFRESH_HOST). Use 0.0.0.0 behind the proxy.")
 @click.option("--port", type=int, default=8460, show_default=True, envvar="REFRESH_PORT",
               help="Port to listen on (env REFRESH_PORT).")
-@click.option("--rate", type=float, default=2.0, show_default=True,
+@click.option("--rate", type=float, default=120.0, show_default=True,
               envvar="REFRESH_RATE_SECONDS",
-              help="Base seconds between outbound ANSM fetches, GLOBAL across all "
-                   "callers (env REFRESH_RATE_SECONDS). Random 0..min(rate,10)s added.")
+              help="Base seconds between outbound ANSM fetches, GLOBAL across the "
+                   "crawler AND on-demand clicks (env REFRESH_RATE_SECONDS). A random "
+                   "0..min(rate,10)s jitter is added. Default 120 (~2 min) is a gentle "
+                   "trickle; a click can wait up to one gap even though it jumps the queue.")
 @click.option("--min-interval", type=float, default=3600.0, show_default=True,
               envvar="REFRESH_MIN_INTERVAL_SECONDS",
               help="Per-CIS anti-hammer floor: a drug refreshed more recently than "
@@ -482,17 +581,18 @@ REFRESHER: Refresher | None = None  # set in main(), read by _Handler
                    "(env REFRESH_MIN_INTERVAL_SECONDS).")
 @click.option("--queue-max", type=int, default=200, show_default=True,
               envvar="REFRESH_QUEUE_MAX",
-              help="Max pending refreshes; further requests get 'busy' (env REFRESH_QUEUE_MAX).")
-@click.option("--startup-batch", type=int, default=60, show_default=True,
-              envvar="REFRESH_STARTUP_BATCH",
-              help="On startup, enqueue up to N stalest pages for a background "
-                   "freshen behind the same rate limit (env REFRESH_STARTUP_BATCH). "
-                   "Set 0 to disable. TTL-gated (see --ttl-days), so a quick restart "
-                   "re-fetches nothing.")
-@click.option("--ttl-days", type=int, default=30, show_default=True,
-              envvar="REFRESH_TTL_DAYS",
-              help="Startup batch only: skip pages captured within this many days "
-                   "(env REFRESH_TTL_DAYS). Mirrors scrape-rcp.py's --ttl-days.")
+              help="Max pending ON-DEMAND refreshes; further requests get 'busy' "
+                   "(env REFRESH_QUEUE_MAX). The crawler is unbounded (it holds no queue).")
+@click.option("--crawl/--no-crawl", default=True, show_default=True,
+              envvar="REFRESH_CRAWL",
+              help="Run the perpetual background crawler that freshens every page in "
+                   "frequency order behind the same rate limit (env REFRESH_CRAWL). "
+                   "--no-crawl leaves only the button/auto on-demand refreshes.")
+@click.option("--crawl-ttl-days", type=int, default=365, show_default=True,
+              envvar="REFRESH_CRAWL_TTL_DAYS",
+              help="Crawler staleness threshold: it refreshes any page whose captured "
+                   "copy is older than this, then idles until the oldest one ages past "
+                   "it again (env REFRESH_CRAWL_TTL_DAYS). Default 365 (~12 months).")
 @click.option("--timeout", type=float, default=30.0, show_default=True,
               help="Per-request HTTP timeout in seconds.")
 @click.option("--gzip/--no-gzip", "gzip_overlay", default=True, show_default=True,
@@ -508,9 +608,9 @@ REFRESHER: Refresher | None = None  # set in main(), read by _Handler
                    "per-request DEBUG chatter (status polls, refresh POSTs) out of the "
                    "logs; the /api/health check is never logged at any level.")
 def main(host: str, port: int, rate: float, min_interval: float, queue_max: int,
-         startup_batch: int, ttl_days: int, timeout: float, gzip_overlay: bool,
+         crawl: bool, crawl_ttl_days: int, timeout: float, gzip_overlay: bool,
          user_agent: str | None, log_level: str) -> None:
-    """Run the on-demand RCP refresh service (see module docstring)."""
+    """Run the RCP refresh service (see module docstring)."""
     global REFRESHER
     # Replace loguru's default DEBUG sink with one at the chosen level, so the
     # noisy per-request lines (and the every-30s healthcheck) stay out of the
@@ -519,19 +619,18 @@ def main(host: str, port: int, rate: float, min_interval: float, queue_max: int,
     logger.add(sys.stderr, level=log_level.upper())
     ua = user_agent or ("justelesRCP-refresh/1.0 (RCP freshness bot; "
                         "contact hedv10g9@mailer.me)")
+    # The perpetual crawler (if enabled) runs inside the single worker thread the
+    # Refresher already owns; it builds its frequency-ordered page list there, so
+    # the HTTP server below starts accepting (and the /api/health check passes)
+    # without waiting on the BDPM I/O.
     REFRESHER = Refresher(rate=rate, min_interval=min_interval, timeout=timeout,
-                          gzip_overlay=gzip_overlay, user_agent=ua, queue_max=queue_max)
+                          gzip_overlay=gzip_overlay, user_agent=ua, queue_max=queue_max,
+                          crawl=crawl, crawl_ttl_days=crawl_ttl_days)
     REFRESHER.start()
-    logger.info("refresh service on {}:{} (rate {}s, min-interval {}s, overlay={})",
-                host, port, rate, min_interval, "gzip" if gzip_overlay else "plain")
-    # Background freshening of the stalest pages (default on; REFRESH_STARTUP_BATCH=0
-    # disables). Run it in a daemon thread so building the queue (a few seconds of
-    # BDPM I/O) never delays the HTTP server from accepting, and the container
-    # healthcheck on /api/health passes immediately; the worker drains it behind
-    # the usual rate limit.
-    threading.Thread(target=REFRESHER.enqueue_startup_batch,
-                     args=(startup_batch, ttl_days),
-                     name="startup-batch", daemon=True).start()
+    logger.info("refresh service on {}:{} (rate {}s, min-interval {}s, overlay={}, "
+                "crawl={})", host, port, rate, min_interval,
+                "gzip" if gzip_overlay else "plain",
+                f"on ttl={crawl_ttl_days}d" if crawl else "off")
     ThreadingHTTPServer((host, port), _Handler).serve_forever()
 
 
