@@ -135,8 +135,11 @@ la même page ne déclenchent qu'une seule requête) évitent de solliciter le s
 l'ANSM. Tout est **facultatif** : `docker compose ... up` démarre le service, mais
 `docker compose ... up web` le laisse de côté ; sans lui, `/api/*` renvoie une
 erreur et le bouton signale simplement l'indisponibilité, le site restant 100 %
-statique. Les réglages (`REFRESH_*`) sont dans `docker/.env` ; voir
-`docker/env.example`.
+statique. En option, il peut aussi rafraîchir au démarrage un petit lot des pages
+les plus anciennes (`REFRESH_STARTUP_BATCH`), toujours derrière le même limiteur de
+débit, et il tient des statistiques de crawl par origine (bouton / automatique /
+démarrage) consultables via `GET /api/stats`. Les réglages (`REFRESH_*`) sont dans
+`docker/.env` ; voir `docker/env.example`.
 
 ## Source des données et licence
 

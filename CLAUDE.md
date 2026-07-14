@@ -172,12 +172,30 @@ Key facts that aren't obvious from a single file:
   (`REFRESH_MIN_INTERVAL_SECONDS`, default 1h), so repeat clicks and many visitors
   on one stale page collapse to a single fetch; a bounded queue (`REFRESH_QUEUE_MAX`)
   sheds load as "busy". Endpoints: `GET /api/health`, `GET /api/status/<cis>`
-  (asof + pending), `POST /api/refresh/<cis>` (returns fresh|queued|busy). It is
+  (asof + pending), `GET /api/stats` (crawl counters), `POST /api/refresh/<cis>`
+  (returns fresh|queued|busy). It is
   same-origin, so the strict `connect-src 'self'` CSP covers the button's fetches.
   If the service is absent, `/api/*` just 502s and the button degrades gracefully,
   so static-only deploys omit it entirely. Both `build.py` and `scrape-rcp.py`
   guard `__main__`, so importing them must stay import-safe (no side effects at
   module load); the refresh service depends on that.
+  **Crawl statistics + logging.** Each refresh is tagged with its trigger
+  *source* (`user` = button, `auto` = the >1yr page-load refresh, `startup` =
+  the boot batch below); `app-init.js` sends `?src=user`/`?src=auto` and the
+  service records counts by source and outcome (ok/empty/error) plus queue
+  depth/ETA, logged as per-item + rolling-aggregate lines and exposed at
+  `GET /api/stats`. `request()` must NOT call `asof_of()` while holding
+  `self._lock` (it re-reads the manifest under the same non-reentrant lock:
+  that path deadlocked before). `REFRESH_LOG_LEVEL` (default INFO) sets the
+  level; `/api/health` is never logged at any level (it fires every 30s from the
+  container healthcheck). An OPTIONAL startup batch (`REFRESH_STARTUP_BATCH`, 0 =
+  off; `REFRESH_TTL_DAYS`, default 30) enqueues up to N of the stalest pages at
+  boot via `enqueue_startup_batch()`, which reuses `scrape.build_queue(ttl_days,
+  restrict=page_cis)` (the SAME frequency ordering + TTL as the batch scraper,
+  hence the extracted `build_queue`), so it targets only real pages and shares
+  the one rate-limited worker. Keep the `src` values in sync across
+  `app-init.js`, `_SOURCES`/`request()`, and the `{{...}}`-free `/api/stats`
+  shape.
 - **Every RCP page shows a freshness banner ("Informations à jour au …").**
   It bakes TWO distinct *absolute* dates (not the age, so pages stay
   cacheable; `src/app-init.js` turns each into a relative "il y a X" client-side):
@@ -233,6 +251,9 @@ uv run scrape-rcp.py --limit 60   # refresh N RCPs from live ANSM into data/rcp/
                                   # logs a progress bar + ETA and the trigger (user/timer)
 uv run build.py           # build ./dist from ./data (overlay wins over the 2022 CSV)
 uv run refresh-service.py # optional: run the on-demand refresh API on :8460 (behind Caddy /api/*)
+                          # knobs (env): REFRESH_LOG_LEVEL (default INFO, health never logged),
+                          # REFRESH_STARTUP_BATCH (0=off) + REFRESH_TTL_DAYS (30) for a boot-time
+                          # freshen of the stalest pages; GET /api/stats returns crawl counters
 cp docker/env.example docker/.env                      # optional: umami analytics / DEV banner / refresh knobs
 docker compose -f docker/docker-compose.yml up -d      # serve ./dist on :8459 + refresh service (read-only, hardened)
 docker compose -f docker/docker-compose.yml up --build # after changing Caddyfile/compose/refresh.Dockerfile
