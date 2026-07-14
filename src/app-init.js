@@ -117,6 +117,10 @@
     const bakedAsof = asofEl
       ? (asofEl.getAttribute("data-rcp-asof") || "").trim()
       : "";
+    // No baked capture date means there is nothing to refresh against: EU-auth
+    // stub pages (/eu/) carry a real data-cis but no ANSM RCP, so skip the whole
+    // refresh control. The refresh flow is keyed off data-rcp-asof by design.
+    if (!bakedAsof) return;
     const ageDays = bakedAsof
       ? Math.floor((Date.now() - new Date(bakedAsof + "T00:00:00Z").getTime()) / 86400000)
       : NaN;
