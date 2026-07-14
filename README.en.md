@@ -32,22 +32,6 @@ for-profit medicine sites.
 > [!CAUTION]
 > **In-development prototype.** Some features are missing and bugs are likely.
 
-## Quick start
-
-```bash
-./download-data.sh                                  # fetch source datasets into ./data (gitignored)
-uv run build.py                                     # render ./dist from ./data
-cp docker/env.example docker/.env                   # optional: configure analytics
-docker compose -f docker/docker-compose.yml up -d   # serve on http://localhost:8459
-```
-
-Put your own TLS reverse proxy in front of port 8459.
-
-Optional runtime config (privacy-friendly [umami](https://umami.is) analytics and
-a "work in progress" banner) lives in `docker/.env`; see `docker/env.example`.
-Leave it empty for zero tracking. Nothing is loaded from a CDN; a strict CSP only
-opens up your own umami origin when you set `ANALYTICS_URL`.
-
 ## How it works
 
 `build.py` reads the ANSM RCP dump (`data/CIS_RCP.csv`:
@@ -66,6 +50,22 @@ HTML (it is served at runtime via `app-version.js`), so a version-only bump does
 not invalidate the cache.
 
 See [CLAUDE.md](CLAUDE.md) for the detailed architecture.
+
+## Quick start
+
+```bash
+./download-data.sh                                  # fetch source datasets into ./data (gitignored)
+uv run build.py                                     # render ./dist from ./data
+cp docker/env.example docker/.env                   # optional: configure analytics
+docker compose -f docker/docker-compose.yml up -d   # serve on http://localhost:8459
+```
+
+Put your own TLS reverse proxy in front of port 8459.
+
+Optional runtime config (privacy-friendly [umami](https://umami.is) analytics and
+a "work in progress" banner) lives in `docker/.env`; see `docker/env.example`.
+Leave it empty for zero tracking. Nothing is loaded from a CDN; a strict CSP only
+opens up your own umami origin when you set `ANALYTICS_URL`.
 
 ## Keeping RCPs up to date
 

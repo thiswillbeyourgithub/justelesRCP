@@ -34,23 +34,6 @@ ANSM / BDPM. Conçu comme une alternative légère aux sites de médicaments len
 > **Prototype en développement.** Certaines fonctionnalités manquent et des
 > bugs sont probables.
 
-## Démarrage rapide
-
-```bash
-./download-data.sh                                  # récupère les jeux de données source dans ./data (gitignored)
-uv run build.py                                     # génère ./dist à partir de ./data
-cp docker/env.example docker/.env                   # optionnel : configurer les statistiques
-docker compose -f docker/docker-compose.yml up -d   # sert sur http://localhost:8459
-```
-
-Placez votre propre reverse proxy TLS devant le port 8459.
-
-La configuration optionnelle au runtime (statistiques [umami](https://umami.is)
-respectueuses de la vie privée et bannière « travaux en cours ») se trouve dans
-`docker/.env` ; voir `docker/env.example`. Laissez le fichier vide pour zéro
-traçage. Rien n'est chargé depuis un CDN ; une CSP stricte n'ouvre que votre
-propre origine umami quand vous définissez `ANALYTICS_URL`.
-
 ## Comment ça marche
 
 `build.py` lit le dump des RCP de l'ANSM (`data/CIS_RCP.csv` :
@@ -70,6 +53,23 @@ des pages (il est servi au runtime via `app-version.js`), de sorte qu'un simple
 changement de version n'invalide pas le cache.
 
 Voir [CLAUDE.md](CLAUDE.md) pour l'architecture détaillée.
+
+## Démarrage rapide
+
+```bash
+./download-data.sh                                  # récupère les jeux de données source dans ./data (gitignored)
+uv run build.py                                     # génère ./dist à partir de ./data
+cp docker/env.example docker/.env                   # optionnel : configurer les statistiques
+docker compose -f docker/docker-compose.yml up -d   # sert sur http://localhost:8459
+```
+
+Placez votre propre reverse proxy TLS devant le port 8459.
+
+La configuration optionnelle au runtime (statistiques [umami](https://umami.is)
+respectueuses de la vie privée et bannière « travaux en cours ») se trouve dans
+`docker/.env` ; voir `docker/env.example`. Laissez le fichier vide pour zéro
+traçage. Rien n'est chargé depuis un CDN ; une CSP stricte n'ouvre que votre
+propre origine umami quand vous définissez `ANALYTICS_URL`.
 
 ## Garder les RCP à jour
 
