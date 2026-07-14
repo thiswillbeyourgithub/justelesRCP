@@ -8,6 +8,11 @@
   let norm = []; // parallel array of normalized names for matching
   let active = -1;
 
+  // Deep link: /?q=term prefills the box so another page can link straight to a
+  // search (e.g. an EU-authorization stub linking to its substance's generics).
+  const initialQ = new URLSearchParams(location.search).get("q");
+  if (initialQ && !q.value) q.value = initialQ;
+
   const normalize = (s) =>
     s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 
@@ -44,7 +49,9 @@
     for (const h of hits) {
       const li = document.createElement("li");
       const a = document.createElement("a");
-      a.href = "/rcp/" + h.slug;
+      // Most hits are RCP pages (/rcp/); EU-authorization stubs (h.eu) live under
+      // /eu/ so they stay out of the RCP link graph. Both resolve via Caddy.
+      a.href = (h.eu ? "/eu/" : "/rcp/") + h.slug;
       a.textContent = h.name;
       li.appendChild(a);
       results.appendChild(li);
