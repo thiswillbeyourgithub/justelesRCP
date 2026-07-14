@@ -200,7 +200,15 @@ def save_manifest(manifest: dict) -> None:
         tmp.write_text(payload, encoding="utf-8")
         tmp.replace(MANIFEST_PATH)
     except OSError:
-        tmp.unlink(missing_ok=True)  # no-op if the temp was never created (EROFS)
+        # Best-effort cleanup of a partial temp, then write in place. The unlink
+        # must NOT be allowed to abort the fallback: on the read-only refresh
+        # rootfs the temp was never created and unlink can raise EROFS (errno 30,
+        # NOT FileNotFoundError, so missing_ok would re-raise it), which would
+        # skip the in-place write entirely and lose the manifest update.
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
         MANIFEST_PATH.write_text(payload, encoding="utf-8")
 
 
