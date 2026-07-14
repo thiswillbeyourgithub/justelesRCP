@@ -132,6 +132,9 @@ class Refresher:
         # page set from the rendered files rather than the source. Prevents a
         # backlink to a pageless CIS (which would 404, e.g. HELICOBACTER).
         page_cis = build.page_cis_from_dist()
+        # Kept for the optional startup batch: the set of CIS it may enqueue is
+        # exactly the pages that render here (never a pageless CIS).
+        self._page_cis = page_cis
         xref = build.build_xref_index(names, page_cis)
         logger.info(
             "primed render: {} names, {} pages, {} backlink terms",
@@ -203,6 +206,47 @@ class Refresher:
         snap["eta_seconds"] = round(self._eta_seconds(queued), 1)
         snap["startup_batch"] = batch
         return snap
+
+    def enqueue_startup_batch(self, limit: int, ttl_days: int) -> int:
+        """Queue up to ``limit`` of the stalest pages for a boot-time freshen.
+
+        Reuses scrape.build_queue (the SAME frequency ordering + TTL the batch
+        scraper CLI uses), restricted to the CIS that actually render a page here,
+        so the service tops up the most out-of-date popular drugs in the
+        background behind the usual global rate limit. Returns the count enqueued.
+        It is TTL-gated, so a restart soon after a run enqueues nothing, and
+        bounded by REFRESH_QUEUE_MAX. Runs once at startup; on-demand button/auto
+        refreshes interleave normally. ``limit <= 0`` disables it.
+        """
+        if limit <= 0:
+            return 0
+        try:
+            due = scrape.build_queue(ttl_days, restrict=self._page_cis)
+        except SystemExit as exc:  # e.g. missing CIS_bdpm; degrade, don't crash
+            logger.warning("startup batch skipped: {}", exc)
+            return 0
+        queued = 0
+        with self._lock:
+            self._batch_start = time.monotonic()
+            for cis in due:
+                if queued >= limit:
+                    break
+                if cis in self._pending:
+                    continue
+                try:
+                    self._queue.put_nowait(cis)
+                except queue.Full:
+                    break
+                self._pending[cis] = "startup"
+                queued += 1
+            self._batch_total = queued
+        if queued:
+            logger.info("startup batch: enqueued {} of {} due page(s) (ttl={}d); "
+                        "eta {} at rate {}s", queued, len(due), ttl_days,
+                        scrape._fmt_dur(self._eta_seconds(queued)), self.rate)
+        else:
+            logger.info("startup batch: nothing due (ttl={}d)", ttl_days)
+        return queued
 
     # -- public API ----------------------------------------------------------
 
@@ -439,6 +483,16 @@ REFRESHER: Refresher | None = None  # set in main(), read by _Handler
 @click.option("--queue-max", type=int, default=200, show_default=True,
               envvar="REFRESH_QUEUE_MAX",
               help="Max pending refreshes; further requests get 'busy' (env REFRESH_QUEUE_MAX).")
+@click.option("--startup-batch", type=int, default=0, show_default=True,
+              envvar="REFRESH_STARTUP_BATCH",
+              help="On startup, enqueue up to N stalest pages for a background "
+                   "freshen behind the same rate limit (env REFRESH_STARTUP_BATCH). "
+                   "0 disables it. TTL-gated (see --ttl-days), so a quick restart "
+                   "re-fetches nothing.")
+@click.option("--ttl-days", type=int, default=30, show_default=True,
+              envvar="REFRESH_TTL_DAYS",
+              help="Startup batch only: skip pages captured within this many days "
+                   "(env REFRESH_TTL_DAYS). Mirrors scrape-rcp.py's --ttl-days.")
 @click.option("--timeout", type=float, default=30.0, show_default=True,
               help="Per-request HTTP timeout in seconds.")
 @click.option("--gzip/--no-gzip", "gzip_overlay", default=True, show_default=True,
@@ -454,7 +508,8 @@ REFRESHER: Refresher | None = None  # set in main(), read by _Handler
                    "per-request DEBUG chatter (status polls, refresh POSTs) out of the "
                    "logs; the /api/health check is never logged at any level.")
 def main(host: str, port: int, rate: float, min_interval: float, queue_max: int,
-         timeout: float, gzip_overlay: bool, user_agent: str | None, log_level: str) -> None:
+         startup_batch: int, ttl_days: int, timeout: float, gzip_overlay: bool,
+         user_agent: str | None, log_level: str) -> None:
     """Run the on-demand RCP refresh service (see module docstring)."""
     global REFRESHER
     # Replace loguru's default DEBUG sink with one at the chosen level, so the
@@ -469,6 +524,9 @@ def main(host: str, port: int, rate: float, min_interval: float, queue_max: int,
     REFRESHER.start()
     logger.info("refresh service on {}:{} (rate {}s, min-interval {}s, overlay={})",
                 host, port, rate, min_interval, "gzip" if gzip_overlay else "plain")
+    # Optional background freshening of the stalest pages (off unless configured).
+    # Enqueued after the server is up so serving is never blocked by it.
+    REFRESHER.enqueue_startup_batch(startup_batch, ttl_days)
     ThreadingHTTPServer((host, port), _Handler).serve_forever()
 
 
