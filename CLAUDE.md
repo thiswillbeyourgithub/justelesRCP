@@ -45,6 +45,10 @@ data/CIS_bdpm.txt   (official CIS -> drug name, latin-1, tab-separated)
 dist/rcp/<cis>-<slug>.html   one cleaned page per drug (slug from drug name),
                              with a sidebar table of contents (ToC) of sections
 dist/search-index.json       [{cis,name,slug}] consumed by client-side search
+                             (+ {cis,name,slug,eu:1} rows for /eu/ stubs below)
+dist/eu/<cis>-<slug>.html    EU-authorization stub: a centrally-authorized drug
+                             whose RCP lives at the EMA (empty ANSM cell). noindex,
+                             findable via search only, NOT in browse
 dist/browse/index.html       A-Z landing (letter grid with counts)
 dist/browse/<letter>.html    alphabetical drug list per letter ('#' -> num.html)
 dist/index.html a-propos.html style.css search.js
@@ -252,8 +256,44 @@ Key facts that aren't obvious from a single file:
   static asset): what the site is, the author, a privacy/hosting note, and a
   direct link to the GitHub repo. (`SOURCE_URL` still drives the separate "Code
   source" link in the DEV banner, `src/dev-banner.js`.)
-- **~15% of CIS have an empty RCP field** in the source and are skipped (no page,
-  not in the index). This is expected, not an error.
+- **~15% of CIS have an empty RCP field** in the source and are skipped (no RCP
+  page, not counted in browse). This is expected, not an error. But the centrally-
+  authorized ones among them now get an EU-authorization stub instead of vanishing
+  (next bullet).
+- **EU-authorization stub pages (`/eu/`, `build_stubs()`).** A big share of the
+  empty-RCP CIS are EMA-centrally-authorized (`procédure centralisée`), whose RCP
+  text is published by the EMA, not the ANSM (ABILIFY/aripiprazole, many biologics
+  and oncology drugs). They render no RCP page and so were unfindable by search
+  (the original bug report: searching "abilify" returned nothing). `build_stubs()`
+  emits a lightweight `dist/eu/<cis>-<slug>.html` landing for each (~1879): it
+  explains the EU-authorization case, shows the EU number + holder (parsed by
+  `load_cap_meta()` from `CIS_bdpm.txt`: a row with an `EU/x/xx/xxx` number or a
+  `centralisée` procedure), links to the official RCP via an **EMA medicines-search
+  URL by brand root** (`_ema_search_url`/`_brand_root`: a search, never a
+  constructed EPAR deep link, so it can't 404, and **NOTHING is fetched from the
+  EMA at build time**, so the site stays 100% static), and, ONLY when a
+  same-substance generic actually renders here, links to it via `/?q=<substance>`
+  (~880; the substance is the longest of the stub's `CIS_COMPO` active-substance
+  tokens that also appears in a real page name, salts/short words dropped via
+  `_XREF_STOP`/`_XREF_MIN_LEN`; a `(len, token)` tiebreak keeps the pick
+  deterministic so the incremental cache doesn't churn on set-iteration order).
+  Design that keeps them clean: they ARE in `search-index.json` (an `eu:1` flag
+  routes `search.js` to `/eu/` instead of `/rcp/`), but are `noindex` and kept OUT
+  of `/browse`, so they add no thin-content SEO surface; their own `/eu/` URL space
+  keeps them OUT of the RCP cross-link graph (`page_cis_from_dist()` globs
+  `dist/rcp`, never `dist/eu`, so full build and the refresh service agree on link
+  targets); they reuse `src/rcp.html` via a `{{HEADEXTRA}}` slot (the noindex meta
+  on stubs, empty on RCP pages) so there is no chrome duplication; and they fold
+  into the incremental manifest (stub CIS never collide with RCP CIS: one has an
+  empty RCP, the other non-empty), so an unchanged rebuild reuses all of them.
+  `src/app-init.js` gates the on-demand refresh button on a baked `data-rcp-asof`,
+  which stubs lack, so no useless "Rafraîchir" button appears on them. Keep the
+  contract in sync across `build_stubs`/`load_cap_meta`/`_stub_content`, the
+  `{{HEADEXTRA}}` slot in `src/rcp.html`, the `eu`-flag branch in `src/search.js`,
+  the asof gate in `src/app-init.js`, and `.rcp-stub`/`.stub-*` in `style.css`.
+  This is **phase 1** (findability + a pointer to the EMA); a later phase could
+  fetch the EMA French SmPC PDF into a real overlay, which is why the EMA link is a
+  search and not yet the exact document.
 - **Precompression (.gz/.br) is baked at build time** so Caddy spends zero CPU
   compressing. `compress()` writes both siblings; the Caddyfile uses
   `precompressed br gzip`.

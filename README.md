@@ -43,6 +43,11 @@ ANSM / BDPM. Conçu comme une alternative légère aux sites de médicaments len
 
 - `dist/rcp/<cis>-<slug>.html` : une page nettoyée par médicament, avec une table
   des matières latérale (« Sommaire ») pour naviguer entre les rubriques
+- `dist/eu/<cis>-<slug>.html` : pour les médicaments à AMM européenne centralisée
+  (dont le RCP est publié par l'EMA et non par l'ANSM, ex. Abilify), une page
+  d'aiguillage qui renvoie vers le RCP officiel sur le site de l'EMA et vers les
+  génériques équivalents présents ici. Ils restent ainsi trouvables via la
+  recherche
 - `dist/search-index.json` : consommé par la recherche côté client
 - `dist/a-propos.html` : la page « À propos »
 - `style.css`, `search.js`, et un jumeau `.gz`/`.br` pour chaque fichier texte
