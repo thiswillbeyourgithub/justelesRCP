@@ -524,9 +524,14 @@ def main(host: str, port: int, rate: float, min_interval: float, queue_max: int,
     REFRESHER.start()
     logger.info("refresh service on {}:{} (rate {}s, min-interval {}s, overlay={})",
                 host, port, rate, min_interval, "gzip" if gzip_overlay else "plain")
-    # Optional background freshening of the stalest pages (off unless configured).
-    # Enqueued after the server is up so serving is never blocked by it.
-    REFRESHER.enqueue_startup_batch(startup_batch, ttl_days)
+    # Background freshening of the stalest pages (default on; REFRESH_STARTUP_BATCH=0
+    # disables). Run it in a daemon thread so building the queue (a few seconds of
+    # BDPM I/O) never delays the HTTP server from accepting, and the container
+    # healthcheck on /api/health passes immediately; the worker drains it behind
+    # the usual rate limit.
+    threading.Thread(target=REFRESHER.enqueue_startup_batch,
+                     args=(startup_batch, ttl_days),
+                     name="startup-batch", daemon=True).start()
     ThreadingHTTPServer((host, port), _Handler).serve_forever()
 
 
