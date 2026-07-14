@@ -30,9 +30,7 @@ ANSM / BDPM. Conçu comme une alternative légère aux sites de médicaments len
 > [!CAUTION]
 > **Prototype en développement précoce.** Ce site est à un stade précoce :
 > certaines fonctionnalités manquent, des bugs sont probables et les données
-> peuvent être incomplètes ou obsolètes. Ne vous en servez pas comme source
-> unique pour une décision médicale ; vérifiez toujours une source à jour et
-> faisant autorité, et demandez conseil à un professionnel de santé.
+> peuvent être incomplètes ou obsolètes.
 
 > [!WARNING]
 > **Le contenu des RCP n'est pas à jour.** Le dernier dépôt du jeu de données sur

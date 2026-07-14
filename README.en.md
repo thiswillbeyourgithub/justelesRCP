@@ -28,9 +28,7 @@ for-profit medicine sites.
 
 > [!CAUTION]
 > **Early-stage prototype.** This site is at an early stage: some features are
-> missing, bugs are likely, and the data may be incomplete or outdated. Do not
-> use it as your only source for a medical decision; always check an
-> authoritative, up-to-date source and consult a healthcare professional.
+> missing, bugs are likely, and the data may be incomplete or outdated.
 
 > [!WARNING]
 > **The RCP content is not up to date.** The latest dataset upload on
