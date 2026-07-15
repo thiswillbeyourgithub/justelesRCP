@@ -48,7 +48,7 @@ from lxml import html as lxml_html
 
 import bdpm  # shared, pure-stdlib BDPM tokenising + frequency scoring
 
-__version__ = "0.19.3"  # single source of truth; bump patch/minor per change
+__version__ = "0.20.0"  # single source of truth; bump patch/minor per change
 
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
@@ -1102,6 +1102,14 @@ def _eu_pdf(overlay_html: str) -> str:
     return _stdhtml.unescape(m.group(1)) if m else ""
 
 
+def _eu_via_archive(overlay_html: str) -> bool:
+    """True when scrape-ema.py had to recover this overlay's PDF from the Internet
+    Archive (the live EMA URL failed), stamped as data-ema-archive="1". Drives a
+    visible note on the page. The source button still points at the real EMA PDF,
+    never the archive URL (which we deliberately never expose)."""
+    return 'data-ema-archive="1"' in overlay_html
+
+
 def _eu_pdf_url(overlay_html: str, name: str, fallback: str = "") -> str:
     """Resolve the 'consulter le PDF officiel' target for a /eu/ page: the exact
     PDF baked on the overlay, else a caller-supplied link, else the EMA brand
@@ -1170,7 +1178,15 @@ def _eu_full_content(name: str, eu: str, holder: str, overlay_html: str) -> str:
         "l'Agence européenne des médicaments (EMA), converti par justelesRCP depuis "
         "le PDF officiel. En cas de doute, reportez-vous au PDF ci-dessus.</p>"
     )
-    return f'<div class="rcp-eu">{lead}{meta}</div>{overlay_html}'
+    # When the PDF was recovered from the Internet Archive (the live EMA was down at
+    # capture time), tell the reader. We surface the fact, not the archive URL.
+    archive_note = (
+        '<p class="stub-lead rcp-archive-note">Ce texte a été récupéré via une '
+        "archive web (Internet Archive) car le PDF n'était pas accessible sur le "
+        "site de l'EMA au moment de la capture. Reportez-vous au PDF officiel de "
+        "l'EMA ci-dessus pour la version en vigueur.</p>"
+    ) if _eu_via_archive(overlay_html) else ""
+    return f'<div class="rcp-eu">{lead}{meta}{archive_note}</div>{overlay_html}'
 
 
 def render_eu_page(cis: str, overlay_html: str, meta: tuple[str, str, str] | None,

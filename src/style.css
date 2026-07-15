@@ -241,6 +241,12 @@ a:hover { text-decoration: underline; }
   border: 1px solid var(--line); border-left: 3px solid var(--accent);
   border-radius: .4rem;
 }
+/* Note on a full /eu/ page whose PDF we had to recover from the Internet Archive
+   (the live EMA was unreachable at capture time). Warn-tinted, distinct from the
+   plain lead. The source button above still points at the real EMA PDF. */
+.rcp-eu .rcp-archive-note {
+  border-left-color: #b45309; margin-top: .8rem; font-size: .92rem;
+}
 .rcp-stub .stub-meta, .rcp-eu .stub-meta { color: var(--muted); font-size: .9rem; margin: 1rem 0; }
 .rcp-stub .stub-actions { margin: 1.3rem 0; }
 .rcp-stub .stub-ema, .rcp-source .official-link {
