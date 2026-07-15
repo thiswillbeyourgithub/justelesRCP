@@ -48,7 +48,11 @@ for-profit medicine sites.
   HTML by `ema_pdf.py`), it shows the **full converted RCP**, with a direct link to
   the official EMA PDF at the top of the page; otherwise a lightweight landing page
   that points to the official RCP on the EMA site and to any equivalent generics
-  available here. Either way they stay findable through the search. If the EMA PDF
+  available here. One product (all its presentations, e.g. Abilify Maintena 300 mg
+  and 400 mg) shares a single EMA PDF: as soon as one presentation is fetched, all
+  of them show the full RCP. And **every `/eu/` page has a button** to fetch the RCP
+  from the EMA on demand, without waiting for the background refresh. Either way they
+  stay findable through the search. If the EMA PDF
   is temporarily unavailable, the text is recovered via the Internet Archive (a note
   says so on the page; the official link still points at the EMA)
 - `dist/search-index.json`: consumed by the client-side search

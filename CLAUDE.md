@@ -243,14 +243,22 @@ Key facts that aren't obvious from a single file:
   because the EMA is strict; `REFRESH_EMA_CRAWL_TTL_DAYS`, default 180) and its own
   worker/rate limit, so an EMA fetch never blocks an ANSM one and vice-versa. Its
   crawl order (`_build_eu_order()`) is the frequency-ordered set of centrally-
-  authorized CIS that either have an `ema_pdf` link harvested in the ANSM manifest
-  OR already have a `data/eu` overlay; the on-demand `_eu_url(cis)` falls back to
-  the PDF URL baked into the overlay when the ANSM manifest has no link, so a `/eu/`
-  page keeps refreshing even with zero harvested links. `render_eu_page` needs no
-  live EMA read at build (the overlay is self-describing), and everything stays
-  import-safe (`scrape-ema.py`/`ema_pdf.py` guard `__main__`). Missing inputs (no
-  cap-meta, no PDF links, no overlays) degrade the lane to off (empty order, worker
-  exits); `REFRESH_EMA_CRAWL=0` disables it entirely.
+  authorized CIS whose **authorization GROUP** has an `ema_pdf` link harvested in
+  the ANSM manifest OR a `data/eu` overlay: because every strength/pack of one
+  product shares a single EMA PDF (see the authorization-group bullet below), a
+  scraped SIBLING seeds the whole group, so all its presentations crawl and each
+  grows its OWN overlay on first fetch (self-healing). The on-demand `_eu_url(cis)`
+  delegates to `build.resolve_eu`, so it resolves this CIS's link, else a sibling's
+  link, else the PDF URL baked into this CIS's (or a sibling's) overlay; a `/eu/`
+  page therefore keeps refreshing even with zero harvested links of its own. And
+  when NOTHING in the group has a link yet (its group was never ANSM-scraped), the
+  button's on-demand refresh calls `_harvest_ema_url` to fetch the EMA PDF href
+  live off the ANSM page (the same href `scrape-rcp.py` harvests) and cache it into
+  the ANSM manifest first, so a reader never waits for the batch scraper.
+  `render_eu_page` needs no live EMA read at build (the overlay is self-describing),
+  and everything stays import-safe (`scrape-ema.py`/`ema_pdf.py` guard `__main__`).
+  Missing inputs (no cap-meta, no PDF links, no overlays) degrade the lane to off
+  (empty order, worker exits); `REFRESH_EMA_CRAWL=0` disables it entirely.
   **Crawl statistics + logging.** Each refresh is tagged with its trigger
   *source* (`user` = button, `auto` = the >1yr page-load refresh, `crawl` = the
   perpetual crawler, set internally and NOT acceptable from a caller); `app-init.js`
@@ -314,9 +322,20 @@ Key facts that aren't obvious from a single file:
   and oncology drugs). They render no RCP page and so were unfindable by search
   (the original bug report: searching "abilify" returned nothing). `build_stubs()`
   emits one `dist/eu/<cis>-<slug>.html` per such CIS (~1883), in ONE of two forms
-  per CIS: a **full converted page** when `data/eu/<cis>.html[.gz]` has an EMA
-  overlay (the SmPC/notice converted from the EMA PDF, rendered by `render_eu_page`,
-  see the next bullet), otherwise a **lightweight stub** that only points to the EMA.
+  per CIS: a **full converted page** when an EMA overlay is available (the
+  SmPC/notice converted from the EMA PDF, rendered by `render_eu_page`, see the next
+  bullet), otherwise a **lightweight stub** that only points to the EMA.
+  **Overlay sharing by authorization group.** One product's EMA PDF covers EVERY
+  strength/pack (all presentations share one `EU/x/xx/xxx` number and one SmPC), so
+  a presentation with no overlay of its own **borrows a sibling's**: `_auth_key`
+  (EU number, brand-root fallback) + `auth_groups` group the CIS, and
+  `resolve_eu(cis, cap, groups, links)` returns `(overlay_html, pdf_url)` preferring
+  this CIS's own overlay/link else the freshest sibling's (deterministic tie-break
+  by CIS, so the incremental cache doesn't churn). So the moment ANY presentation of
+  a product is scraped, ALL of them render the full converted page (e.g. ABILIFY
+  MAINTENA 300 mg follows 400 mg); a stub with no overlay anywhere still borrows a
+  sibling's harvested link so its PDF button points at the real doc, not a search.
+  `resolve_eu` is shared with the refresh service (`_eu_url`, the EMA lane).
   The stub: it explains the EU-authorization case, shows the EU number + holder (parsed by
   `load_cap_meta()` from `CIS_bdpm.txt`: a row with an `EU/x/xx/xxx` number or a
   `centralisée` procedure), links to the official RCP via **the exact EMA
@@ -345,13 +364,19 @@ Key facts that aren't obvious from a single file:
   on stubs, empty on RCP pages) so there is no chrome duplication; and they fold
   into the incremental manifest (stub CIS never collide with RCP CIS: one has an
   empty RCP, the other non-empty), so an unchanged rebuild reuses all of them.
-  `src/app-init.js` gates the on-demand refresh button on a baked `data-rcp-asof`,
-  which stubs lack (but a full page bakes), so the "Rafraîchir" button appears on
-  full pages and not on stubs. Keep the stub contract in sync across
-  `build_stubs`/`load_cap_meta`/`_stub_content`/`_load_ema_links` (build.py) and
-  `extract_ema_pdf` + the manifest `ema_pdf` field (scrape-rcp.py), the
-  `{{HEADEXTRA}}` slot in `src/rcp.html`, the `eu`-flag branch in `src/search.js`,
-  the asof gate in `src/app-init.js`, and `.rcp-stub`/`.stub-*` in `style.css`.
+  `src/app-init.js` shows a refresh button on EVERY `/eu/` page: a full page bakes
+  `data-rcp-asof` and gets "Rafraîchir maintenant" (+ the >1yr auto-refresh keyed
+  off that date), while a stub (which has no `data-rcp-asof`) is detected by its
+  `.rcp-stub` body and gets a manual-only "Récupérer le RCP depuis l'EMA" button, so
+  a reader never has to wait for the background crawler. Clicking either POSTs
+  `/api/refresh/<cis>`; the refresh service's EMA lane resolves the PDF (own,
+  sibling, or harvested live off the ANSM page) and converts it, and the button's
+  poll reloads into the now-full page. Keep the stub contract in sync across
+  `build_stubs`/`load_cap_meta`/`_stub_content`/`_load_ema_links`/`resolve_eu`/
+  `auth_groups` (build.py) and `extract_ema_pdf` + the manifest `ema_pdf` field
+  (scrape-rcp.py), the `{{HEADEXTRA}}` slot in `src/rcp.html`, the `eu`-flag branch
+  in `src/search.js`, the `.rcp-stub` button gate in `src/app-init.js`, and
+  `.rcp-stub`/`.stub-*` in `style.css`.
 - **EMA SmPC conversion, the `/eu/` full page (phase 2, done).** `ema_pdf.py`
   (PEP 723, `pymupdf`/fitz, pure + import-safe) converts an EMA
   product-information PDF into ONE self-contained HTML blob wrapped in the SAME

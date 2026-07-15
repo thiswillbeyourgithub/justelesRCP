@@ -50,7 +50,11 @@ ANSM / BDPM. Conçu comme une alternative légère aux sites de médicaments len
   propre par `ema_pdf.py`), c'est le **RCP complet converti** qui est affiché, avec
   un lien direct vers le PDF officiel de l'EMA en haut de page ; sinon, une page
   d'aiguillage légère qui renvoie vers le RCP officiel sur le site de l'EMA et vers
-  les génériques équivalents présents ici. Dans les deux cas ils restent trouvables
+  les génériques équivalents présents ici. Un même produit (toutes ses présentations,
+  ex. Abilify Maintena 300 mg et 400 mg) partage un seul PDF EMA : dès qu'une
+  présentation est récupérée, toutes affichent le RCP complet. Et **chaque page
+  `/eu/` a un bouton** pour récupérer le RCP depuis l'EMA à la demande, sans attendre
+  le rafraîchissement de fond. Dans les deux cas ils restent trouvables
   via la recherche. Si le PDF de l'EMA est momentanément indisponible, le texte est
   récupéré via l'Internet Archive (une mention l'indique sur la page ; le lien
   officiel reste celui de l'EMA)
