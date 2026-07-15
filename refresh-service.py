@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["httpx", "lxml", "brotli", "loguru", "click"]
+# dependencies = ["httpx", "lxml", "brotli", "loguru", "click", "pymupdf>=1.24"]
 # ///
 """Tiny companion service: on-demand, single-CIS RCP refresh.
 
@@ -25,10 +25,21 @@ dedup + min-interval floor, so decoupling them adds speed without letting clicks
 hammer ANSM.
 
 It exposes a handful of JSON endpoints (see ``_Handler``); the important one is
-``POST /api/refresh/<cis>``. That re-scrapes ONE drug from the live ANSM site,
-writes/refreshes its overlay (``data/rcp/<cis>.html[.gz]``), re-renders just that
-page into ``dist/`` (so Caddy serves the fresh bytes, precompressed siblings and
-all), and updates the scrape manifest. Everything else on the site is untouched.
+``POST /api/refresh/<cis>``. That re-scrapes ONE drug, writes/refreshes its overlay,
+re-renders just that page into ``dist/`` (so Caddy serves the fresh bytes,
+precompressed siblings and all), and updates a manifest. Everything else is untouched.
+
+TWO kinds of page can be refreshed, routed automatically by CIS (``_is_eu``):
+
+  * an ordinary ANSM RCP page (``/rcp/``): re-scrape from the live ANSM site into
+    ``data/rcp/<cis>.html[.gz]`` and re-render via ``build.render_record``; or
+  * an EU-authorization page (``/eu/``): a centrally-authorized drug whose SmPC/
+    notice lives in an EMA PDF, not the ANSM. Its refresh goes through the EMA lane
+    (``_process_ema``), which reuses ``scrape-ema.process_one`` to fetch + convert
+    the PDF into ``data/eu/<cis>.html[.gz]`` and ``build.render_eu_page`` to rebuild
+    the page. A separate manifest (``data/.scrape-ema-manifest.json``) keeps the EMA
+    TTL/last_fetch from colliding with the ANSM one. An ANSM re-scrape of such a CIS
+    would come back empty, hence the routing.
 
 Politeness is enforced HERE, never trusted to the caller (a user-triggered live
 scraper is exactly what a government site would read as abuse):
@@ -83,6 +94,10 @@ def _load_module(filename: str, name: str):
 
 scrape = _load_module("scrape-rcp.py", "scrape_rcp")
 build = _load_module("build.py", "build_mod")
+# EMA lane: fetch + convert an EMA product-information PDF into a /eu/ overlay.
+# scrape-ema.py transitively imports scrape-rcp.py and ema_pdf.py (which needs
+# pymupdf, hence the dep above); all import-safe (__main__-guarded).
+ema_scrape = _load_module("scrape-ema.py", "scrape_ema")
 
 CIS_RE = re.compile(r"\d{8}")
 # Trigger sources tracked for the crawl stats: a manual button click ("user"),
@@ -197,6 +212,22 @@ class Refresher:
             len(names), len(page_cis), len(xref),
         )
         build._init_worker(names, tpl, xref)
+        self._tpl = tpl  # reused by render_eu_page for on-demand /eu/ refreshes
+        # EMA (/eu/) lane state. A centrally-authorized drug has no /rcp/ page; its
+        # SmPC/notice lives in an EMA PDF that scrape-ema.py fetches + converts into
+        # a data/eu overlay, which build.render_eu_page turns into the /eu/ page.
+        # An on-demand refresh of such a page must go through THIS lane, not the
+        # ANSM scrape (which would come back empty). A CIS is a /eu/ one when it is
+        # centrally authorized (in the cap-meta set) but has no /rcp/ page.
+        self._cap = build.load_cap_meta()
+        self._eu_cis = frozenset(c for c in self._cap if c not in page_cis)
+        # Separate manifest so the EMA TTL/last_fetch never collides with the ANSM
+        # one; ema_links maps CIS -> the exact EMA PDF URL harvested into the ANSM
+        # manifest (fallback: the URL baked on an existing overlay, see _eu_url).
+        self._ema_manifest = scrape.load_manifest(ema_scrape.EMA_MANIFEST_PATH)
+        self._ema_links = ema_scrape.ema_links(self._manifest)
+        logger.info("primed EMA lane: {} centrally-authorized /eu/ CIS, {} PDF links",
+                    len(self._eu_cis), len(self._ema_links))
         # Two workers: the on-demand lane always runs; the crawler only when enabled.
         self._demand_worker = threading.Thread(target=self._demand_run,
                                                name="demand", daemon=True)
@@ -210,9 +241,27 @@ class Refresher:
 
     # -- state helpers -------------------------------------------------------
 
+    def _is_eu(self, cis: str) -> bool:
+        """True for a centrally-authorized /eu/ CIS (its refresh goes through the
+        EMA lane, not the ANSM scrape). Immutable after __init__, so no lock."""
+        return cis in self._eu_cis
+
+    def _eu_url(self, cis: str) -> str:
+        """The EMA PDF URL to (re)fetch for a /eu/ CIS: the exact link harvested
+        into the ANSM manifest, else the URL baked on an existing overlay. "" if
+        neither is known (then we cannot refresh it)."""
+        url = self._ema_links.get(cis)
+        if url:
+            return url
+        path = build._overlay_path(cis, build.EU_OVERLAY_DIR)
+        return build._eu_pdf(build._read_overlay(path)) if path is not None else ""
+
     def _entry(self, cis: str) -> dict | None:
+        # Route to the EMA manifest for /eu/ CIS so asof_of / _recently_fetched
+        # read the right lane's last_fetch (for /eu/, that date IS data-rcp-asof).
         with self._lock:
-            entry = self._manifest.get(cis)
+            man = self._ema_manifest if cis in self._eu_cis else self._manifest
+            entry = man.get(cis)
             return dict(entry) if entry else None
 
     def asof_of(self, cis: str) -> str:
@@ -450,10 +499,16 @@ class Refresher:
             self._process(client, cis, source)
         except Exception as exc:  # never let a worker thread die
             logger.error("refresh {} [{}] failed: {}", cis, source, exc)
+            # Record the error in the lane's own manifest (the EMA path normally
+            # handles its errors internally; this covers an unexpected raise).
+            eu = self._is_eu(cis)
+            entry = {"last_fetch": scrape._now_iso(), "status": "error", "error": str(exc)[:200]}
             with self._lock:
-                self._manifest[cis] = {"last_fetch": scrape._now_iso(),
-                                       "status": "error", "error": str(exc)[:200]}
-            self._persist_manifest()
+                (self._ema_manifest if eu else self._manifest)[cis] = entry
+            if eu:
+                self._persist(self._ema_manifest, ema_scrape.EMA_MANIFEST_PATH)
+            else:
+                self._persist_manifest()
             self._record(cis, source, "error", f"ERROR {str(exc)[:120]}")
         finally:
             with self._lock:
@@ -503,28 +558,35 @@ class Refresher:
                 self._last_crawl_fetch = self._wait_rate(self._last_crawl_fetch, self.rate)
                 self._handle(client, cis, "crawl")
 
-    def _persist_manifest(self) -> None:
-        """Persist the scrape manifest, best-effort and NEVER fatal.
+    def _persist(self, manifest: dict, path=None) -> None:
+        """Persist a manifest, best-effort and NEVER fatal.
 
-        The manifest is only a TTL cache (build.py re-derives each page's capture
+        A manifest is only a TTL cache (build.py re-derives each page's capture
         date from the overlay itself), so a failure to write it must not sink a
         refresh. It is snapshotted under the lock and written outside it, and is
         always called AFTER the page has been re-rendered, so the user-visible
         page update lands even when /app/data cannot be written. save_manifest
         already falls back to an in-place write when its atomic temp+rename cannot
         work (an EROFS .tmp on the read-only refresh rootfs); this additionally
-        swallows even that fallback failing, logging instead of raising.
+        swallows even that fallback failing, logging instead of raising. ``path``
+        selects the lane's manifest file (None = the ANSM one; the EMA lane passes
+        its own); save_manifest derives a per-path temp so the two never collide.
         """
         with self._lock:
-            snapshot = dict(self._manifest)
+            snapshot = dict(manifest)
         # Serialise the actual write across both workers: save_manifest uses one
-        # fixed temp path, so two concurrent writers would clobber each other's .tmp.
+        # temp path per manifest, so two concurrent writers of the SAME manifest
+        # would clobber each other's .tmp.
         with self._persist_lock:
             try:
-                scrape.save_manifest(snapshot)
+                scrape.save_manifest(snapshot, path)
             except OSError as exc:
-                logger.warning("could not persist scrape manifest ({}); "
-                               "refresh already applied", exc)
+                logger.warning("could not persist {} manifest ({}); refresh already applied",
+                               "EMA" if path else "scrape", exc)
+
+    def _persist_manifest(self) -> None:
+        """Persist the ANSM scrape manifest (thin wrapper over _persist)."""
+        self._persist(self._manifest)
 
     def _record(self, cis: str, source: str, outcome: str, result: str) -> None:
         """Tally one completed refresh and emit its progress line.
@@ -560,8 +622,15 @@ class Refresher:
             )
 
     def _process(self, client, cis: str, source: str) -> None:
-        # The caller (each worker's loop) has already waited on its lane's rate
-        # limit before we get here, so _process is throttle-free.
+        """Dispatch one refresh to the right lane: the EMA PDF path for a /eu/ CIS,
+        the ANSM scrape otherwise. Both re-render the ONE page and persist their
+        own manifest. The caller has already waited on its lane's rate limit."""
+        if self._is_eu(cis):
+            self._process_ema(client, cis, source)
+        else:
+            self._process_ansm(client, cis, source)
+
+    def _process_ansm(self, client, cis: str, source: str) -> None:
         logger.debug("fetching {} [{}] from {}", cis, source, scrape.PAGE_URL.format(cis=cis))
         page, status = scrape.fetch_one(client, cis)
         if status != 200:
@@ -590,6 +659,39 @@ class Refresher:
             else:
                 self._record(cis, source, "ok", f"{row['slug']} ({len(rcp)} bytes)")
         self._persist_manifest()
+
+    def _process_ema(self, client, cis: str, source: str) -> None:
+        """Refresh one /eu/ page: fetch its EMA PDF, convert it, and re-render the
+        page. Mirrors _process_ansm but on the EMA lane (its own manifest). Reuses
+        scrape-ema.process_one (fetch->convert->overlay) and build.render_eu_page,
+        so no scrape/convert/render logic is duplicated here."""
+        url = self._eu_url(cis)
+        if not url:  # no PDF link known: nothing we can fetch
+            logger.warning("no EMA PDF url for {} [{}]; cannot refresh", cis, source)
+            self._record(cis, source, "empty", "no EMA PDF url")
+            return
+        # process_one catches its own network/parse errors and returns
+        # status='error' (it does not raise), so a dead EMA link degrades cleanly.
+        entry = ema_scrape.process_one(client, cis, url, self.gzip_overlay)
+        with self._lock:
+            self._ema_manifest[cis] = entry
+        status = entry.get("status")
+        if status == "ok":
+            # Re-read the overlay process_one just wrote, then render the /eu/ page
+            # (writes dist/eu/<slug>.html + .gz/.br) BEFORE persisting the manifest,
+            # same best-effort ordering as the ANSM lane.
+            overlay = build._read_overlay(build._overlay_path(cis, build.EU_OVERLAY_DIR))
+            row = build.render_eu_page(cis, overlay, self._cap.get(cis), self._tpl, url)
+            if row is None:
+                logger.warning("EU render produced nothing for {}", cis)
+                self._record(cis, source, "empty", "render produced nothing")
+            else:
+                self._record(cis, source, "ok", f"{row['slug']} (eu, {entry.get('bytes', 0)} bytes)")
+        elif status == "empty":
+            self._record(cis, source, "empty", "EMA PDF yielded no HTML")
+        else:
+            self._record(cis, source, "error", f"ERROR {str(entry.get('error', ''))[:120]}")
+        self._persist(self._ema_manifest, ema_scrape.EMA_MANIFEST_PATH)
 
 
 class _Handler(BaseHTTPRequestHandler):

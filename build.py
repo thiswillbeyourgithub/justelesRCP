@@ -48,7 +48,7 @@ from lxml import html as lxml_html
 
 import bdpm  # shared, pure-stdlib BDPM tokenising + frequency scoring
 
-__version__ = "0.18.0"  # single source of truth; bump patch/minor per change
+__version__ = "0.19.0"  # single source of truth; bump patch/minor per change
 
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
@@ -1071,12 +1071,25 @@ def _stub_content(
 
 
 _EU_DATE_RE = re.compile(r'data-ema-date="([^"]*)"')
+_EU_FETCHED_RE = re.compile(r'data-ema-fetched="([^"]*)"')
 _EU_PDF_RE = re.compile(r'data-ema-pdf="([^"]*)"')
 
 
 def _eu_date(overlay_html: str) -> str:
-    """The capture date scrape-ema.py baked onto the EMA overlay wrapper."""
+    """The PDF's ModDate scrape-ema.py baked onto the EMA overlay wrapper: when the
+    EMA last revised the official text. Headlined as the page's 'à jour au …' date
+    (the analog of an ANSM RCP's revision date)."""
     m = _EU_DATE_RE.search(overlay_html)
+    return m.group(1) if m else ""
+
+
+def _eu_fetched(overlay_html: str) -> str:
+    """OUR capture date (this scrape's date) baked onto the overlay wrapper. Used as
+    ``data-rcp-asof`` (the 'vérifiée par justelesRCP le …' line) and the on-demand
+    refresh key: it advances on every re-fetch, so a refresh is detectable even when
+    the ModDate is unchanged. "" for an overlay seeded before this feature (the
+    caller then falls back to the ModDate)."""
+    m = _EU_FETCHED_RE.search(overlay_html)
     return m.group(1) if m else ""
 
 
@@ -1086,6 +1099,13 @@ def _eu_pdf(overlay_html: str) -> str:
     seeded before this feature); the caller then falls back to the EMA search."""
     m = _EU_PDF_RE.search(overlay_html)
     return _stdhtml.unescape(m.group(1)) if m else ""
+
+
+def _eu_pdf_url(overlay_html: str, name: str, fallback: str = "") -> str:
+    """Resolve the 'consulter le PDF officiel' target for a /eu/ page: the exact
+    PDF baked on the overlay, else a caller-supplied link, else the EMA brand
+    search (never 404s). Shared by build_stubs (cache key) and render_eu_page."""
+    return _eu_pdf(overlay_html) or fallback or _ema_search_url(name)
 
 
 def _eu_toc(overlay_html: str) -> list[tuple[str, str, list[tuple[str, str]]]]:
@@ -1150,6 +1170,43 @@ def _eu_full_content(name: str, eu: str, holder: str, overlay_html: str) -> str:
     return f'<div class="rcp-eu"><h1>{_esc(name)}</h1>{lead}{meta}</div>{overlay_html}'
 
 
+def render_eu_page(cis: str, overlay_html: str, meta: tuple[str, str, str] | None,
+                   page_tpl: str, pdf_fallback: str = "") -> dict | None:
+    """Render ONE full /eu/ page from its converted EMA overlay + cap meta.
+
+    The single-page counterpart of render_record for the /eu/ side, reused by BOTH
+    build_stubs (batch) and the refresh service (on-demand, after re-fetching one
+    EMA PDF). Writes dist/eu/<slug>.html (+ .gz/.br) and returns the index row, or
+    None if the overlay is empty / the CIS has no cap meta. The freshness banner
+    mirrors an ANSM page: the PDF's ModDate is the 'à jour au' headline
+    (data-rcp-ansm) and our fetch date the 'vérifiée le' line + refresh key
+    (data-rcp-asof, so the on-demand button lights up and detects the update)."""
+    if not meta or not overlay_html.strip():
+        return None
+    name, eu, holder = meta
+    slug = f"{cis}-{slugify(name)}"
+    pdf_url = _eu_pdf_url(overlay_html, name, pdf_fallback)
+    asof = _asof_html(_eu_date(overlay_html), _eu_fetched(overlay_html) or _eu_date(overlay_html)) \
+        + _official_source_html(
+            _source_button(pdf_url, "Consulter le RCP officiel (PDF) sur le site de l'EMA →"),
+            _source_button(_ema_search_url(name), "Recherche EMA →"),
+        )
+    page = (
+        page_tpl.replace("{{TITLE}}", _esc(name))
+        .replace("{{HEADEXTRA}}", '<meta name="robots" content="noindex">')
+        .replace("{{CIS}}", _esc(cis))
+        .replace("{{TOC}}", _eu_toc_html(_eu_toc(overlay_html)))
+        .replace("{{ASOF}}", asof)
+        .replace("{{CONTENT}}", _eu_full_content(name, eu, holder, overlay_html))
+        .replace("{{XREF}}", "")
+    )
+    out = DIST / "eu" / f"{slug}.html"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(page, encoding="utf-8")
+    compress(out)
+    return {"cis": cis, "name": name, "slug": slug, "eu": 1}
+
+
 def build_stubs(
     real_index: list[dict[str, str]], page_tpl: str, prev_records: dict
 ) -> tuple[list[dict], dict, int, int]:
@@ -1200,27 +1257,20 @@ def build_stubs(
         slug = f"{cis}-{slugify(name)}"
         out = eu_dir / f"{slug}.html"
         # If scrape-ema.py has fetched + converted this drug's EMA PDF, render the
-        # full converted SmPC/notice on-site; otherwise a lightweight stub that
-        # only points out. The overlay lives in EU_OVERLAY_DIR (never RCP's, so it
-        # is not turned into a /rcp/ page); a zero-byte overlay decodes to "".
+        # full converted SmPC/notice on-site (render_eu_page); otherwise a
+        # lightweight stub that only points out. The overlay lives in
+        # EU_OVERLAY_DIR (never RCP's, so it is not turned into a /rcp/ page); a
+        # zero-byte overlay decodes to "".
         eu_path = _overlay_path(cis, EU_OVERLAY_DIR)
         overlay = _read_overlay(eu_path) if eu_path is not None else ""
-        if overlay.strip():
-            # Full /eu/ page: EMA text converted from the PDF, with the PDF +
-            # EMA-search buttons and a baked capture date (which enables the
-            # on-demand refresh button, exactly like an ANSM page keys off asof).
-            pdf_url = _eu_pdf(overlay) or ema_links.get(cis, "") or _ema_search_url(name)
-            content = _eu_full_content(name, eu, holder, overlay)
-            toc = _eu_toc_html(_eu_toc(overlay))
-            asof = _asof_html("", _eu_date(overlay)) + _official_source_html(
-                _source_button(
-                    pdf_url, "Consulter le RCP officiel (PDF) sur le site de l'EMA →"
-                ),
-                _source_button(_ema_search_url(name), "Recherche EMA →"),
-            )
+        full = bool(overlay.strip())
+        if full:
             # The whole converted doc drives the output, so the cache key is the
             # overlay itself (a re-scrape changes it) plus the metadata rendered
             # around it. The "full" tag busts the cache if a page flips stub<->full.
+            # pdf_url is resolved the SAME way render_eu_page does, so the key and
+            # the rendered page stay in step.
+            pdf_url = _eu_pdf_url(overlay, name, ema_links.get(cis, ""))
             h = hashlib.sha256(
                 "\x00".join(("full", overlay, name, eu, holder, pdf_url)).encode("utf-8")
             ).hexdigest()
@@ -1239,7 +1289,6 @@ def build_stubs(
             # different term on ties each build, churning the incremental cache.
             generic = max(hits, key=lambda t: (len(t), t)).lower() if hits else None
             content = _stub_content(name, eu, holder, generic, ema_links.get(cis, ""))
-            toc, asof = "", ""
             h = hashlib.sha256(("stub\x00" + content).encode("utf-8")).hexdigest()
 
         prev = prev_records.get(cis)
@@ -1249,13 +1298,15 @@ def build_stubs(
             and out.with_suffix(".html.br").exists()
         ):
             reused += 1
+        elif full:
+            render_eu_page(cis, overlay, (name, eu, holder), page_tpl, ema_links.get(cis, ""))
         else:
             page = (
                 page_tpl.replace("{{TITLE}}", _esc(name))
                 .replace("{{HEADEXTRA}}", '<meta name="robots" content="noindex">')
                 .replace("{{CIS}}", _esc(cis))
-                .replace("{{TOC}}", toc)
-                .replace("{{ASOF}}", asof)
+                .replace("{{TOC}}", "")
+                .replace("{{ASOF}}", "")
                 .replace("{{CONTENT}}", content)
                 .replace("{{XREF}}", "")
             )

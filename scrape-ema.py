@@ -88,19 +88,31 @@ def ema_links(ansm_manifest: dict) -> dict[str, str]:
     return out
 
 
-def _overlay_html(conv: dict, src_url: str = "") -> str:
-    """The converter's HTML with the capture date AND the source PDF URL baked
-    onto the wrapper, so build.py's /eu/ renderer is self-contained (it reads both
-    off the overlay, no EMA-manifest read at build). ``src_url`` is the exact PDF
-    we fetched; build bakes it as the page's 'consulter le PDF officiel' button."""
+def _overlay_html(conv: dict, src_url: str = "", fetched_date: str = "") -> str:
+    """The converter's HTML with three data-* facts baked onto the wrapper, so
+    build.py's /eu/ renderer is self-contained (it reads all three off the overlay,
+    no EMA-manifest read at build):
+
+    * ``data-ema-date`` = the PDF's ModDate, i.e. when the EMA last revised the
+      official text. build headlines this as the page's 'à jour au …' date (the
+      analog of an ANSM RCP's revision date).
+    * ``data-ema-fetched`` = when WE captured/converted it (this scrape's date).
+      build bakes it as ``data-rcp-asof`` (the 'vérifiée par justelesRCP le …'
+      line) AND, crucially, the on-demand refresh keys off it: it advances every
+      time we re-fetch, so a refresh is detectable even when the ModDate is
+      unchanged (the common case, since EMA PDFs change rarely).
+    * ``data-ema-pdf`` = the exact source PDF URL, baked as the 'consulter le PDF
+      officiel' button.
+    """
     doc_html = conv.get("html") or ""
     if not doc_html:
         return ""
     date = conv.get("date") or ""
+    fetched = f' data-ema-fetched="{html.escape(fetched_date, quote=True)}"' if fetched_date else ""
     src = f' data-ema-pdf="{html.escape(src_url, quote=True)}"' if src_url else ""
     return doc_html.replace(
         '<div id="textDocument">',
-        f'<div id="textDocument" data-ema-date="{date}"{src}>', 1,
+        f'<div id="textDocument" data-ema-date="{date}"{fetched}{src}>', 1,
     )
 
 
@@ -110,10 +122,13 @@ def convert_and_write(cis: str, pdf_bytes: bytes, gzip_overlay: bool,
     entry dict ({last_fetch, hash, status, date, bytes}); status 'empty' means the
     PDF yielded no usable HTML (no overlay written)."""
     conv = ema.convert(pdf_bytes)
-    html_doc = _overlay_html(conv, src_url)
+    now = scrape._now_iso()
+    # Bake the fetch DATE (not the full timestamp) so a same-day re-fetch of an
+    # unchanged PDF yields a byte-identical overlay (no needless rewrite/rsync).
+    html_doc = _overlay_html(conv, src_url, fetched_date=now[:10])
     digest = hashlib.sha256(html_doc.encode("utf-8")).hexdigest()
     entry = {
-        "last_fetch": scrape._now_iso(), "hash": digest,
+        "last_fetch": now, "hash": digest,
         "date": conv.get("date", ""), "status": "ok" if html_doc else "empty",
     }
     if not html_doc:
