@@ -212,6 +212,39 @@ a:hover { text-decoration: underline; }
 .rcp-refresh button:hover { border-color: var(--accent); }
 .rcp-refresh button:disabled { color: var(--muted); cursor: default; opacity: .7; }
 .rcp-refresh .msg { color: var(--muted); }
+/* Per-drug semantic search (src/rcp-semsearch.js): a collapsible box that asks the
+   reader for a natural-language question and jumps to the closest section. Built in
+   JS and shaped like the .toc panel; the heavy encoder loads only when it's opened. */
+.semsearch {
+  margin: 0 0 1.5rem; border: 1px solid var(--line); border-radius: .6rem;
+  background: var(--card); padding: .2rem .7rem .5rem;
+}
+.semsearch > summary {
+  cursor: pointer; font-weight: 600; padding: .5rem .3rem; list-style-position: inside;
+}
+.semsearch > summary::-webkit-details-marker { display: none; }
+.semsearch > summary::before { content: "\1F50E\00a0"; opacity: .7; }
+.semsearch-panel { padding: .3rem .3rem .2rem; }
+.semsearch-input {
+  width: 100%; box-sizing: border-box; font: inherit;
+  padding: .55rem .8rem; border: 1px solid var(--line); border-radius: .5rem;
+  background: var(--bg); color: var(--fg);
+}
+.semsearch-input:focus { outline: 2px solid var(--accent); border-color: transparent; }
+.semsearch-status { color: var(--muted); font-size: .8rem; margin: .5rem .2rem 0; min-height: 1em; }
+.semsearch-results { list-style: none; margin: .6rem 0 .2rem; padding: 0; }
+.semsearch-results li + li { border-top: 1px solid var(--line); }
+.semsearch-hit-link { display: block; padding: .5rem .3rem; color: var(--fg); }
+.semsearch-hit-link:hover { background: var(--bg); text-decoration: none; }
+.semsearch-hit-link strong { display: block; color: var(--accent); font-size: .92rem; }
+.semsearch-snippet { display: block; color: var(--muted); font-size: .82rem; margin-top: .15rem; }
+/* Transient highlight on the section a result jumps to (theme-aware via --accent;
+   if color-mix is unsupported the animation is simply ignored, no highlight). */
+.semsearch-flash { animation: semsearch-flash 2s ease-out; border-radius: .3rem; }
+@keyframes semsearch-flash {
+  from { background: color-mix(in srgb, var(--accent) 30%, transparent); }
+  to { background: transparent; }
+}
 /* Cross-drug backlinks: inline links to other drugs' pages injected into the RCP
    body by build.py (_linkify), and the "Médicaments liés" list at the foot
    (_xref_html). Inline links get a dotted underline so a reader can tell they

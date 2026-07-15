@@ -1929,6 +1929,7 @@ def main() -> None:
         "app-init.js",
         "dev-banner.js",
         "toc.js",
+        "rcp-semsearch.js",
     )
     for asset in static_assets:
         shutil.copy(SRC / asset, DIST / asset)
