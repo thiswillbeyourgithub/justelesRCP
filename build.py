@@ -48,7 +48,7 @@ from lxml import html as lxml_html
 
 import bdpm  # shared, pure-stdlib BDPM tokenising + frequency scoring
 
-__version__ = "0.20.0"  # single source of truth; bump patch/minor per change
+__version__ = "0.21.0"  # single source of truth; bump patch/minor per change
 
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
@@ -1023,6 +1023,32 @@ def load_cap_meta() -> dict[str, tuple[str, str, str]]:
     return meta
 
 
+def _auth_key(name: str, eu: str) -> str:
+    """Group key uniting every presentation of ONE centrally-authorized product.
+
+    A product's EU marketing-authorization number (e.g. 'EU/1/13/882') is shared by
+    all its strengths/pack sizes (the CIS_bdpm column carries the product-level
+    number, not a per-presentation suffix), so it groups them exactly; when a
+    'centralisée' row carries no EU number we fall back to the brand root. All
+    presentations of a product point at the SAME EMA product-information PDF, so one
+    harvested link + one converted overlay serves the whole group (see resolve_eu)."""
+    return eu or _brand_root(name)
+
+
+def auth_groups(cap: dict[str, tuple[str, str, str]]) -> dict[str, list[str]]:
+    """Authorization key -> sorted member CIS, from load_cap_meta()'s output.
+
+    Members share one EMA PDF/overlay (see _auth_key), so a presentation with no
+    overlay of its own can borrow a sibling's. Sorted for deterministic borrowing
+    (keeps the incremental cache stable across runs)."""
+    groups: dict[str, list[str]] = {}
+    for cis, (name, eu, _holder) in cap.items():
+        groups.setdefault(_auth_key(name, eu), []).append(cis)
+    for members in groups.values():
+        members.sort()
+    return groups
+
+
 def _stub_content(
     name: str, eu: str, holder: str, generic: str | None, ema_pdf: str = ""
 ) -> str:
@@ -1108,6 +1134,52 @@ def _eu_via_archive(overlay_html: str) -> bool:
     visible note on the page. The source button still points at the real EMA PDF,
     never the archive URL (which we deliberately never expose)."""
     return 'data-ema-archive="1"' in overlay_html
+
+
+def _eu_overlay_cached(cis: str, memo: dict[str, str]) -> str:
+    """Read a CIS's converted EMA overlay HTML once, memoised (resolve_eu may probe
+    the same sibling for several presentations of one product)."""
+    if cis not in memo:
+        path = _overlay_path(cis, EU_OVERLAY_DIR)
+        memo[cis] = _read_overlay(path) if path is not None else ""
+    return memo[cis]
+
+
+def resolve_eu(cis: str, cap: dict[str, tuple[str, str, str]],
+               groups: dict[str, list[str]], links: dict[str, str],
+               memo: dict[str, str] | None = None) -> tuple[str, str]:
+    """(overlay_html, pdf_url) for one /eu/ CIS, SHARED across its authorization group.
+
+    All presentations of a centrally-authorized product publish one EMA PDF, so a
+    presentation with no converted overlay/link of its own borrows a sibling's (see
+    _auth_key/auth_groups). Preference: the CIS's own overlay + harvested link; else
+    the freshest sibling overlay (ties broken by CIS, for a deterministic pick that
+    doesn't churn the incremental cache) and any sibling's harvested link.
+    ``overlay_html`` is "" when no group member has one yet; ``pdf_url`` is "" when
+    no member has a harvested link AND no overlay bakes one. ``memo`` caches overlay
+    reads across calls. Used by build_stubs (batch) and the refresh service
+    (_eu_url, on-demand + crawler)."""
+    memo = {} if memo is None else memo
+    meta = cap.get(cis)
+    key = _auth_key(meta[0], meta[1]) if meta else None
+    own = _eu_overlay_cached(cis, memo)
+    link = links.get(cis, "")
+    if own.strip():
+        return own, link or _eu_pdf(own)
+    best_html, best_rank = "", None
+    for sib in groups.get(key, ()):  # sorted members
+        if sib == cis:
+            continue
+        if not link:  # borrow a harvested link even if no sibling overlay exists yet
+            link = links.get(sib, "")
+        html = _eu_overlay_cached(sib, memo)
+        if html.strip():
+            rank = (_eu_fetched(html) or _eu_date(html), sib)  # freshest, then CIS
+            if best_rank is None or rank > best_rank:
+                best_html, best_rank = html, rank
+    if best_html:
+        return best_html, link or _eu_pdf(best_html)
+    return "", link
 
 
 def _eu_pdf_url(overlay_html: str, name: str, fallback: str = "") -> str:
@@ -1239,9 +1311,17 @@ def build_stubs(
     The content hash omits the template/code, which the global key already
     guards."""
     cap = load_cap_meta()
-    # Direct EMA PDF links harvested by the scraper (CIS -> url); a stub whose CIS
-    # is present links straight at the doc, others fall back to the EMA search.
+    # Direct EMA PDF links harvested by the scraper (CIS -> url); a presentation
+    # whose CIS (or a sibling's, see below) is present links straight at the doc,
+    # others fall back to the EMA search.
     ema_links = _load_ema_links()
+    # Authorization groups: every strength/pack of one centrally-authorized product
+    # shares ONE EMA PDF, so a presentation with no overlay/link of its own borrows a
+    # sibling's (resolve_eu). This is what makes e.g. ABILIFY MAINTENA 300 mg render
+    # the same full converted page as 400 mg the moment either sibling is scraped,
+    # instead of staying a bare stub. The overlay-read memo is shared across the loop.
+    groups = auth_groups(cap)
+    overlay_memo: dict[str, str] = {}
     eu_dir = DIST / "eu"
 
     def _prune(keep: set[str]) -> None:
@@ -1275,13 +1355,13 @@ def build_stubs(
         name, eu, holder = cap[cis]
         slug = f"{cis}-{slugify(name)}"
         out = eu_dir / f"{slug}.html"
-        # If scrape-ema.py has fetched + converted this drug's EMA PDF, render the
-        # full converted SmPC/notice on-site (render_eu_page); otherwise a
-        # lightweight stub that only points out. The overlay lives in
-        # EU_OVERLAY_DIR (never RCP's, so it is not turned into a /rcp/ page); a
-        # zero-byte overlay decodes to "".
-        eu_path = _overlay_path(cis, EU_OVERLAY_DIR)
-        overlay = _read_overlay(eu_path) if eu_path is not None else ""
+        # If this drug's EMA PDF has been fetched + converted (its own overlay OR a
+        # sibling presentation's, since they share one PDF), render the full
+        # converted SmPC/notice on-site (render_eu_page); otherwise a lightweight
+        # stub that only points out. resolve_eu also yields the best PDF link (own,
+        # else a sibling's) so even a stub points at the real doc, not a search.
+        # Overlays live in EU_OVERLAY_DIR (never RCP's); a zero-byte one decodes "".
+        overlay, link = resolve_eu(cis, cap, groups, ema_links, overlay_memo)
         full = bool(overlay.strip())
         if full:
             # The whole converted doc drives the output, so the cache key is the
@@ -1289,7 +1369,7 @@ def build_stubs(
             # around it. The "full" tag busts the cache if a page flips stub<->full.
             # pdf_url is resolved the SAME way render_eu_page does, so the key and
             # the rendered page stay in step.
-            pdf_url = _eu_pdf_url(overlay, name, ema_links.get(cis, ""))
+            pdf_url = _eu_pdf_url(overlay, name, link)
             h = hashlib.sha256(
                 "\x00".join(("full", overlay, name, eu, holder, pdf_url)).encode("utf-8")
             ).hexdigest()
@@ -1307,7 +1387,7 @@ def build_stubs(
             # runs (hash randomization), so `max(..., key=len)` alone would pick a
             # different term on ties each build, churning the incremental cache.
             generic = max(hits, key=lambda t: (len(t), t)).lower() if hits else None
-            content = _stub_content(name, eu, holder, generic, ema_links.get(cis, ""))
+            content = _stub_content(name, eu, holder, generic, link)
             h = hashlib.sha256(("stub\x00" + content).encode("utf-8")).hexdigest()
 
         prev = prev_records.get(cis)
@@ -1318,7 +1398,7 @@ def build_stubs(
         ):
             reused += 1
         elif full:
-            render_eu_page(cis, overlay, (name, eu, holder), page_tpl, ema_links.get(cis, ""))
+            render_eu_page(cis, overlay, (name, eu, holder), page_tpl, link)
         else:
             page = (
                 page_tpl.replace("{{TITLE}}", _esc(name))
