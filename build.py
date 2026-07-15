@@ -47,7 +47,7 @@ from lxml import html as lxml_html
 
 import bdpm  # shared, pure-stdlib BDPM tokenising + frequency scoring
 
-__version__ = "0.15.0"  # single source of truth; bump patch/minor per change
+__version__ = "0.16.0"  # single source of truth; bump patch/minor per change
 
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
@@ -234,6 +234,27 @@ def _load_scrape_dates() -> dict[str, str]:
         except ValueError:
             continue
     return dates
+
+
+def _load_ema_links() -> dict[str, str]:
+    """CIS -> direct EMA product-information PDF URL, from scrape-rcp.py's manifest.
+
+    scrape-rcp.py's extract_ema_pdf harvests, from each scraped ANSM page, the
+    real href to the EMA-published SmPC/notice PDF (present only on centrally-
+    authorized, empty-RCP drugs). build_stubs prefers this exact link over the
+    EMA brand search. Returns {} when the manifest is absent (baseline-only
+    build); a CIS not yet re-scraped since this feature landed simply won't
+    appear and its stub falls back to the search URL."""
+    try:
+        raw = json.loads(SCRAPE_MANIFEST_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    links: dict[str, str] = {}
+    for cis, entry in raw.items():
+        url = (entry or {}).get("ema_pdf")
+        if url:
+            links[cis] = url
+    return links
 
 
 def _overlay_path(cis: str) -> Path | None:
@@ -966,8 +987,15 @@ def load_cap_meta() -> dict[str, tuple[str, str, str]]:
     return meta
 
 
-def _stub_content(name: str, eu: str, holder: str, generic: str | None) -> str:
-    """Body HTML for one /eu/ stub (fills the RCP template's {{CONTENT}} slot)."""
+def _stub_content(
+    name: str, eu: str, holder: str, generic: str | None, ema_pdf: str = ""
+) -> str:
+    """Body HTML for one /eu/ stub (fills the RCP template's {{CONTENT}} slot).
+
+    When ``ema_pdf`` is set (the real EMA product-information PDF href the
+    scraper harvested from this drug's ANSM page), the "official RCP" button
+    links straight to that document; otherwise it falls back to an EMA brand
+    search (never 404s, fetches nothing at build time)."""
     out = [
         '<div class="rcp-stub">',
         f"<h1>{_esc(name)}</h1>",
@@ -983,10 +1011,13 @@ def _stub_content(name: str, eu: str, holder: str, generic: str | None) -> str:
         bits.append(f"Titulaire : {_esc(holder)}")
     if bits:
         out.append('<p class="stub-meta">' + "<br>".join(bits) + "</p>")
+    if ema_pdf:
+        href, label = ema_pdf, "Consulter le RCP officiel (PDF) sur le site de l'EMA →"
+    else:
+        href, label = _ema_search_url(name), "Consulter le RCP officiel sur le site de l'EMA →"
     out.append(
         '<p class="stub-actions"><a class="stub-ema" href="'
-        f'{_esc(_ema_search_url(name))}" target="_blank" rel="noopener">'
-        "Consulter le RCP officiel sur le site de l'EMA →</a></p>"
+        f'{_esc(href)}" target="_blank" rel="noopener">{label}</a></p>'
     )
     if generic:
         q = urllib.parse.quote_plus(generic)
@@ -1016,6 +1047,9 @@ def build_stubs(
     The content hash omits the template/code, which the global key already
     guards."""
     cap = load_cap_meta()
+    # Direct EMA PDF links harvested by the scraper (CIS -> url); a stub whose CIS
+    # is present links straight at the doc, others fall back to the EMA search.
+    ema_links = _load_ema_links()
     eu_dir = DIST / "eu"
 
     def _prune(keep: set[str]) -> None:
@@ -1057,7 +1091,7 @@ def build_stubs(
         # different term on ties each build, churning the incremental cache.
         generic = max(hits, key=lambda t: (len(t), t)).lower() if hits else None
         slug = f"{cis}-{slugify(name)}"
-        content = _stub_content(name, eu, holder, generic)
+        content = _stub_content(name, eu, holder, generic, ema_links.get(cis, ""))
         h = hashlib.sha256(content.encode("utf-8")).hexdigest()
         out = eu_dir / f"{slug}.html"
         prev = prev_records.get(cis)
