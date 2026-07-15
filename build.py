@@ -680,6 +680,35 @@ _STRIP_XPATH = (
 )
 
 
+def _parse_clean(raw: str):
+    """Parse raw ANSM HTML and strip decoration (BackToTop arrows, script/style,
+    inline font styling), returning the lxml document.
+
+    Factored out of clean_rcp so section_chunks segments the IDENTICAL tree the
+    rendered page is built from (same strip rules, so a chunk's text matches what
+    the reader sees). Keeps the Amm* class hooks style.css restyles.
+    """
+    doc = lxml_html.fromstring(raw)
+    for node in doc.xpath(_STRIP_XPATH):
+        node.getparent().remove(node)
+    # Drop inline font/size styling; keep the class hooks (AmmDenomination, ...).
+    for node in doc.xpath("//*[@style]"):
+        style = node.get("style")
+        kept = [d for d in style.split(";") if d.strip() and "font" not in d.lower()]
+        if kept:
+            node.set("style", ";".join(kept))
+        else:
+            del node.attrib["style"]
+    return doc
+
+
+def _inner_of(doc):
+    """The RCP body element: the ANSM ``<div id="textDocument">`` envelope, or the
+    whole document if it is somehow absent. Shared by clean_rcp / section_chunks."""
+    body = doc.xpath("//div[@id='textDocument']")
+    return body[0] if body else doc
+
+
 def _denomination(doc) -> str:
     """Drug name = section-1 denomination. Class hooks vary (AmmDenomination,
     AmmCorpsTexteGras, ...), so anchor on the 'RcpDenomination' name and take the
@@ -729,23 +758,9 @@ def clean_rcp(
     wrapped in <a> links (skipping ``cis``'s own page) and the distinct targets
     are returned as ``xref_links`` for the "Médicaments liés" section.
     """
-    doc = lxml_html.fromstring(raw)
-    for node in doc.xpath(_STRIP_XPATH):
-        node.getparent().remove(node)
-
-    # Drop inline font/size styling; keep the class hooks (AmmDenomination, ...).
-    for node in doc.xpath("//*[@style]"):
-        style = node.get("style")
-        kept = [d for d in style.split(";") if d.strip() and "font" not in d.lower()]
-        if kept:
-            node.set("style", ";".join(kept))
-        else:
-            del node.attrib["style"]
-
+    doc = _parse_clean(raw)
     denom = _denomination(doc)
-
-    body = doc.xpath("//div[@id='textDocument']")
-    inner = body[0] if body else doc
+    inner = _inner_of(doc)
     toc = _build_toc(inner)
     # Inject cross-drug backlinks after the toc is built (so section ids/titles
     # are captured from the untouched headings) but before serialisation.
@@ -754,6 +769,101 @@ def clean_rcp(
         lxml_html.tostring(c, encoding="unicode") for c in inner.iterchildren()
     )
     return denom, cleaned, toc, xref_links
+
+
+# --- per-section text chunks for semantic search ----------------------------
+# One RCP is embedded per top-level section (the sec-N anchors the ToC uses), with
+# long sections split into ~_SEC_CHUNK_CHARS word-windows so a query matches a
+# specific passage, not a whole 2000-word section. section_chunks is the single
+# source of truth for chunk<->sec-N alignment, shared with embed-rcp.py (build-time
+# embeddings) so the vectors segment exactly what render_record bakes into the page.
+_SEC_CHUNK_CHARS = 500
+_SEC_SNIPPET_CHARS = 160
+_SEC_MIN_CHARS = 24
+_SEC_MAX_CHUNKS = 160
+
+
+def quantize_int8(values) -> list[int]:
+    """Symmetric int8 quantisation of an L2-normalised embedding (components in
+    [-1, 1]): ``q = round(v * 127)`` clamped to [-127, 127]. The canonical formula,
+    used by embed-rcp.py (build-time) and mirrored by src/rcp-semsearch.js
+    (runtime ``q / 127``); ~1/127 max error, negligible for cosine ranking."""
+    out = []
+    for v in values:
+        q = round(v * 127)
+        out.append(127 if q > 127 else -127 if q < -127 else int(q))
+    return out
+
+
+def dequantize_int8(q) -> list[float]:
+    """Inverse of quantize_int8 (the reference src/rcp-semsearch.js mirrors)."""
+    return [x / 127 for x in q]
+
+
+def _norm_ws(text: str) -> str:
+    return " ".join(text.split())
+
+
+def _char_windows(text: str, limit: int) -> list[str]:
+    """Split text into word-aligned windows no longer than ~limit chars."""
+    windows: list[str] = []
+    cur = ""
+    for word in text.split():
+        if cur and len(cur) + 1 + len(word) > limit:
+            windows.append(cur)
+            cur = word
+        else:
+            cur = f"{cur} {word}".strip()
+    if cur:
+        windows.append(cur)
+    return windows
+
+
+def section_chunks(raw: str, cis: str = "") -> list[tuple[str, str, str]]:
+    """Segment one RCP into per-section embedding chunks aligned with ``sec-N``.
+
+    Returns ``[(sec_id, snippet, chunk_text), ...]`` where ``sec_id`` is the SAME
+    id render_record puts on the section heading (so a search hit scrolls to a real
+    ``#sec-N``), ``snippet`` is a short display excerpt, and ``chunk_text`` is the
+    section-title-prefixed text to embed (the model prefix, e.g. e5's "passage:",
+    is added by the caller). Pure stdlib+lxml, no ML dependency; imported by
+    embed-rcp.py. Each section's body is gathered from the heading's following
+    siblings up to the next top-level heading (the same walk _denomination uses)
+    and split into ~_SEC_CHUNK_CHARS windows.
+    """
+    try:
+        doc = _parse_clean(raw)
+    except Exception:  # a handful of dumps have markup lxml refuses
+        return []
+    inner = _inner_of(doc)
+    toc = _build_toc(inner)  # assigns id="sec-N"; empty-title headings get none
+    if not toc:
+        return []
+    chunks: list[tuple[str, str, str]] = []
+    for h_el in inner.xpath(".//*[contains(@class, 'AmmAnnexeTitre1')]"):
+        sec_id = h_el.get("id")
+        if not sec_id:  # empty-title heading skipped by _build_toc
+            continue
+        title = _norm_ws(h_el.text_content())
+        blocks: list[str] = []
+        for sib in h_el.itersiblings():
+            if "AmmAnnexeTitre1" in (sib.get("class") or ""):
+                break  # next section
+            blocks.append(sib.text_content())
+        body_all = _norm_ws(" ".join(blocks))
+        for body in _char_windows(body_all, _SEC_CHUNK_CHARS) or [""]:
+            chunk_text = f"{title} : {body}".strip(" :") if body else title
+            if not chunk_text:
+                continue
+            # keep even short chunks if a section is otherwise empty, so every
+            # section stays searchable; drop tiny trailing fragments otherwise.
+            if body and len(chunk_text) < _SEC_MIN_CHARS:
+                continue
+            snippet = _norm_ws(body or title)[:_SEC_SNIPPET_CHARS]
+            chunks.append((sec_id, snippet, chunk_text))
+            if len(chunks) >= _SEC_MAX_CHUNKS:
+                return chunks
+    return chunks
 
 
 # --- A-Z browse pages -------------------------------------------------------
