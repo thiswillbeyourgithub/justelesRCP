@@ -117,13 +117,15 @@
     const bakedAsof = asofEl
       ? (asofEl.getAttribute("data-rcp-asof") || "").trim()
       : "";
-    // No baked capture date means there is nothing to refresh against, so skip the
-    // whole refresh control. The refresh flow is keyed off data-rcp-asof by design.
-    // This is what gates the button correctly on the /eu/ side: a lightweight EU
-    // stub (a mere pointer to the EMA) has no capture date and shows no button,
-    // while a full /eu/ page (the EMA PDF converted on-site) DOES bake one and gets
-    // the button, whose POST the refresh service routes to its EMA lane.
-    if (!bakedAsof) return;
+    // A lightweight EU stub (a mere pointer to the EMA, no copy captured yet) is
+    // detectable by its .rcp-stub body and has no data-rcp-asof. We still want a
+    // button on it: clicking asks the refresh service to fetch + convert this
+    // drug's EMA PDF on demand (its EMA lane harvests the link live if needed), so
+    // the reader never has to wait for the background crawler to reach it. A page
+    // WITHOUT a capture date AND not a stub (a plain RCP page missing its asof) has
+    // nothing to refresh against, so we skip the control entirely.
+    const isEuStub = !!document.querySelector(".rcp-stub");
+    if (!bakedAsof && !isEuStub) return;
     const ageDays = bakedAsof
       ? Math.floor((Date.now() - new Date(bakedAsof + "T00:00:00Z").getTime()) / 86400000)
       : NaN;
@@ -141,7 +143,10 @@
     box.className = "rcp-refresh";
     const btn = document.createElement("button");
     btn.type = "button";
-    btn.textContent = "Rafraîchir maintenant";
+    // On a stub we have no copy yet, so the action is "fetch it", not "refresh it".
+    btn.textContent = isEuStub
+      ? "Récupérer le RCP depuis l'EMA"
+      : "Rafraîchir maintenant";
     const msg = document.createElement("span");
     msg.className = "msg";
     box.append(btn, msg);
