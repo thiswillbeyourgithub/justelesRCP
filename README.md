@@ -18,9 +18,12 @@ ANSM / BDPM. Conçu comme une alternative légère aux sites de médicaments len
   statique précalculé.
 - Recherche instantanée côté client sur ~15 600 médicaments, plus des pages de
   navigation A-Z indexables par les moteurs de recherche.
-- *(Prévu)* Recherche sémantique par embeddings à l'intérieur d'une page RCP
-  donnée, calculée entièrement dans le navigateur (côté client), donc
-  respectueuse de la vie privée : aucune requête n'est envoyée à un serveur.
+- Recherche sémantique par *embeddings* à l'intérieur d'une page RCP donnée :
+  tapez une question en langage naturel (« puis-je le prendre enceinte ? ») et la
+  page vous amène aux rubriques les plus pertinentes. Tout est calculé dans le
+  navigateur avec un modèle auto-hébergé (rien n'est envoyé à un serveur, aucun
+  CDN), donc respectueux de la vie privée ; le modèle (~120 Mo) n'est téléchargé
+  qu'au premier usage explicite, puis mis en cache (voir plus bas, optionnel).
 - Liens croisés entre médicaments : chaque page RCP relie automatiquement les
   noms de médicaments et de substances qu'elle cite (par ex. « oméprazole »,
   « carbamazépine ») vers leurs propres pages, avec un encart « Médicaments
@@ -179,6 +182,34 @@ crawler) qui récupère le PDF de l'EMA, le convertit et régénère la page. Ce
 a ses propres réglages (`REFRESH_EMA_CRAWL`, `REFRESH_EMA_RATE_SECONDS` à 300 s par
 défaut car l'EMA est plus stricte, `REFRESH_EMA_CRAWL_TTL_DAYS` à 180 jours) et son
 propre manifeste, indépendants de la voie ANSM.
+
+## Recherche sémantique par médicament (optionnel)
+
+Chaque page RCP propose un encart « Rechercher dans ce RCP » : posez une question
+en langage naturel (« puis-je le prendre pendant la grossesse ? », « effets sur le
+foie ») et l'encart classe et met en avant les rubriques les plus proches, à
+l'intérieur de ce seul médicament. Tout se passe dans le navigateur : un petit
+modèle multilingue auto-hébergé (~120 Mo, `intfloat/multilingual-e5-small`)
+transforme la question en vecteur et le compare aux vecteurs des rubriques,
+précalculés à la construction. Aucune requête n'est envoyée à un serveur, aucun CDN
+n'est contacté (la CSP stricte est préservée) ; le modèle n'est téléchargé qu'au
+premier usage explicite de la recherche, puis mis en cache par le navigateur.
+
+C'est **entièrement facultatif** : sans les fichiers du modèle, l'encart affiche
+simplement « pas encore disponible » et le reste du site est inchangé. Pour
+l'activer :
+
+```bash
+./download-model.sh               # transformers.js + le modèle ONNX dans ./vendor et ./models (~120 Mo, gitignored)
+uv run embed-rcp.py --limit 60    # calcule hors-ligne les vecteurs par rubrique (data/emb/, incrémental)
+uv run build.py                   # intègre les vecteurs (.vec.json) et copie vendor/ + models/ dans dist/
+```
+
+Le calcul des vecteurs est incrémental (comme le scraping) : un médicament n'est
+ré-embarqué que si son texte ou le modèle a changé. Côté serveur, `docker/Caddyfile`
+autorise `'wasm-unsafe-eval'` (nécessaire pour exécuter le WebAssembly du modèle ;
+cela n'active pas `eval()` JavaScript) et met en cache `/vendor` et `/models` de
+façon immuable.
 
 ## Source des données et licence
 

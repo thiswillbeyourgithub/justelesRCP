@@ -17,9 +17,12 @@ for-profit medicine sites.
 - No application server, no database: every page is a precomputed static file.
 - Client-side instant search over ~15,600 medicines, plus crawlable A-Z browse
   pages.
-- *(Planned)* Semantic (embeddings) search within a given RCP page, computed
-  entirely in the browser (client-side), so privacy-respecting: no query is ever
-  sent to a server.
+- Semantic (embeddings) search within a given RCP page: type a natural-language
+  question ("can I take it while pregnant?") and the page takes you to the most
+  relevant sections. Everything is computed in the browser with a self-hosted
+  model (nothing is sent to a server, no CDN), so it is privacy-respecting; the
+  model (~120 MB) is downloaded only on first explicit use, then cached (see
+  below, optional).
 - Cross-drug backlinks: each RCP page automatically links the drug and substance
   names it mentions (e.g. "oméprazole", "carbamazépine") to those drugs' own
   pages, with a "Médicaments liés" (related medicines) box at the foot. Only
@@ -163,6 +166,31 @@ that fetches the EMA PDF, converts it and rebuilds the page. This lane has its o
 knobs (`REFRESH_EMA_CRAWL`, `REFRESH_EMA_RATE_SECONDS` at 300 s by default since the
 EMA is stricter, `REFRESH_EMA_CRAWL_TTL_DAYS` at 180 days) and its own manifest,
 independent of the ANSM lane.
+
+## Per-drug semantic search (optional)
+
+Every RCP page has a "Rechercher dans ce RCP" box: type a natural-language
+question ("can I take it while pregnant?", "effects on the liver") and the box
+ranks and highlights the closest sections, within that one drug. It all happens in
+the browser: a small self-hosted multilingual model (~120 MB,
+`intfloat/multilingual-e5-small`) turns the question into a vector and compares it
+to the section vectors, precomputed at build time. No request is sent to any
+server, no CDN is contacted (the strict CSP is preserved); the model is downloaded
+only on the first explicit search, then cached by the browser.
+
+It is **entirely optional**: without the model files the box simply shows "pas
+encore disponible" and the rest of the site is unchanged. To enable it:
+
+```bash
+./download-model.sh               # transformers.js + the ONNX model into ./vendor and ./models (~120 MB, gitignored)
+uv run embed-rcp.py --limit 60    # compute the per-section vectors offline (data/emb/, incremental)
+uv run build.py                   # bake the vectors (.vec.json) and copy vendor/ + models/ into dist/
+```
+
+Vector computation is incremental (like scraping): a drug is re-embedded only if
+its text or the model changed. On the server side, `docker/Caddyfile` allows
+`'wasm-unsafe-eval'` (needed to run the model's WebAssembly; it does NOT enable
+JavaScript `eval()`) and caches `/vendor` and `/models` immutably.
 
 ## Data source and licence
 

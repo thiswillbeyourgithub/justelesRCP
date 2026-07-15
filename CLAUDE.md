@@ -57,7 +57,12 @@ dist/eu/<cis>-<slug>.html    EU-authorization page for a centrally-authorized dr
 dist/browse/index.html       A-Z landing (letter grid with counts)
 dist/browse/<letter>.html    alphabetical drug list per letter ('#' -> num.html)
 dist/index.html a-propos.html style.css search.js
-dist/app-config.js app-init.js dev-banner.js toc.js app-version.js  (runtime client assets)
+dist/app-config.js app-init.js dev-banner.js toc.js app-version.js rcp-semsearch.js  (runtime client assets)
+dist/rcp/<cis>-<slug>.vec.json   OPTIONAL per-page section vectors for client-side
+                             semantic search (baked from data/emb by write_vec_sidecars);
+                             absent unless embed-rcp.py has run
+dist/vendor/** dist/models/**   OPTIONAL self-hosted transformers.js + ONNX encoder,
+                             mirrored from ./vendor + ./models (download-model.sh)
 dist/.build-manifest.json    incremental-build cache (per-CIS input hashes)
 + .gz and .br precompressed siblings for every text file (Caddy serves these)
 ```
@@ -457,6 +462,49 @@ Key facts that aren't obvious from a single file:
   is a search only as a *fallback*; a fetched page links the exact PDF. **NOTHING
   is fetched from the EMA at build time** (the site stays 100% static); the PDF is
   fetched only by `scrape-ema.py` or the refresh service's EMA lane.
+- **Per-drug semantic search is client-side, offline, and optional** (`src/rcp-semsearch.js`
+  + `embed-rcp.py` + `download-model.sh`). Each RCP / full `/eu/` page has a
+  "Rechercher dans ce RCP" box: the reader types a natural-language question and it
+  ranks/scroll-highlights the closest SECTIONS of that one drug. Same split as the
+  scrape flow: a heavy PEP723 script does the compute offline, `build.py` bakes the
+  result into `dist`, and a lazy runtime consumes it. **Segmentation is shared**:
+  `build.section_chunks(raw, cis)` runs the SAME `clean_rcp` path as the rendered
+  page, so its chunks carry the same `sec-N` ids the ToC/anchors use (a hit scrolls
+  to a heading that exists); it returns `(sec_id, snippet, chunk_text)` per ~500-char
+  window and is the single source of truth, imported by `embed-rcp.py`. `embed-rcp.py`
+  (PEP723, sentence-transformers) iterates `build.iter_rcp_raw()`, embeds each chunk
+  with `intfloat/multilingual-e5-small` (384-dim, e5 `query:`/`passage:` prefixes),
+  int8-quantises via `build.quantize_int8` (symmetric, `q=round(v*127)`, dequant
+  `q/127`; the ONE canonical formula, mirrored in JS `decodeVec`), and writes one
+  sidecar per drug `data/emb/<cis>.json[.gz]` under its own manifest
+  `data/.embed-manifest.json` (incremental: re-embed only when the raw HTML or model
+  hash changed). `build.py` repackages those into the served
+  `dist/rcp/<slug>.vec.json` via `write_vec_sidecars()` (mtime-incremental,
+  self-pruning) and `_mirror_tree()`s `vendor/` + `models/` into `dist/`. Vectors
+  live in a SEPARATE `.vec.json` sidecar (NOT inline in the page and NOT in
+  `_record_hash`/the template), so page HTML is unchanged and the feature is
+  refresh-safe (the refresh service rewrites only `.html`; the `.vec.json` persists
+  until the next `embed-rcp.py` pass). The runtime `src/rcp-semsearch.js` gates on
+  `.rcp[data-cis]` (skips `.rcp-stub`), and ONLY when the reader first opens the box
+  fetches the `.vec.json` (404 -> graceful "pas encore disponible"), then lazily
+  `import()`s the vendored `/vendor/transformers.min.js` set fully offline
+  (`env.allowRemoteModels=false`, `localModelPath='/models/'`,
+  `backends.onnx.wasm.wasmPaths='/vendor/ort/'`, `numThreads=1`, `proxy=false`, so no
+  blob worker and no COOP/COEP), loads the `Xenova/multilingual-e5-small` ONNX
+  encoder (~120 Mo, browser-cached after first use), embeds `"query: "+q`, cosine-
+  ranks the dequantised section vectors and lists the best; a click jumps to and
+  flashes the `sec-N`. The model needs `script-src 'wasm-unsafe-eval'` (see the
+  hardening note). It is 100% same-origin (nothing from a CDN at serve time) and
+  fully optional: no `download-model.sh` / `embed-rcp.py` run => no `.vec.json`, no
+  `vendor`/`models`, and the box just degrades. `RUNTIME_MODEL` (rcp-semsearch.js),
+  `EMBED_MODEL`/`DEFAULT_MODEL` (embed-rcp.py) and the pinned versions in
+  `download-model.sh` MUST stay the same model (the baked passage vectors and the
+  runtime query vector have to come from the same weights). Keep the contract in
+  sync across `section_chunks`/`quantize_int8`/`write_vec_sidecars`/`_mirror_tree`
+  (build.py), `embed-rcp.py`, `src/rcp-semsearch.js`, the `<script>` in
+  `src/rcp.html`, `.semsearch*` in `style.css`, `download-model.sh`, and the CSP +
+  `/vendor`,`/models` caching in `docker/Caddyfile`. `test_embed.py` covers the two
+  pure pieces (int8 round-trip bound + `section_chunks` `sec-N` alignment).
 - **Precompression (.gz/.br) is baked at build time** so Caddy spends zero CPU
   compressing. `compress()` writes both siblings; the Caddyfile uses
   `precompressed br gzip`.
@@ -474,6 +522,9 @@ Key facts that aren't obvious from a single file:
 
 ```bash
 ./download-data.sh        # fetch data/CIS_RCP.csv + data/CIS_bdpm.txt (see TODOs in it)
+./download-model.sh       # OPTIONAL: vendor transformers.js + the ONNX encoder into ./vendor + ./models
+                          #  (~120 Mo, gitignored) for client-side per-drug semantic search. Skip it and
+                          #  the "Rechercher dans ce RCP" box just degrades to "pas encore disponible".
 uv run scrape-rcp.py --limit 60   # OPTIONAL manual/one-time bulk scrape into data/rcp/ overlay
                                   # (the refresh service's perpetual crawler now does routine
                                   #  freshening; use this for a first --all seed or an ad-hoc batch)
@@ -488,8 +539,14 @@ uv run scrape-ema.py --limit 60   # OPTIONAL bulk scrape of EMA product-informat
                                   # Falls back to the Internet Archive if a live EMA PDF fails (never
                                   # exposes the archive URL; stamps via_archive). --retry-archived
                                   # re-fetches just the archive-sourced CIS against the live EMA.
+uv run embed-rcp.py --limit 60    # OPTIONAL offline embeddings for client-side per-drug semantic
+                                  # search: segments each RCP (shared build.section_chunks), embeds +
+                                  # int8-quantises into data/emb/<cis>.json[.gz]; own manifest
+                                  # data/.embed-manifest.json (incremental by raw-hash + model). Needs
+                                  # ./download-model.sh's model. build.py bakes these into .vec.json.
 uv run build.py           # build ./dist from ./data (overlay wins over the 2022 CSV; a data/eu
-                          #  overlay makes /eu/<cis> a full converted page instead of a stub)
+                          #  overlay makes /eu/<cis> a full converted page instead of a stub; bakes
+                          #  <slug>.vec.json + mirrors vendor/ + models/ when present)
 uv run refresh-service.py # optional: run the refresh API on :8460 (behind Caddy /api/*)
                           # runs TWO perpetual frequency-ordered crawlers (ANSM + EMA /eu/) +
                           #  on-demand button/auto refreshes for both
@@ -533,7 +590,17 @@ Restart is not needed (Caddy reads the mounted dir live), but a
   external fonts, scripts, or CDNs by design. The ONLY escape hatch is the umami
   origin: `entrypoint.sh` derives `ANALYTICS_ORIGIN` from `ANALYTICS_URL` and the
   Caddyfile adds it to `script-src`/`connect-src` (empty when analytics is off).
-  Keep it self-contained otherwise so the CSP holds.
+  Keep it self-contained otherwise so the CSP holds. `script-src` ALSO carries a
+  hard-coded `'wasm-unsafe-eval'` (not templated) so the client-side per-drug
+  semantic-search encoder (transformers.js + onnxruntime-web, all self-hosted under
+  `/vendor` + `/models`) can instantiate its WebAssembly. This keyword permits ONLY
+  `WebAssembly.compile`/`instantiate` from bytes; it does NOT enable JS `eval()` /
+  `new Function()`, and everything else stays same-origin (the model and wasm are
+  served from `/models` + `/vendor`, not a CDN), so the strict posture holds. It is
+  supported on Chrome 97+/Firefox 102+/Safari 16+. The Caddyfile also serves
+  `/vendor` + `/models` with `Cache-Control: immutable` (via an `@immutable` path
+  matcher) while everything else stays `no-cache`; they are version-pinned by
+  `download-model.sh`, so a model bump is a fresh path/build, not a mutated URL.
 - **`docker/.env` is gitignored** (real analytics ids); `docker/env.example` is
   the committed template. Compose loads it via `env_file`; there is deliberately
   no `environment:` block (it would shadow `env_file` with empty defaults).
