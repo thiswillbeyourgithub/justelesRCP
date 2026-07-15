@@ -100,6 +100,11 @@ appears only when *our copy* has not been re-checked in over a year, not because
 ANSM's text is old: an RCP ANSM last revised in 2021 but never changed is still
 the current official text, so its age alone is not staleness.
 
+At the top of every page a row of pill buttons links out to external sources:
+**BDPM** (the drug's official record, by CIS code), then **HAS**, **EMA** and
+**Vidal** (a full-text search on the drug's active substance). None of these are
+fetched at build time; they are plain search links.
+
 ```bash
 uv run scrape-rcp.py --limit 60   # refresh 60 drugs (most-read first)
 uv run scrape-ema.py --limit 60   # fetch + convert EMA PDFs for centrally-authorized

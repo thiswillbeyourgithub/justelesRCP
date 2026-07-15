@@ -48,7 +48,7 @@ from lxml import html as lxml_html
 
 import bdpm  # shared, pure-stdlib BDPM tokenising + frequency scoring
 
-__version__ = "0.21.0"  # single source of truth; bump patch/minor per change
+__version__ = "0.22.0"  # single source of truth; bump patch/minor per change
 
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
@@ -101,6 +101,18 @@ BASELINE_DATE = "2022-05-02"
 # cross-import (build.py can't cheaply import scrape-rcp.py's httpx/click deps).
 ANSM_PAGE_URL = "https://base-donnees-publique.medicaments.gouv.fr/medicament/{cis}/extrait"
 
+# External-reference pill row shown at the top of every page (see _ref_links_html).
+# BDPM reuses ANSM_PAGE_URL (keyed by CIS: the drug's official BDPM record). HAS,
+# EMA and Vidal are full-text searches on the drug's active substance (see
+# load_substances); the EMA query template is the exact one the EMA site uses for a
+# document search.
+HAS_SEARCH_URL = "https://www.has-sante.fr/jcms/fc_2875171/fr/resultat-de-recherche?text={q}"
+EMA_REF_URL = (
+    "https://www.ema.europa.eu/en/search?keywords=allwords"
+    "&search_api_fulltext={q}&f%5B0%5D=ema_search_entity_is_document%3ADocument"
+)
+VIDAL_SEARCH_URL = "https://www.vidal.fr/recherche.html?query={q}"
+
 # The RCP HTML field can be very large; lift the csv field-size ceiling.
 csv.field_size_limit(sys.maxsize)
 
@@ -117,18 +129,29 @@ def _code_fingerprint() -> bytes:
     return re.sub(r"(?m)^__version__\s*=.*$", "", src).encode("utf-8")
 
 
-def _global_key(page_tpl: str, xref: dict[str, tuple[str, str, str]]) -> str:
+def _global_key(
+    page_tpl: str,
+    xref: dict[str, tuple[str, str, str]],
+    substances: dict[str, str] | None = None,
+) -> str:
     """Cache key that invalidates every record when the build code, the template,
-    OR the cross-drug backlink index change.
+    the cross-drug backlink index, OR the active-substance link map change.
 
     The backlink dictionary must be folded in because a page's injected links
     depend on the WHOLE index, not just that record's own inputs (which
     _record_hash covers): adding a drug can introduce a new term that changes an
-    unrelated page's body, so a changed index has to bust the whole cache."""
+    unrelated page's body, so a changed index has to bust the whole cache. The
+    substance map is folded in for the same reason: it feeds the external-reference
+    pill row (_ref_links_html) but is NOT part of _record_hash, so a composition
+    change that alters a drug's substance links must bust the cache too."""
     h = hashlib.sha256()
     h.update(_code_fingerprint())
     h.update(b"\0")
     h.update(page_tpl.encode("utf-8"))
+    h.update(b"\0")
+    h.update(
+        json.dumps(sorted((substances or {}).items()), ensure_ascii=False).encode("utf-8")
+    )
     h.update(b"\0")
     fp = sorted((term, slug) for term, (_, slug, _) in xref.items())
     h.update(json.dumps(fp, ensure_ascii=False).encode("utf-8"))
@@ -839,13 +862,18 @@ def compress(path: Path) -> None:
 _NAMES: dict[str, str] = {}
 _TPL = ""
 _XREF: dict[str, tuple[str, str, str]] = {}
+_SUBSTANCES: dict[str, str] = {}
 
 
 def _init_worker(
-    names: dict[str, str], tpl: str, xref: dict[str, tuple[str, str, str]] | None = None
+    names: dict[str, str],
+    tpl: str,
+    xref: dict[str, tuple[str, str, str]] | None = None,
+    substances: dict[str, str] | None = None,
 ) -> None:
-    global _NAMES, _TPL, _XREF
+    global _NAMES, _TPL, _XREF, _SUBSTANCES
     _NAMES, _TPL, _XREF = names, tpl, xref or {}
+    _SUBSTANCES = substances or {}
 
 
 def _toc_html(toc: list[tuple[str, str]]) -> str:
@@ -923,6 +951,76 @@ def _official_source_html(*buttons: str) -> str:
     return f'<p class="rcp-source">{" ".join(buttons)}</p>'
 
 
+def _clean_substance(text: str) -> str:
+    """Reduce a COMPO active-substance denomination to a clean search term: drop a
+    trailing salt/qualifier in parentheses and anything after a comma, collapse
+    whitespace. 'RANITIDINE (CHLORHYDRATE DE)' -> 'RANITIDINE'; 'ARIPIPRAZOLE' ->
+    'ARIPIPRAZOLE'."""
+    text = _stdhtml.unescape(text).split("(")[0].split(",")[0]
+    return " ".join(text.split())
+
+
+def load_substances() -> dict[str, str]:
+    """CIS -> a substance search string for the external-reference links (HAS, EMA,
+    Vidal), from CIS_COMPO_bdpm.txt.
+
+    Column layout per BDPM spec: 0=Code_CIS, 3=active-substance denomination,
+    6='SA' (substance active) / 'FT' (fraction thérapeutique). Only 'SA' rows are
+    kept so a drug is searched on its named active substance rather than a salt
+    fraction; each denomination is cleaned (_clean_substance) and distinct
+    substances of a combination drug are joined with a space. Returns {} if the
+    file is absent (or is a stray mount directory), so the build still runs (the
+    pill row then falls back to the drug's brand root, see _ref_links_html)."""
+    if not COMPO_PATH.is_file():
+        return {}
+    ordered: dict[str, list[str]] = {}
+    seen: dict[str, set[str]] = {}
+    with COMPO_PATH.open(encoding="latin-1") as fh:
+        for line in fh:
+            parts = line.split("\t")
+            if len(parts) <= 7 or parts[6].strip() != "SA":
+                continue
+            cis = parts[0].strip()
+            sub = _clean_substance(parts[3])
+            if not sub or sub.upper() in seen.setdefault(cis, set()):
+                continue
+            seen[cis].add(sub.upper())
+            ordered.setdefault(cis, []).append(sub)
+    return {cis: " ".join(subs) for cis, subs in ordered.items()}
+
+
+def _ref_pill(url: str, label: str) -> str:
+    """One '.ref-pill' external-reference button (opens in a new tab)."""
+    return (
+        f'<a class="ref-pill" href="{_esc(url)}" '
+        f'target="_blank" rel="noopener">{_esc(label)}</a>'
+    )
+
+
+def _ref_links_html(cis: str, name: str, include_ema: bool = True) -> str:
+    """Top-of-page '.rcp-refs' row of external-reference pill buttons: BDPM (this
+    drug's official BDPM record, keyed by CIS) first, then HAS, EMA and Vidal
+    full-text searches on the drug's active substance (falling back to its brand
+    root when the composition is unknown). Vidal is last per the product intent.
+
+    ``include_ema`` is False on /eu/ pages, which already carry a direct EMA button
+    (render_eu_page / the stub), so the EMA pill is dropped there to avoid a
+    duplicate. Reads the process-wide substance map primed by _init_worker (pool
+    workers) or set in main()/the refresh service. Returns '' when there is no CIS
+    to link."""
+    if not cis:
+        return ""
+    pills = [_ref_pill(ANSM_PAGE_URL.format(cis=cis), "BDPM")]
+    query = _SUBSTANCES.get(cis) or _brand_root(name)
+    if query:
+        q = urllib.parse.quote_plus(query.lower())
+        pills.append(_ref_pill(HAS_SEARCH_URL.format(q=q), "HAS"))
+        if include_ema:
+            pills.append(_ref_pill(EMA_REF_URL.format(q=q), "EMA"))
+        pills.append(_ref_pill(VIDAL_SEARCH_URL.format(q=q), "Vidal"))
+    return f'<p class="rcp-refs">{"".join(pills)}</p>'
+
+
 def render_record(item: tuple[str, str, str]) -> dict[str, str] | None:
     """Clean one RCP, write its page + precompressed siblings, return index row."""
     cis, raw, asof = item
@@ -943,7 +1041,8 @@ def render_record(item: tuple[str, str, str]) -> dict[str, str] | None:
             + _official_source_html(_source_button(
                 ANSM_PAGE_URL.format(cis=cis),
                 "Consulter le RCP officiel sur le site de l'ANSM →",
-            )),
+            ))
+            + _ref_links_html(cis, name),
         )
         .replace("{{CONTENT}}", cleaned)
         .replace("{{XREF}}", _xref_html(xref_links))
@@ -1281,7 +1380,8 @@ def render_eu_page(cis: str, overlay_html: str, meta: tuple[str, str, str] | Non
         + _official_source_html(
             _source_button(pdf_url, "Consulter le RCP officiel (PDF) sur le site de l'EMA →"),
             _source_button(_ema_search_url(name), "Recherche EMA →"),
-        )
+        ) \
+        + _ref_links_html(cis, name, include_ema=False)
     page = (
         page_tpl.replace("{{TITLE}}", _esc(name))
         .replace("{{HEADEXTRA}}", '<meta name="robots" content="noindex">')
@@ -1405,7 +1505,7 @@ def build_stubs(
                 .replace("{{HEADEXTRA}}", '<meta name="robots" content="noindex">')
                 .replace("{{CIS}}", _esc(cis))
                 .replace("{{TOC}}", "")
-                .replace("{{ASOF}}", "")
+                .replace("{{ASOF}}", _ref_links_html(cis, name, include_ema=False))
                 .replace("{{CONTENT}}", content)
                 .replace("{{XREF}}", "")
             )
@@ -1435,6 +1535,13 @@ def main() -> None:
     # shared read-only with every worker; empty when the BDPM inputs are absent.
     xref = build_xref_index(names, present)
     print(f"  cross-drug backlink terms: {len(xref)}")
+    # Active-substance search strings for the external-reference pill row (HAS, EMA,
+    # Vidal). Set as a process-wide global so build_stubs / render_eu_page, which run
+    # in THIS process, can read it; the pool workers get their own copy via the
+    # _init_worker initargs below.
+    global _SUBSTANCES
+    _SUBSTANCES = load_substances()
+    print(f"  active-substance links: {len(_SUBSTANCES)}")
     # Per-CIS scrape dates stamp overlay pages with a real "as of" date; baseline
     # pages fall back to BASELINE_DATE. Loaded once, read inside records().
     scrape_dates = _load_scrape_dates()
@@ -1446,7 +1553,7 @@ def main() -> None:
     # Incremental cache: reuse a record's page when its inputs are unchanged and
     # its output files still exist. A build-code or template change flips the
     # global key and forces a full rebuild; a version-only bump does not.
-    global_key = _global_key(page_tpl, xref)
+    global_key = _global_key(page_tpl, xref, _SUBSTANCES)
     prev = _load_manifest()
     prev_records = prev.get("records", {}) if prev.get("global") == global_key else {}
 
@@ -1547,7 +1654,9 @@ def main() -> None:
     # Parsing + brotli are CPU-bound and independent per record -> fan out.
     workers = max(1, (os.cpu_count() or 2) - 1)
     print(f"  rendering with {workers} workers ({len(prev_records)} cached)...")
-    with Pool(workers, initializer=_init_worker, initargs=(names, page_tpl, xref)) as pool:
+    with Pool(
+        workers, initializer=_init_worker, initargs=(names, page_tpl, xref, _SUBSTANCES)
+    ) as pool:
         for i, entry in enumerate(
             pool.imap_unordered(render_record, misses(), chunksize=8)
         ):

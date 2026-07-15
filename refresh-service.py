@@ -231,11 +231,16 @@ class Refresher:
         page_cis = build.page_cis_from_dist()
         self._page_cis = page_cis
         xref = build.build_xref_index(names, page_cis)
+        # Active-substance search strings for the external-reference pill row a
+        # refreshed page carries (build._ref_links_html), same as a full build. Reads
+        # CIS_COMPO_bdpm.txt, mounted read-only here for the backlink index; absent it
+        # the row falls back to each drug's brand root.
+        substances = build.load_substances()
         logger.info(
-            "primed render: {} names, {} pages, {} backlink terms",
-            len(names), len(page_cis), len(xref),
+            "primed render: {} names, {} pages, {} backlink terms, {} substance links",
+            len(names), len(page_cis), len(xref), len(substances),
         )
-        build._init_worker(names, tpl, xref)
+        build._init_worker(names, tpl, xref, substances)
         self._tpl = tpl  # reused by render_eu_page for on-demand /eu/ refreshes
         # EMA (/eu/) lane state. A centrally-authorized drug has no /rcp/ page; its
         # SmPC/notice lives in an EMA PDF that scrape-ema.py fetches + converts into

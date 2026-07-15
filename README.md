@@ -108,6 +108,12 @@ que le texte de l'ANSM est ancien : un RCP révisé en 2021 mais jamais modifié
 reste le texte officiel en vigueur, son ancienneté seule n'est pas de
 l'obsolescence.
 
+En tête de chaque page, une rangée de boutons (pastilles) renvoie vers des
+sources externes : **BDPM** (la fiche officielle du médicament, par code CIS),
+puis **HAS**, **EMA** et **Vidal** (une recherche plein texte sur la substance
+active du médicament). Aucune de ces pages n'est récupérée à la construction :
+ce sont de simples liens de recherche.
+
 ```bash
 uv run scrape-rcp.py --limit 60   # rafraîchit 60 médicaments (les plus consultés d'abord)
 uv run scrape-ema.py --limit 60   # récupère + convertit les PDF EMA des médicaments à AMM

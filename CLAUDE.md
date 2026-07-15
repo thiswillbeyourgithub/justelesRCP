@@ -308,6 +308,23 @@ Key facts that aren't obvious from a single file:
   on `/rcp/`, the EMA on `/eu/` stubs) so a reader who doubts our copy or spots a
   rendering bug can open the official one; it shares the `.official-link` button
   style with the stub's EMA button.
+- **Every page has an external-reference pill row** (`_ref_links_html`, injected
+  into the same `{{ASOF}}` slot): a `.rcp-refs` row of small `.ref-pill` buttons to
+  **BDPM** (this drug's official record, `ANSM_PAGE_URL` keyed by CIS), then
+  **HAS**, **EMA** and **Vidal**, all full-text searches on the drug's active
+  substance. On `/eu/` pages `include_ema=False` drops the EMA pill (they already
+  carry a direct EMA button). The substance query is `load_substances()` (CIS ->
+  cleaned active-substance string from `CIS_COMPO_bdpm.txt` column 3, keeping only
+  `SA` rows, salts stripped, combos space-joined), falling back to the drug's
+  `_brand_root` when the composition is unknown. Nothing is fetched at build time
+  (plain search links). The substance map is a process-wide global (`_SUBSTANCES`,
+  primed by `_init_worker` for pool workers, set in `main()` for build_stubs/
+  render_eu_page, and by the refresh service at startup) and is folded into
+  `_global_key` (it feeds the pills but is NOT in `_record_hash`, so a composition
+  change must bust the whole cache). Keep the contract in sync across
+  `load_substances`/`_ref_links_html`/`_init_worker`/`_global_key` (build.py), the
+  `{{ASOF}}` slot in `src/rcp.html`, `.rcp-refs`/`.ref-pill` in `style.css`, and the
+  refresh service's `_init_worker` call.
 - **`/a-propos` is a static About page** (`src/a-propos.html`, shipped as a
   static asset): what the site is, the author, a privacy/hosting note, and a
   direct link to the GitHub repo. (`SOURCE_URL` still drives the separate "Code
