@@ -227,16 +227,18 @@ a:hover { text-decoration: underline; }
 .rcp table { border-collapse: collapse; width: 100%; overflow-x: auto; display: block; }
 .rcp td, .rcp th { border: 1px solid var(--line); padding: .3rem .5rem; }
 
-/* EU-authorization stub pages (/eu/): a drug whose RCP is published by the EMA,
-   not the ANSM, so it has no RCP page here. Built by build.py build_stubs();
-   noindex and reachable via search only. */
-.rcp-stub h1 { font-size: 1.4rem; margin: .5rem 0 1rem; }
-.rcp-stub .stub-lead {
+/* EU-authorization pages (/eu/): a drug whose RCP is published by the EMA, not
+   the ANSM, so it has no /rcp/ page here. build_stubs() renders either a
+   lightweight stub (.rcp-stub, a pointer out) or, once scrape-ema.py has fetched
+   and converted the EMA PDF, a full converted document (.rcp-eu, the same lead +
+   the EMA SmPC/notice text). Both are noindex and reachable via search only. */
+.rcp-stub h1, .rcp-eu h1 { font-size: 1.4rem; margin: .5rem 0 1rem; }
+.rcp-stub .stub-lead, .rcp-eu .stub-lead {
   padding: .7rem .9rem; background: var(--card);
   border: 1px solid var(--line); border-left: 3px solid var(--accent);
   border-radius: .4rem;
 }
-.rcp-stub .stub-meta { color: var(--muted); font-size: .9rem; margin: 1rem 0; }
+.rcp-stub .stub-meta, .rcp-eu .stub-meta { color: var(--muted); font-size: .9rem; margin: 1rem 0; }
 .rcp-stub .stub-actions { margin: 1.3rem 0; }
 .rcp-stub .stub-ema, .rcp-source .official-link {
   display: inline-block; font-weight: 600;
@@ -247,6 +249,24 @@ a:hover { text-decoration: underline; }
 }
 .rcp-stub .stub-generics { margin: 1rem 0; }
 .rcp-stub .stub-note { color: var(--muted); font-size: .8rem; margin-top: 2rem; }
+
+/* Full /eu/ page: the converted EMA doc is grouped into collapsible <details>
+   blocks (one per ANNEXE / the SmPC / the notice), so the reader gets a handful
+   of foldable sections instead of a flat 300-heading wall (ema_pdf.convert). The
+   SmPC group is rendered open. Figures embedded from the PDF scale to width. */
+.rcp .ema-annexe { margin: 1.5rem 0; border-top: 2px solid var(--line); }
+.rcp .ema-annexe > summary {
+  cursor: pointer; font-weight: 700; font-size: 1.1rem;
+  padding: .7rem 0; color: var(--fg); list-style-position: inside;
+}
+.rcp .ema-annexe > summary:hover { color: var(--accent); }
+.rcp .ema-annexe[id], .rcp .ema-annexe > summary[id] { scroll-margin-top: 4rem; }
+.rcp figure { margin: 1rem 0; text-align: center; }
+.rcp figure img { max-width: 100%; height: auto; }
+/* Two-level sidebar ToC on full /eu/ pages: the annex groups, with the SmPC's
+   numbered sections nested under it. */
+.toc nav ol ol { padding-left: .9rem; }
+.toc nav ol ol a { font-size: .85em; opacity: .85; }
 
 /* --- footer --- */
 .foot {

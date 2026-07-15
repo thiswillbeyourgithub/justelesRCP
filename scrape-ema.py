@@ -37,6 +37,7 @@ SmPC PDFs change rarely, so this is long).
 from __future__ import annotations
 
 import hashlib
+import html
 import importlib.util
 import os
 import random
@@ -87,33 +88,37 @@ def ema_links(ansm_manifest: dict) -> dict[str, str]:
     return out
 
 
-def _overlay_html(conv: dict) -> str:
-    """The converter's HTML with the capture date baked onto the wrapper, so
-    build.py's /eu/ renderer is self-contained (no EMA-manifest read at build)."""
+def _overlay_html(conv: dict, src_url: str = "") -> str:
+    """The converter's HTML with the capture date AND the source PDF URL baked
+    onto the wrapper, so build.py's /eu/ renderer is self-contained (it reads both
+    off the overlay, no EMA-manifest read at build). ``src_url`` is the exact PDF
+    we fetched; build bakes it as the page's 'consulter le PDF officiel' button."""
     doc_html = conv.get("html") or ""
     if not doc_html:
         return ""
     date = conv.get("date") or ""
+    src = f' data-ema-pdf="{html.escape(src_url, quote=True)}"' if src_url else ""
     return doc_html.replace(
         '<div id="textDocument">',
-        f'<div id="textDocument" data-ema-date="{date}">', 1,
+        f'<div id="textDocument" data-ema-date="{date}"{src}>', 1,
     )
 
 
-def convert_and_write(cis: str, pdf_bytes: bytes, gzip_overlay: bool) -> dict:
+def convert_and_write(cis: str, pdf_bytes: bytes, gzip_overlay: bool,
+                      src_url: str = "") -> dict:
     """Convert one PDF's bytes and write its /eu/ overlay. Returns a manifest
     entry dict ({last_fetch, hash, status, date, bytes}); status 'empty' means the
     PDF yielded no usable HTML (no overlay written)."""
     conv = ema.convert(pdf_bytes)
-    html = _overlay_html(conv)
-    digest = hashlib.sha256(html.encode("utf-8")).hexdigest()
+    html_doc = _overlay_html(conv, src_url)
+    digest = hashlib.sha256(html_doc.encode("utf-8")).hexdigest()
     entry = {
         "last_fetch": scrape._now_iso(), "hash": digest,
-        "date": conv.get("date", ""), "status": "ok" if html else "empty",
+        "date": conv.get("date", ""), "status": "ok" if html_doc else "empty",
     }
-    if not html:
+    if not html_doc:
         return entry
-    dest = scrape.write_overlay(cis, html, gzip_overlay, overlay_dir=EU_OVERLAY_DIR)
+    dest = scrape.write_overlay(cis, html_doc, gzip_overlay, overlay_dir=EU_OVERLAY_DIR)
     entry["bytes"] = dest.stat().st_size
     return entry
 
@@ -125,7 +130,7 @@ def process_one(client: httpx.Client, cis: str, url: str, gzip_overlay: bool) ->
     try:
         resp = client.get(url)
         resp.raise_for_status()
-        entry = convert_and_write(cis, resp.content, gzip_overlay)
+        entry = convert_and_write(cis, resp.content, gzip_overlay, src_url=url)
         entry["ema_pdf"] = url
         return entry
     except Exception as exc:  # network / parse error: record and move on
@@ -150,13 +155,15 @@ def build_order(ttl_days: int, *, force: bool, frequency: Path | None,
 @click.option("--file", "local_file", type=click.Path(exists=True, dir_okay=False),
               help="Offline: convert this local PDF instead of fetching (needs --cis).")
 @click.option("--cis", "local_cis", default="", help="CIS for --file mode.")
+@click.option("--src-url", "local_src", default="",
+              help="Source PDF URL to bake into the overlay (--file mode).")
 @click.option("--ttl-days", default=DEFAULT_TTL_DAYS, show_default=True, help="Re-fetch window.")
 @click.option("--rate", default=DEFAULT_RATE, show_default=True, help="Base seconds between fetches.")
 @click.option("--no-gzip", "no_gzip", is_flag=True, help="Store plain .html overlays.")
 @click.option("--force", is_flag=True, help="Ignore the TTL; refetch all candidates.")
 @click.option("--frequency", type=click.Path(dir_okay=False), default=None,
               help="Frequency JSONL for ordering (defaults to data/drugs_frequency.jsonl).")
-def main(limit, fetch_all, only, local_file, local_cis, ttl_days, rate, no_gzip, force, frequency):
+def main(limit, fetch_all, only, local_file, local_cis, local_src, ttl_days, rate, no_gzip, force, frequency):
     """Refresh EMA /eu/ overlays from the live EMA site (see module docstring)."""
     gzip_overlay = GZIP_DEFAULT and not no_gzip
     freq = Path(frequency) if frequency else None
@@ -165,7 +172,10 @@ def main(limit, fetch_all, only, local_file, local_cis, ttl_days, rate, no_gzip,
     if local_file:
         if not local_cis:
             raise SystemExit("--file requires --cis")
-        entry = convert_and_write(local_cis, Path(local_file).read_bytes(), gzip_overlay)
+        entry = convert_and_write(local_cis, Path(local_file).read_bytes(),
+                                  gzip_overlay, src_url=local_src)
+        if local_src:
+            entry["ema_pdf"] = local_src
         man = scrape.load_manifest(EMA_MANIFEST_PATH)
         man[local_cis] = entry
         scrape.save_manifest(man, EMA_MANIFEST_PATH)

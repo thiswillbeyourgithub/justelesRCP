@@ -31,6 +31,7 @@ from __future__ import annotations
 import csv
 import gzip
 import hashlib
+import html as _stdhtml  # stdlib html.unescape (distinct from lxml's html, below)
 import json
 import os
 import re
@@ -47,7 +48,7 @@ from lxml import html as lxml_html
 
 import bdpm  # shared, pure-stdlib BDPM tokenising + frequency scoring
 
-__version__ = "0.17.0"  # single source of truth; bump patch/minor per change
+__version__ = "0.18.0"  # single source of truth; bump patch/minor per change
 
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
@@ -72,6 +73,11 @@ FREQUENCY_PATH = DATA / "drugs_frequency.jsonl"
 # same CIS, and an intentionally empty overlay file means "scraped, but this drug
 # has no RCP" (so we skip it rather than fall back to a stale baseline cell).
 RCP_OVERLAY_DIR = DATA / "rcp"
+# EMA overlays: converted product-information HTML for centrally-authorized drugs
+# (scrape-ema.py writes data/eu/<cis>.html[.gz], wrapper carries data-ema-date).
+# build_stubs renders these as full /eu/ pages; kept separate from data/rcp so
+# records() never turns one into a /rcp/ page (the drug's ANSM RCP stays empty).
+EU_OVERLAY_DIR = DATA / "eu"
 # Incremental-build cache. Lives inside dist/ (already gitignored) and records,
 # per CIS, the hash of the inputs that produced its page so an unchanged record
 # can be reused instead of re-parsed and re-compressed. See main().
@@ -262,16 +268,18 @@ def _load_ema_links() -> dict[str, str]:
     return links
 
 
-def _overlay_path(cis: str) -> Path | None:
+def _overlay_path(cis: str, overlay_dir: Path = RCP_OVERLAY_DIR) -> Path | None:
     """Return the overlay file for a CIS, or None if none exists.
 
     scrape-rcp.py stores each overlay either plain (``<cis>.html``) or gzipped
     (``<cis>.html.gz``), depending on RCP_OVERLAY_GZIP at scrape time, and keeps
     only one of the two. We read whichever is present transparently; if both
     somehow coexist (format flipped mid-cache), the newest by mtime wins.
+    ``overlay_dir`` defaults to the ANSM overlays; build_stubs passes
+    EU_OVERLAY_DIR for the converted EMA overlays.
     """
     cands = [
-        p for p in (RCP_OVERLAY_DIR / f"{cis}.html.gz", RCP_OVERLAY_DIR / f"{cis}.html")
+        p for p in (overlay_dir / f"{cis}.html.gz", overlay_dir / f"{cis}.html")
         if p.exists()
     ]
     if not cands:
@@ -899,14 +907,20 @@ def _asof_html(ansm: str, asof: str) -> str:
     )
 
 
-def _official_source_html(url: str, label: str) -> str:
-    """Top-of-page button to the authoritative source page, so a reader who
-    doubts our copy or spots a rendering bug can open the official one in one
-    click. Used on RCP pages (ANSM fiche) and reused on /eu/ pages (EMA)."""
+def _source_button(url: str, label: str) -> str:
+    """One '.official-link' button (external link to an authoritative source)."""
     return (
-        f'<p class="rcp-source"><a class="official-link" href="{_esc(url)}" '
-        f'target="_blank" rel="noopener">{label}</a></p>'
+        f'<a class="official-link" href="{_esc(url)}" '
+        f'target="_blank" rel="noopener">{label}</a>'
     )
+
+
+def _official_source_html(*buttons: str) -> str:
+    """Top-of-page '.rcp-source' row of source buttons, so a reader who doubts
+    our copy or spots a rendering bug can open the official one in one click.
+    One button on RCP pages (ANSM fiche); two on /eu/ pages (EMA PDF + search).
+    Each arg is a ``_source_button`` fragment."""
+    return f'<p class="rcp-source">{" ".join(buttons)}</p>'
 
 
 def render_record(item: tuple[str, str, str]) -> dict[str, str] | None:
@@ -926,10 +940,10 @@ def render_record(item: tuple[str, str, str]) -> dict[str, str] | None:
         .replace(
             "{{ASOF}}",
             _asof_html(_ansm_date(cleaned), asof)
-            + _official_source_html(
+            + _official_source_html(_source_button(
                 ANSM_PAGE_URL.format(cis=cis),
                 "Consulter le RCP officiel sur le site de l'ANSM →",
-            ),
+            )),
         )
         .replace("{{CONTENT}}", cleaned)
         .replace("{{XREF}}", _xref_html(xref_links))
@@ -1056,6 +1070,86 @@ def _stub_content(
     return "".join(out)
 
 
+_EU_DATE_RE = re.compile(r'data-ema-date="([^"]*)"')
+_EU_PDF_RE = re.compile(r'data-ema-pdf="([^"]*)"')
+
+
+def _eu_date(overlay_html: str) -> str:
+    """The capture date scrape-ema.py baked onto the EMA overlay wrapper."""
+    m = _EU_DATE_RE.search(overlay_html)
+    return m.group(1) if m else ""
+
+
+def _eu_pdf(overlay_html: str) -> str:
+    """The source EMA PDF URL scrape-ema.py baked onto the overlay wrapper (the
+    exact doc we converted), unescaped back to a raw URL. "" if absent (an overlay
+    seeded before this feature); the caller then falls back to the EMA search."""
+    m = _EU_PDF_RE.search(overlay_html)
+    return _stdhtml.unescape(m.group(1)) if m else ""
+
+
+def _eu_toc(overlay_html: str) -> list[tuple[str, str, list[tuple[str, str]]]]:
+    """Two-level ToC parsed from an EMA overlay: each collapsible ``<details>``
+    group (its ``<summary id>``), with the numbered sections (``<h2 id>``) of the
+    open group (the SmPC) as children. Mirrors ema_pdf.convert's structure."""
+    try:
+        root = lxml_html.fromstring(overlay_html)
+    except Exception:
+        return []
+    groups = []
+    for det in root.findall(".//details"):
+        summ = det.find("summary")
+        if summ is None or not summ.get("id"):
+            continue
+        subs = []
+        if det.get("open") is not None:  # only the open group (SmPC) lists sections
+            for h in det.findall(".//h2"):
+                if h.get("id"):
+                    subs.append((h.get("id"), h.text_content().strip()))
+        groups.append((summ.get("id"), summ.text_content().strip(), subs))
+    return groups
+
+
+def _eu_toc_html(groups: list[tuple[str, str, list[tuple[str, str]]]]) -> str:
+    """Sidebar ToC for a full /eu/ page: same ``<details class="toc">`` shell as
+    _toc_html but two levels deep (annexes > SmPC sections)."""
+    if not groups:
+        return ""
+    lis = []
+    for sid, label, subs in groups:
+        sub = ""
+        if subs:
+            sub = "<ol>" + "".join(
+                f'<li><a href="#{s}">{_esc(lbl)}</a></li>' for s, lbl in subs
+            ) + "</ol>"
+        lis.append(f'<li><a href="#{sid}">{_esc(label)}</a>{sub}</li>')
+    return (
+        '<details class="toc"><summary>Sommaire</summary>'
+        f'<nav aria-label="Sommaire"><ol>{"".join(lis)}</ol></nav>'
+        '<p class="ver" data-app-version></p></details>'
+    )
+
+
+def _eu_full_content(name: str, eu: str, holder: str, overlay_html: str) -> str:
+    """Body of a full /eu/ page: a short EU-authorization lead + EU number/holder,
+    then the converted EMA document. The EMA source buttons + freshness banner are
+    placed in the {{ASOF}} slot by build_stubs (same as RCP pages)."""
+    bits = []
+    if eu:
+        bits.append(f"N° d'AMM européenne : <strong>{_esc(eu)}</strong>")
+    if holder:
+        bits.append(f"Titulaire : {_esc(holder)}")
+    meta = ('<p class="stub-meta">' + "<br>".join(bits) + "</p>") if bits else ""
+    lead = (
+        '<p class="stub-lead">Ce médicament bénéficie d\'une autorisation de mise '
+        "sur le marché <strong>européenne centralisée</strong>. Le texte ci-dessous "
+        "est le résumé des caractéristiques du produit (et sa notice) publié par "
+        "l'Agence européenne des médicaments (EMA), converti par justelesRCP depuis "
+        "le PDF officiel. En cas de doute, reportez-vous au PDF ci-dessus.</p>"
+    )
+    return f'<div class="rcp-eu"><h1>{_esc(name)}</h1>{lead}{meta}</div>{overlay_html}'
+
+
 def build_stubs(
     real_index: list[dict[str, str]], page_tpl: str, prev_records: dict
 ) -> tuple[list[dict], dict, int, int]:
@@ -1103,19 +1197,51 @@ def build_stubs(
     reused = 0
     for cis in stub_cis:
         name, eu, holder = cap[cis]
-        hits = {
-            t for t in compo.get(cis, set())
-            if len(t) >= _XREF_MIN_LEN and t not in _XREF_STOP
-        } & page_tokens
-        # Longest token, breaking ties alphabetically. The alphabetical tiebreak
-        # is load-bearing: `hits` is a set, whose iteration order varies between
-        # runs (hash randomization), so `max(..., key=len)` alone would pick a
-        # different term on ties each build, churning the incremental cache.
-        generic = max(hits, key=lambda t: (len(t), t)).lower() if hits else None
         slug = f"{cis}-{slugify(name)}"
-        content = _stub_content(name, eu, holder, generic, ema_links.get(cis, ""))
-        h = hashlib.sha256(content.encode("utf-8")).hexdigest()
         out = eu_dir / f"{slug}.html"
+        # If scrape-ema.py has fetched + converted this drug's EMA PDF, render the
+        # full converted SmPC/notice on-site; otherwise a lightweight stub that
+        # only points out. The overlay lives in EU_OVERLAY_DIR (never RCP's, so it
+        # is not turned into a /rcp/ page); a zero-byte overlay decodes to "".
+        eu_path = _overlay_path(cis, EU_OVERLAY_DIR)
+        overlay = _read_overlay(eu_path) if eu_path is not None else ""
+        if overlay.strip():
+            # Full /eu/ page: EMA text converted from the PDF, with the PDF +
+            # EMA-search buttons and a baked capture date (which enables the
+            # on-demand refresh button, exactly like an ANSM page keys off asof).
+            pdf_url = _eu_pdf(overlay) or ema_links.get(cis, "") or _ema_search_url(name)
+            content = _eu_full_content(name, eu, holder, overlay)
+            toc = _eu_toc_html(_eu_toc(overlay))
+            asof = _asof_html("", _eu_date(overlay)) + _official_source_html(
+                _source_button(
+                    pdf_url, "Consulter le RCP officiel (PDF) sur le site de l'EMA →"
+                ),
+                _source_button(_ema_search_url(name), "Recherche EMA →"),
+            )
+            # The whole converted doc drives the output, so the cache key is the
+            # overlay itself (a re-scrape changes it) plus the metadata rendered
+            # around it. The "full" tag busts the cache if a page flips stub<->full.
+            h = hashlib.sha256(
+                "\x00".join(("full", overlay, name, eu, holder, pdf_url)).encode("utf-8")
+            ).hexdigest()
+        else:
+            # Lightweight stub: no EMA text on-site yet, just a pointer out, plus a
+            # same-substance generic link when one actually renders here. Intersect
+            # the stub's active-substance tokens (COMPO col 3) with tokens present
+            # in real page names, dropping salts/short words.
+            hits = {
+                t for t in compo.get(cis, set())
+                if len(t) >= _XREF_MIN_LEN and t not in _XREF_STOP
+            } & page_tokens
+            # Longest token, breaking ties alphabetically. The alphabetical tiebreak
+            # is load-bearing: `hits` is a set, whose iteration order varies between
+            # runs (hash randomization), so `max(..., key=len)` alone would pick a
+            # different term on ties each build, churning the incremental cache.
+            generic = max(hits, key=lambda t: (len(t), t)).lower() if hits else None
+            content = _stub_content(name, eu, holder, generic, ema_links.get(cis, ""))
+            toc, asof = "", ""
+            h = hashlib.sha256(("stub\x00" + content).encode("utf-8")).hexdigest()
+
         prev = prev_records.get(cis)
         if (
             prev and prev.get("h") == h and out.exists()
@@ -1128,8 +1254,8 @@ def build_stubs(
                 page_tpl.replace("{{TITLE}}", _esc(name))
                 .replace("{{HEADEXTRA}}", '<meta name="robots" content="noindex">')
                 .replace("{{CIS}}", _esc(cis))
-                .replace("{{TOC}}", "")
-                .replace("{{ASOF}}", "")
+                .replace("{{TOC}}", toc)
+                .replace("{{ASOF}}", asof)
                 .replace("{{CONTENT}}", content)
                 .replace("{{XREF}}", "")
             )
