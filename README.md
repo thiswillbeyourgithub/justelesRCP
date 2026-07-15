@@ -166,6 +166,13 @@ séquentielles et douces. Il tient des statistiques de crawl par
 origine (bouton / automatique / crawler) consultables via `GET /api/stats`. Les
 réglages (`REFRESH_*`) sont dans `docker/.env` ; voir `docker/env.example`.
 
+Pour forcer un nouveau passage complet du crawler (par exemple après un changement
+de rendu) sans supprimer les copies existantes (ce qui laisserait des pages vides
+le temps de les récupérer), on envoie `SIGHUP` au conteneur de rafraîchissement
+(`deploy.sh --rebuild` le fait après le déploiement) : le crawler re-balaye tout le
+catalogue en ignorant le seuil d'ancienneté, une passe, pendant que le site
+continue de servir les pages actuelles jusqu'à ce que chacune soit récupérée.
+
 Le même service gère aussi les pages `/eu/` des médicaments à AMM centralisée, via
 une **voie EMA distincte** (bouton « Rafraîchir » sur une page `/eu/` et un second
 crawler) qui récupère le PDF de l'EMA, le convertit et régénère la page. Cette voie

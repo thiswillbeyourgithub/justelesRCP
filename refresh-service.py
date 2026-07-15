@@ -65,6 +65,7 @@ import importlib.util
 import json
 import queue
 import re
+import signal
 import sys
 import threading
 import time
@@ -141,6 +142,15 @@ class _CrawlLane:
     is built once in the worker thread; ``idx`` is the rotating cursor; ``idle`` marks
     a rotation that found nothing due; ``last_fetch`` is this lane's throttle mark,
     touched only by its own worker thread (so it needs no lock).
+
+    ``force`` / ``force_pending`` / ``wake`` drive a full re-crawl on demand
+    (deploy.sh --rebuild -> SIGHUP, see Refresher.request_recrawl): ``force`` is a
+    one-shot flag the signal handler sets; ``_claim_next_crawl`` consumes it by
+    seeding ``force_pending`` with the whole ``order`` and then hands those pages out
+    (in frequency order, ignoring the TTL) one full pass before returning to normal
+    rotation. Existing overlays are kept and keep serving until each is refreshed.
+    ``wake`` is an Event the handler sets so an idle worker stops sleeping at once
+    instead of after its (up to hour-long) idle wait.
     """
 
     def __init__(self, name, enabled, ttl_days, rate, manifest, order_fn):
@@ -155,6 +165,9 @@ class _CrawlLane:
         self.idle = False
         self.idle_logged = False
         self.last_fetch = 0.0
+        self.force = False                    # armed by SIGHUP; consumed in _claim_next_crawl
+        self.force_pending: set[str] = set()  # CIS still to re-crawl in the forced pass
+        self.wake = threading.Event()         # set by SIGHUP to break an idle sleep
 
 
 class Refresher:
@@ -392,10 +405,17 @@ class Refresher:
         return due * (rate + min(rate, 10.0) / 2)
 
     def _gauge_locked(self, lane: _CrawlLane) -> dict:
-        """One lane's crawl gauge for GET /api/stats. CALLER MUST HOLD ``_lock``."""
-        due = self._due_count_locked(lane)
+        """One lane's crawl gauge for GET /api/stats. CALLER MUST HOLD ``_lock``.
+
+        During a forced re-crawl (deploy.sh --rebuild), pages are refetched
+        regardless of the TTL, so the remaining-to-fetch count is the larger of the
+        TTL-due count and the forced backlog; ``forced`` exposes that backlog so an
+        operator can watch a --rebuild sweep drain.
+        """
+        due = max(self._due_count_locked(lane), len(lane.force_pending))
         return {"enabled": lane.enabled, "total": len(lane.order), "idx": lane.idx,
                 "ttl_days": lane.ttl_days, "idle": lane.idle, "due": due,
+                "forced": len(lane.force_pending),
                 "eta_seconds": round(self._crawl_eta_seconds(due, lane.rate), 1)}
 
     def stats(self) -> dict:
@@ -439,16 +459,42 @@ class Refresher:
                     lane.name, len(order), lane.ttl_days, lane.rate)
 
     def _claim_next_crawl(self, lane: _CrawlLane) -> str | None:
-        """Claim the lane's next due page to crawl, or None if a rotation finds none.
+        """Claim the lane's next page to crawl, or None if there is nothing to do.
 
-        Rotates a cursor through the frequency-ordered page list, returning the
-        first CIS that is due per the lane TTL (see scrape.is_due) and not already
+        Normally rotates a cursor through the frequency-ordered page list, returning
+        the first CIS that is due per the lane TTL (see scrape.is_due) and not already
         queued/in flight (in the SHARED ``_pending``, so the two lanes + on-demand
         never double-fetch a CIS). The claimed CIS is marked pending as "crawl"; a
         full rotation with nothing due flips the lane to idle and returns None.
+
+        When a full re-crawl was armed (deploy.sh --rebuild -> SIGHUP set
+        ``lane.force``), the flag is consumed here by seeding ``force_pending`` with
+        the whole order, and those pages are then handed out in frequency order
+        IGNORING the TTL, one full pass, before normal rotation resumes. Seeding
+        happens here (not in the handler) so it always reads the fully-built order,
+        even if the signal raced ahead of _build_crawl_order.
         """
         with self._lock:
             n = len(lane.order)
+            if not n:
+                lane.idle = True
+                return None
+            if lane.force:
+                # Consume the one-shot force flag: (re)start a full forced pass.
+                lane.force_pending = set(lane.order)
+                lane.force = False
+            if lane.force_pending:
+                # Forced pass: next not-in-flight page, in frequency order, regardless
+                # of TTL. Existing overlays keep serving until each is re-fetched.
+                for cis in lane.order:
+                    if cis in lane.force_pending and cis not in self._pending:
+                        lane.force_pending.discard(cis)
+                        self._pending[cis] = "crawl"
+                        lane.idle = False
+                        lane.idle_logged = False
+                        return cis
+                # All still-forced pages are momentarily in flight elsewhere; fall
+                # through to the TTL rotation (they get re-checked next call).
             for _ in range(n):
                 cis = lane.order[lane.idx]
                 lane.idx = (lane.idx + 1) % n
@@ -489,6 +535,29 @@ class Refresher:
         if soonest is None:
             return cap
         return max(1.0, min(soonest, cap))
+
+    def request_recrawl(self) -> int:
+        """Arm a full forced re-crawl of every enabled lane (deploy.sh --rebuild,
+        delivered as SIGHUP; see the handler in main()).
+
+        Signal-safe: it only flips each lane's one-shot ``force`` flag and sets its
+        ``wake`` Event, both plain non-blocking writes, so it never takes ``_lock``
+        (the main thread runs this from the signal handler and must not risk blocking
+        on a worker's critical section). The real work (seeding ``force_pending`` from
+        the lane order and handing pages out ignoring the TTL) happens in the worker
+        via ``_claim_next_crawl``; ``wake`` bumps an idle worker out of its sleep so
+        the sweep starts at once. Existing overlays are kept the whole time and keep
+        serving until each page is re-fetched. Returns a best-effort count of pages
+        armed (a lane whose order is still building reports 0 but is still armed).
+        """
+        armed = 0
+        for lane in self._crawl_lanes:
+            if not lane.enabled:
+                continue
+            lane.force = True
+            lane.wake.set()
+            armed += len(lane.order)
+        return armed
 
     # -- public API ----------------------------------------------------------
 
@@ -622,7 +691,12 @@ class Refresher:
                                     lane.name, len(lane.order), lane.ttl_days,
                                     scrape._fmt_dur(wait))
                         lane.idle_logged = True
-                    time.sleep(wait)
+                    # Sleep on the lane's wake Event, not a bare time.sleep, so a
+                    # SIGHUP-armed re-crawl (request_recrawl sets force + wake) breaks
+                    # the idle wait at once instead of after up to an hour.
+                    if lane.wake.wait(timeout=wait):
+                        lane.wake.clear()
+                        lane.idle_logged = False
                     continue
                 lane.last_fetch = self._wait_rate(lane.last_fetch, lane.rate)
                 self._handle(client, cis, "crawl")
@@ -958,6 +1032,19 @@ def main(host: str, port: int, rate: float, demand_rate: float, min_interval: fl
                           queue_max=queue_max, crawl=crawl, crawl_ttl_days=crawl_ttl_days,
                           eu_crawl=eu_crawl, eu_rate=eu_rate, eu_crawl_ttl_days=eu_crawl_ttl_days)
     REFRESHER.start()
+
+    # SIGHUP arms a full re-crawl of both lanes without dropping any overlays
+    # (deploy.sh --rebuild sends it once the container is up). The handler stays
+    # tiny and lock-free (request_recrawl only flips per-lane flags + Events); the
+    # workers do the sweeping. SIGHUP's default action would kill the process, so
+    # installing this handler is what keeps `docker kill --signal=SIGHUP` from
+    # stopping the container.
+    def _on_recrawl(signum, frame):
+        armed = REFRESHER.request_recrawl()
+        logger.info("SIGHUP: armed a full re-crawl (~{} page(s)); overlays keep "
+                    "serving until each is re-fetched", armed)
+    signal.signal(signal.SIGHUP, _on_recrawl)
+
     logger.info("refresh service on {}:{} (crawl-rate {}s, demand-rate {}s, "
                 "min-interval {}s, overlay={}, rcp-crawl={}, eu-crawl={})",
                 host, port, rate, demand_rate, min_interval,

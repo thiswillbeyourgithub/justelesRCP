@@ -151,6 +151,12 @@ lanes stay serial and gentle. It keeps crawl statistics by trigger (button /
 automatic / crawler) available at `GET /api/stats`. Tuning (`REFRESH_*`) lives in
 `docker/.env`; see `docker/env.example`.
 
+To force a full fresh sweep of the crawler (e.g. after a rendering change) without
+deleting the existing copies (which would blank pages until they are re-fetched),
+send `SIGHUP` to the refresh container (`deploy.sh --rebuild` does this after the
+deploy): the crawler re-sweeps the whole catalog ignoring the staleness threshold,
+one pass, while the site keeps serving the current pages until each is re-fetched.
+
 The same service also handles the `/eu/` pages of centrally-authorized drugs, through
 a **separate EMA lane** (a "Rafraîchir" button on a `/eu/` page plus a second crawler)
 that fetches the EMA PDF, converts it and rebuilds the page. This lane has its own

@@ -224,6 +224,23 @@ Key facts that aren't obvious from a single file:
   click never waits behind it). Missing BDPM inputs degrade it to off (empty order,
   the `_crawl_run` worker just exits) rather than crashing; `REFRESH_CRAWL=0`
   disables it (crawl worker not started), leaving only button/auto refreshes.
+  **Forced re-crawl on SIGHUP (`deploy.sh --rebuild`).** To re-sweep the WHOLE
+  catalog on demand (e.g. after a render change) without deleting overlays (which
+  would blank pages until re-fetched), send the refresh container `SIGHUP`:
+  `deploy.sh --rebuild` does `docker kill --signal=SIGHUP <container>-refresh` after
+  the deploy is healthy. The handler (installed in `main()`) calls
+  `Refresher.request_recrawl()`, which just flips each enabled lane's one-shot
+  `force` flag and sets its `wake` Event (lock-free, so it is signal-safe); the
+  worker consumes `force` in `_claim_next_crawl` by seeding `force_pending` with the
+  whole order and handing those pages out in frequency order IGNORING the TTL, one
+  full pass, before normal TTL rotation resumes. The `wake` Event bumps an idle
+  worker out of its (up-to-hour) sleep so the sweep starts at once. Overlays are
+  kept and keep serving until each page is re-fetched. BOTH lanes (ANSM + EMA) are
+  armed. Installing the SIGHUP handler is also what stops `docker kill --signal=
+  SIGHUP` from terminating the container (SIGHUP's default action is to kill). Keep
+  the contract in sync across `request_recrawl`/`_claim_next_crawl`/`_crawl_run`/the
+  `_CrawlLane` `force`/`force_pending`/`wake` fields (refresh-service.py) and the
+  `--rebuild` branch in `deploy.sh` (local, gitignored).
   **The EMA `/eu/` lane.** Centrally-authorized drugs have no ANSM page: the same
   service ALSO refreshes their `/eu/` pages (button + a second crawler) through a
   parallel EMA lane, so one runtime component covers both. It imports
@@ -266,9 +283,10 @@ Key facts that aren't obvious from a single file:
   (ok/empty/error) plus on-demand queue depth/ETA, logged as per-item +
   rolling-aggregate lines and exposed at `GET /api/stats` (which also carries a
   `crawl` gauge for the ANSM lane AND a `crawl_eu` gauge for the EMA lane, same
-  shape: `{enabled,total,idx,ttl_days,idle,due,eta_seconds}`, where `due`
-  is the still-due page count and `eta_seconds` the sweep ETA = `due` x that lane's
-  crawl rate; the crawl/aggregate log lines print both as `sweep-eta` in
+  shape: `{enabled,total,idx,ttl_days,idle,due,forced,eta_seconds}`, where `due`
+  is the still-to-fetch page count (the larger of the TTL-due count and the
+  `forced` re-crawl backlog, see the SIGHUP bullet) and `eta_seconds` the sweep ETA
+  = `due` x that lane's crawl rate; the crawl/aggregate log lines print both as `sweep-eta` in
   `DdHhMm` form (`_fmt_dhm`, since a full sweep spans days), distinct from
   the on-demand `eta` which drains the button/auto queue and reads 00:00 when no
   clicks are pending). `request()` must NOT call
