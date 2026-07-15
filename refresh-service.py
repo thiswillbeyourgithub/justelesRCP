@@ -245,6 +245,10 @@ class Refresher:
         # centrally authorized (in the cap-meta set) but has no /rcp/ page.
         self._cap = build.load_cap_meta()
         self._eu_cis = frozenset(c for c in self._cap if c not in page_cis)
+        # Presentations of one product share a single EMA PDF/overlay, so a /eu/
+        # page with no overlay of its own borrows a sibling's (build.resolve_eu).
+        # Group once; drives _eu_url + the EMA crawl order.
+        self._auth_groups = build.auth_groups(self._cap)
         # Separate manifest so the EMA TTL/last_fetch never collides with the ANSM
         # one; ema_links maps CIS -> the exact EMA PDF URL harvested into the ANSM
         # manifest (fallback: the URL baked on an existing overlay, see _eu_url).
@@ -278,14 +282,22 @@ class Refresher:
                 worker.start()
 
     def _build_eu_order(self) -> list[str]:
-        """Frequency-ordered /eu/ CIS the EMA crawler rotates through: centrally-
-        authorized CIS that have a known EMA PDF link OR an already-built overlay (so
-        _eu_url can resolve a URL to refetch). Reuses scrape.build_queue's ordering;
-        raises SystemExit (caught by _build_crawl_order) if the BDPM inputs are gone."""
+        """Frequency-ordered /eu/ CIS the EMA crawler rotates through: every
+        centrally-authorized CIS whose authorization GROUP has at least one known
+        EMA PDF link or already-built overlay. A sibling presentation counts (they
+        share one PDF, so _eu_url resolves a URL to refetch), so ALL strengths of a
+        seeded product are crawled; each borrowing page grows its OWN overlay on the
+        first fetch (self-healing). A group nobody has seeded yet is excluded (no URL
+        to fetch); its pages stay stubs until the button harvests a link live.
+        Reuses scrape.build_queue's ordering; raises SystemExit (caught by
+        _build_crawl_order) if the BDPM inputs are gone."""
         have = {p.name.split(".")[0] for p in build.EU_OVERLAY_DIR.glob("*.html*")}
-        targets = (set(self._ema_links) | have) & self._eu_cis
-        if not targets:
+        seeded = (set(self._ema_links) | have) & self._eu_cis
+        if not seeded:
             return []
+        keys = {build._auth_key(*self._cap[c][:2]) for c in seeded}
+        targets = {c for c in self._eu_cis
+                   if build._auth_key(*self._cap[c][:2]) in keys}
         return scrape.build_queue(0, force=True, restrict=targets)
 
     # -- state helpers -------------------------------------------------------
@@ -296,14 +308,12 @@ class Refresher:
         return cis in self._eu_cis
 
     def _eu_url(self, cis: str) -> str:
-        """The EMA PDF URL to (re)fetch for a /eu/ CIS: the exact link harvested
-        into the ANSM manifest, else the URL baked on an existing overlay. "" if
-        neither is known (then we cannot refresh it)."""
-        url = self._ema_links.get(cis)
-        if url:
-            return url
-        path = build._overlay_path(cis, build.EU_OVERLAY_DIR)
-        return build._eu_pdf(build._read_overlay(path)) if path is not None else ""
+        """The EMA PDF URL to (re)fetch for a /eu/ CIS, SHARED across its
+        authorization group (build.resolve_eu): the link harvested for this CIS,
+        else a sibling presentation's link, else the URL baked on this CIS's (or a
+        sibling's) overlay. "" if nothing in the group knows one yet; _process_ema
+        then tries a live ANSM harvest before giving up."""
+        return build.resolve_eu(cis, self._cap, self._auth_groups, self._ema_links)[1]
 
     def _entry(self, cis: str) -> dict | None:
         # Route to the EMA manifest for /eu/ CIS so asof_of / _recently_fetched
@@ -726,13 +736,49 @@ class Refresher:
                 self._record(cis, source, "ok", f"{row['slug']} ({len(rcp)} bytes)")
         self._persist_manifest()
 
+    def _harvest_ema_url(self, client, cis: str) -> str:
+        """Last-resort on-demand harvest of a /eu/ CIS's EMA PDF link when neither it
+        nor any sibling has one (its authorization group was never ANSM-scraped).
+
+        Fetches the live ANSM /medicament/<cis>/extrait page and reads the
+        product-information href off it, exactly as scrape-rcp.py's batch harvest
+        does, then caches it into the ANSM manifest so later builds/refreshes (and
+        the CIS's siblings) resolve it. Returns the URL, or "" if the page links
+        none. Only the on-demand button reaches this path (the crawl order already
+        excludes never-seeded groups), so a user never has to wait for the batch
+        scraper to catch up before their refresh does anything."""
+        try:
+            page, status = scrape.fetch_one(client, cis)
+        except Exception as exc:
+            logger.warning("ANSM harvest for {} failed: {}", cis, str(exc)[:120])
+            return ""
+        if status != 200:
+            return ""
+        url = scrape.extract_ema_pdf(page)
+        if not url:
+            return ""
+        with self._lock:
+            entry = dict(self._manifest.get(cis) or {})
+            entry["ema_pdf"] = url
+            self._manifest[cis] = entry
+            self._ema_links[cis] = url  # so this + sibling lookups resolve it now
+        self._persist_manifest()
+        logger.info("harvested EMA PDF link for {} live from ANSM", cis)
+        return url
+
     def _process_ema(self, client, cis: str, source: str) -> None:
         """Refresh one /eu/ page: fetch its EMA PDF, convert it, and re-render the
         page. Mirrors _process_ansm but on the EMA lane (its own manifest). Reuses
         scrape-ema.process_one (fetch->convert->overlay) and build.render_eu_page,
         so no scrape/convert/render logic is duplicated here."""
         url = self._eu_url(cis)
-        if not url:  # no PDF link known: nothing we can fetch
+        if not url:
+            # Nothing in this CIS's authorization group has a known EMA PDF link: a
+            # user clicked refresh on a never-scraped stub and must NOT be told to
+            # wait for the batch scraper. Harvest the link live off the ANSM page,
+            # then proceed (writes this CIS's OWN overlay, so it becomes full).
+            url = self._harvest_ema_url(client, cis)
+        if not url:  # still nothing we can fetch
             logger.warning("no EMA PDF url for {} [{}]; cannot refresh", cis, source)
             self._record(cis, source, "empty", "no EMA PDF url")
             return
