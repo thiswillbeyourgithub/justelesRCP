@@ -54,6 +54,13 @@ ROOT = Path(__file__).parent
 DATA = ROOT / "data"
 SRC = ROOT / "src"
 DIST = ROOT / "dist"
+# Semantic-search assets, all gitignored + fetched/produced out of band (like data/
+# and dist/). VENDOR_DIR/MODELS_DIR are populated by download-model.sh (transformers.js
+# + onnxruntime-web wasm, and the self-hosted ONNX encoder ~120 MB); build.py mirrors
+# them into dist/ so they are served same-origin under the strict CSP. EMB_OVERLAY_DIR
+# holds embed-rcp.py's per-drug vector sidecars, baked into dist/rcp/<slug>.vec.json.
+VENDOR_DIR = ROOT / "vendor"
+MODELS_DIR = ROOT / "models"
 
 CSV_PATH = DATA / "CIS_RCP.csv"
 BDPM_PATH = DATA / "CIS_bdpm.txt"
@@ -78,6 +85,7 @@ RCP_OVERLAY_DIR = DATA / "rcp"
 # build_stubs renders these as full /eu/ pages; kept separate from data/rcp so
 # records() never turns one into a /rcp/ page (the drug's ANSM RCP stays empty).
 EU_OVERLAY_DIR = DATA / "eu"
+EMB_OVERLAY_DIR = DATA / "emb"
 # Incremental-build cache. Lives inside dist/ (already gitignored) and records,
 # per CIS, the hash of the inputs that produced its page so an unchanged record
 # can be reused instead of re-parsed and re-compressed. See main().
@@ -1032,6 +1040,82 @@ def compress(path: Path) -> None:
     )
 
 
+# --- semantic-search sidecars + vendored model assets -----------------------
+def _emb_sidecar_path(cis: str) -> Path | None:
+    """Newest embed-rcp.py sidecar for a CIS (``data/emb/<cis>.json[.gz]``), or None.
+    Mirrors _overlay_path's gz/plain + newest-wins resolution."""
+    if not EMB_OVERLAY_DIR.is_dir():
+        return None
+    cands = [
+        p for p in (EMB_OVERLAY_DIR / f"{cis}.json.gz", EMB_OVERLAY_DIR / f"{cis}.json")
+        if p.exists()
+    ]
+    return max(cands, key=lambda p: p.stat().st_mtime) if cands else None
+
+
+def _read_emb_sidecar(path: Path) -> bytes:
+    """Read a sidecar, gunzipping ``.json.gz`` transparently; return raw JSON bytes."""
+    data = path.read_bytes()
+    return gzip.decompress(data) if path.suffix == ".gz" else data
+
+
+def write_vec_sidecars(index: list[dict], subdir: str = "rcp") -> int:
+    """Bake ``dist/<subdir>/<slug>.vec.json`` for every page whose CIS has an
+    embed-rcp.py sidecar, and prune stale ones. Returns the number written.
+
+    The sidecar already carries the client shape (embed-rcp.py wrote it), so this is
+    a gz-transparent copy, NOT a re-encode: no model runs here. Decoupled from the
+    page-render cache on purpose (the page HTML never contains the vectors), so it
+    stays correct whether a page was a cache hit or a miss, and a refreshed page (the
+    refresh service rewrites only the .html) keeps its .vec.json. Incremental: skip
+    when the dist copy is newer than the source sidecar. A kept page whose sidecar
+    disappeared has its stale .vec.json removed; orphaned slugs are pruned by the
+    caller's page-prune (extended to .vec.json)."""
+    out_dir = DIST / subdir
+    if not out_dir.is_dir():
+        return 0
+    written = 0
+    kept: set[str] = set()
+    for row in index:
+        slug = row["slug"]  # "<cis>-<name>.html"
+        vec = out_dir / slug.replace(".html", ".vec.json")
+        src = _emb_sidecar_path(row["cis"])
+        if src is None:
+            vec.unlink(missing_ok=True)  # embeddings gone -> drop the stale sidecar
+            continue
+        kept.add(vec.name)
+        if vec.exists() and vec.stat().st_mtime >= src.stat().st_mtime:
+            continue  # up to date
+        vec.write_bytes(_read_emb_sidecar(src))
+        written += 1
+    # Prune .vec.json whose page slug no longer renders (slug set changed).
+    for stale in out_dir.glob("*.vec.json"):
+        if stale.name not in kept:
+            stale.unlink(missing_ok=True)
+    return written
+
+
+def _mirror_tree(src: Path, dst: Path) -> int:
+    """Copy new/changed files from src/ into dst/ (skip unchanged by mtime+size), so
+    a ~120 MB model tree is copied once, not every build. Returns files copied.
+    Used to serve the vendored transformers.js/ort/model same-origin from dist/."""
+    if not src.is_dir():
+        return 0
+    copied = 0
+    for s in src.rglob("*"):
+        if not s.is_file():
+            continue
+        d = dst / s.relative_to(src)
+        if d.exists():
+            st_s, st_d = s.stat(), d.stat()
+            if st_d.st_size == st_s.st_size and st_d.st_mtime >= st_s.st_mtime:
+                continue
+        d.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(s, d)
+        copied += 1
+    return copied
+
+
 # --- per-record rendering, run in a worker process pool ---------------------
 _NAMES: dict[str, str] = {}
 _TPL = ""
@@ -1851,12 +1935,21 @@ def main() -> None:
     for f in (*static_assets, "app-version.js", "search-index.json"):
         compress(DIST / f)
 
+    # Per-drug semantic search (optional, degrades to nothing when absent): bake the
+    # per-page vector sidecars embed-rcp.py produced, and mirror the vendored
+    # transformers.js + ONNX encoder into dist/ so they serve same-origin under the
+    # strict CSP. Both are no-ops when data/emb / vendor / models are missing.
+    vec_sidecars = write_vec_sidecars(index)
+    vendored = _mirror_tree(VENDOR_DIR, DIST / "vendor")
+    vendored += _mirror_tree(MODELS_DIR, DIST / "models")
+
     browse_pages = write_browse(index)
 
     print(
         f"done: {len(index)} RCP pages ({reused} reused, {pruned} pruned) "
         f"+ {len(stub_index)} EU stubs ({stub_reused} reused, {stub_rendered} built) "
-        f"+ {browse_pages} browse pages ({skipped_empty} empty CIS skipped) -> {DIST}"
+        f"+ {browse_pages} browse pages ({skipped_empty} empty CIS skipped) "
+        f"+ {vec_sidecars} vec sidecars, {vendored} vendored files -> {DIST}"
     )
 
 
