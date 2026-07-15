@@ -14,6 +14,9 @@ TODO.md
 # Environment-specific deploy script (rsync working tree to a VPS + compose up)
 /deploy.sh
 
+# Environment-specific: wipe scraped overlays + manifests to restart scraping from 0
+/reset-scrape-data.sh
+
 # Python
 __pycache__/
 *.pyc
