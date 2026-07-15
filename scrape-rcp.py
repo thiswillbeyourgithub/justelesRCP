@@ -166,6 +166,36 @@ def extract_rcp(page_html: str) -> str:
     )
 
 
+def extract_ema_pdf(page_html: str) -> str:
+    """Direct EMA product-information PDF URL linked from the ANSM page, or "".
+
+    For an EMA-centrally-authorized drug the ANSM ``/medicament/<cis>/extrait``
+    page carries no RCP body (``extract_rcp`` returns "") but DOES link, in its
+    "Autres informations" block, to the exact SmPC/notice PDF published by the
+    EMA (e.g. ``.../product-information/abilify-maintena-epar-product-information_fr.pdf``).
+    We capture that real URL so build.py's /eu/ stub can point straight at the
+    document instead of a brand search. This is NOT a constructed deep link: it
+    is the href ANSM itself published, so it can't 404, and it is read here at
+    SCRAPE time (the ANSM page is already fetched), never at build time, so the
+    static-build guarantee is untouched.
+
+    Restricted to ``product-information`` PDFs (the SmPC bundle), French
+    (``_fr.pdf``) preferred, so we never mislink to an assessment-report PDF or
+    an English-only doc when a French one is offered. "" when the page links no
+    such PDF (build.py then falls back to the EMA search URL).
+    """
+    doc = lxml_html.fromstring(page_html)
+    ema = [
+        href.strip()
+        for href in (a.get("href", "") for a in doc.xpath("//a[@href]"))
+        if "ema.europa.eu" in href
+        and "product-information" in href.lower()
+        and href.strip().lower().endswith(".pdf")
+    ]
+    fr = [h for h in ema if "_fr.pdf" in h.lower()]
+    return (fr or ema or [""])[0]
+
+
 def load_manifest() -> dict:
     """Load the scrape manifest, or an empty mapping when it is missing, empty,
     unreadable, or not a JSON object.
@@ -430,10 +460,17 @@ def main(limit: int, fetch_all: bool, only: tuple[str, ...], ttl_days: int,
                 logger.debug("[{}/{}] {} {}: wrote {} ({} bytes on disk)",
                              i, total, source, cis, dest.name, dest.stat().st_size)
                 digest = hashlib.sha256(rcp.encode("utf-8")).hexdigest()
-                manifest[cis] = {
+                entry = {
                     "last_fetch": _now_iso(), "hash": digest,
                     "status": "empty" if rcp == "" else "ok", "http": status,
                 }
+                # Centrally-authorized (empty-RCP) pages link the real EMA PDF;
+                # capture it so build.py's /eu/ stub points straight at the doc.
+                # Only stored when present (real ANSM RCPs carry no such link).
+                ema_pdf = extract_ema_pdf(page)
+                if ema_pdf:
+                    entry["ema_pdf"] = ema_pdf
+                manifest[cis] = entry
                 if rcp == "":
                     n_empty += 1
                     result = "no RCP (empty overlay)"
