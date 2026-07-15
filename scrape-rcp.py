@@ -196,9 +196,12 @@ def extract_ema_pdf(page_html: str) -> str:
     return (fr or ema or [""])[0]
 
 
-def load_manifest() -> dict:
+def load_manifest(path: Path | None = None) -> dict:
     """Load the scrape manifest, or an empty mapping when it is missing, empty,
-    unreadable, or not a JSON object.
+    unreadable, or not a JSON object. ``path`` defaults to this scraper's own
+    manifest; scrape-ema.py passes its EMA manifest to reuse the same tolerant
+    read (and save_manifest's atomic-write-with-EROFS-fallback) instead of
+    duplicating that subtle logic.
 
     The tolerant read matters for the refresh service: the manifest is
     bind-mounted as a single file into that (read-only) container, so if the
@@ -208,15 +211,16 @@ def load_manifest() -> dict:
     service at startup; degrade to an empty manifest instead (mirrors build.py's
     _load_scrape_dates). deploy.sh separately heals the directory case."""
     try:
-        data = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+        data = json.loads((path or MANIFEST_PATH).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
 
 
-def save_manifest(manifest: dict) -> None:
+def save_manifest(manifest: dict, path: Path | None = None) -> None:
     """Persist the manifest. Prefer an atomic temp-file + rename (crash-safe for
     the long batch scraper); fall back to an in-place write when that cannot work.
+    ``path`` defaults to this scraper's manifest (scrape-ema.py passes its own).
 
     The fallback exists for the refresh container: there the manifest is a single
     bind-mounted file on an otherwise read-only rootfs, so a sibling ``.tmp`` in
@@ -224,11 +228,12 @@ def save_manifest(manifest: dict) -> None:
     point (EBUSY). Writing in place is not crash-atomic, but load_manifest
     tolerates a truncated/invalid manifest (returns {}), so at worst a crash
     mid-write costs the TTL cache, never correctness."""
+    dest = path or MANIFEST_PATH
     payload = json.dumps(manifest, ensure_ascii=False, indent=0)
-    tmp = MANIFEST_PATH.with_suffix(".json.tmp")
+    tmp = dest.with_suffix(".json.tmp")
     try:
         tmp.write_text(payload, encoding="utf-8")
-        tmp.replace(MANIFEST_PATH)
+        tmp.replace(dest)
     except OSError:
         # Best-effort cleanup of a partial temp, then write in place. The unlink
         # must NOT be allowed to abort the fallback: on the read-only refresh
@@ -239,7 +244,7 @@ def save_manifest(manifest: dict) -> None:
             tmp.unlink(missing_ok=True)
         except OSError:
             pass
-        MANIFEST_PATH.write_text(payload, encoding="utf-8")
+        dest.write_text(payload, encoding="utf-8")
 
 
 def is_due(entry: dict | None, ttl_days: int) -> bool:
@@ -260,7 +265,8 @@ def is_due(entry: dict | None, ttl_days: int) -> bool:
     return age.days >= ttl_days
 
 
-def write_overlay(cis: str, rcp_html: str, gzip_overlay: bool) -> Path:
+def write_overlay(cis: str, rcp_html: str, gzip_overlay: bool,
+                  overlay_dir: Path | None = None) -> Path:
     """Write the overlay for a CIS atomically (temp file + rename); return its path.
 
     With ``gzip_overlay`` the RCP is stored gzip-compressed as ``<cis>.html.gz``
@@ -269,13 +275,17 @@ def write_overlay(cis: str, rcp_html: str, gzip_overlay: bool) -> Path:
     interchangeable and the flag can be flipped at will. To keep exactly one
     overlay per CIS, the other-format sibling is removed after writing.
 
+    ``overlay_dir`` defaults to the ANSM overlay dir (``data/rcp``); scrape-ema.py
+    passes ``data/eu`` to reuse this atomic write for the converted EMA HTML.
+
     The "scraped, but no RCP" case (``rcp_html == ""``) is stored as a zero-byte
     file (never a gzip of the empty string) so both sides recognise the sentinel
     by size alone without gunzipping.
     """
-    RCP_OVERLAY_DIR.mkdir(parents=True, exist_ok=True)
-    plain = RCP_OVERLAY_DIR / f"{cis}.html"
-    gz = RCP_OVERLAY_DIR / f"{cis}.html.gz"
+    odir = overlay_dir or RCP_OVERLAY_DIR
+    odir.mkdir(parents=True, exist_ok=True)
+    plain = odir / f"{cis}.html"
+    gz = odir / f"{cis}.html.gz"
     dest, sibling = (gz, plain) if gzip_overlay else (plain, gz)
     if rcp_html == "":
         payload = b""  # zero-byte sentinel in either mode
