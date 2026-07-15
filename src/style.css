@@ -185,6 +185,9 @@ a:hover { text-decoration: underline; }
 .rcp-checked { display: block; margin-top: .3rem; font-size: .9em; opacity: .75; }
 .rcp-asof.stale { border-color: #b45309; border-left-color: #b45309; }
 .rcp-warn { display: block; margin-top: .5rem; color: #b45309; font-weight: 600; }
+/* Link to the authoritative source page (ANSM on /rcp/, EMA on /eu/); shares the
+   .official-link button look with the /eu/ stub's EMA button below. */
+.rcp-source { margin: -.6rem 0 1.5rem; }
 /* On-demand refresh control (built by app-init.js when the companion service is
    reachable). Understated so it sits quietly under the freshness banner. */
 .rcp-refresh { margin: -0.8rem 0 1.5rem; font-size: .85rem; }
@@ -235,11 +238,11 @@ a:hover { text-decoration: underline; }
 }
 .rcp-stub .stub-meta { color: var(--muted); font-size: .9rem; margin: 1rem 0; }
 .rcp-stub .stub-actions { margin: 1.3rem 0; }
-.rcp-stub .stub-ema {
+.rcp-stub .stub-ema, .rcp-source .official-link {
   display: inline-block; font-weight: 600;
   padding: .5rem .9rem; border: 1px solid var(--accent); border-radius: .4rem;
 }
-.rcp-stub .stub-ema:hover {
+.rcp-stub .stub-ema:hover, .rcp-source .official-link:hover {
   background: var(--accent); color: var(--bg); text-decoration: none;
 }
 .rcp-stub .stub-generics { margin: 1rem 0; }

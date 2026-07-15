@@ -47,7 +47,7 @@ from lxml import html as lxml_html
 
 import bdpm  # shared, pure-stdlib BDPM tokenising + frequency scoring
 
-__version__ = "0.16.0"  # single source of truth; bump patch/minor per change
+__version__ = "0.17.0"  # single source of truth; bump patch/minor per change
 
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
@@ -89,6 +89,11 @@ SCRAPE_MANIFEST_PATH = DATA / ".scrape-manifest.json"
 # The frozen bulk RCP dump's date (data.gouv.fr upload). Every baseline-sourced
 # page carries it as its "as of" date; overlay pages use their scrape date.
 BASELINE_DATE = "2022-05-02"
+# Official ANSM page for one drug (RCP + notice tabs). Each RCP page links it at
+# the top so a reader who doubts our copy or spots a bug can check the source.
+# Same URL scrape-rcp.py fetches from (PAGE_URL there); kept here to avoid a
+# cross-import (build.py can't cheaply import scrape-rcp.py's httpx/click deps).
+ANSM_PAGE_URL = "https://base-donnees-publique.medicaments.gouv.fr/medicament/{cis}/extrait"
 
 # The RCP HTML field can be very large; lift the csv field-size ceiling.
 csv.field_size_limit(sys.maxsize)
@@ -894,6 +899,16 @@ def _asof_html(ansm: str, asof: str) -> str:
     )
 
 
+def _official_source_html(url: str, label: str) -> str:
+    """Top-of-page button to the authoritative source page, so a reader who
+    doubts our copy or spots a rendering bug can open the official one in one
+    click. Used on RCP pages (ANSM fiche) and reused on /eu/ pages (EMA)."""
+    return (
+        f'<p class="rcp-source"><a class="official-link" href="{_esc(url)}" '
+        f'target="_blank" rel="noopener">{label}</a></p>'
+    )
+
+
 def render_record(item: tuple[str, str, str]) -> dict[str, str] | None:
     """Clean one RCP, write its page + precompressed siblings, return index row."""
     cis, raw, asof = item
@@ -908,7 +923,14 @@ def render_record(item: tuple[str, str, str]) -> dict[str, str] | None:
         .replace("{{HEADEXTRA}}", "")  # RCP pages are indexable; only /eu/ stubs opt out
         .replace("{{CIS}}", _esc(cis))
         .replace("{{TOC}}", _toc_html(toc))
-        .replace("{{ASOF}}", _asof_html(_ansm_date(cleaned), asof))
+        .replace(
+            "{{ASOF}}",
+            _asof_html(_ansm_date(cleaned), asof)
+            + _official_source_html(
+                ANSM_PAGE_URL.format(cis=cis),
+                "Consulter le RCP officiel sur le site de l'ANSM →",
+            ),
+        )
         .replace("{{CONTENT}}", cleaned)
         .replace("{{XREF}}", _xref_html(xref_links))
     )

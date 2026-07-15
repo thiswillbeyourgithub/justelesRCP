@@ -256,7 +256,12 @@ Key facts that aren't obvious from a single file:
   value is also folded into that hash, so a re-scrape that changes either
   re-renders the page. Keep the contract in sync across `_asof_html`/`_ansm_date`,
   the `{{ASOF}}` slot in `src/rcp.html`, `.rcp-asof`/`.rcp-checked`/`.rcp-warn` in
-  `style.css`, and the enhancer in `src/app-init.js`.
+  `style.css`, and the enhancer in `src/app-init.js`. Directly under the banner,
+  `_official_source_html(url, label)` (injected into the same `{{ASOF}}` slot)
+  renders a `.rcp-source` button to the authoritative page (ANSM `ANSM_PAGE_URL`
+  on `/rcp/`, the EMA on `/eu/` stubs) so a reader who doubts our copy or spots a
+  rendering bug can open the official one; it shares the `.official-link` button
+  style with the stub's EMA button.
 - **`/a-propos` is a static About page** (`src/a-propos.html`, shipped as a
   static asset): what the site is, the author, a privacy/hosting note, and a
   direct link to the GitHub repo. (`SOURCE_URL` still drives the separate "Code
