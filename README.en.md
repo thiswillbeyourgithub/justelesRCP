@@ -39,7 +39,8 @@ for-profit medicine sites.
 `build.py` reads the ANSM RCP dump (`data/CIS_RCP.csv`:
 `Code_CIS <TAB> RCP_html`), cleans and restyles each document, then writes:
 
-- `dist/rcp/<cis>-<slug>.html`: one cleaned page per medicine, with a sidebar
+- `dist/rcp/<cis>-<slug>.html`: one cleaned page per medicine, with a heading
+  (drug / presentation name) at the top and a sidebar
   table of contents ("Sommaire") to jump between sections
 - `dist/eu/<cis>-<slug>.html`: for centrally-authorized medicines (whose RCP is
   published by the EMA, not the ANSM, e.g. Abilify). When the EMA
@@ -47,7 +48,9 @@ for-profit medicine sites.
   HTML by `ema_pdf.py`), it shows the **full converted RCP**, with a direct link to
   the official EMA PDF at the top of the page; otherwise a lightweight landing page
   that points to the official RCP on the EMA site and to any equivalent generics
-  available here. Either way they stay findable through the search
+  available here. Either way they stay findable through the search. If the EMA PDF
+  is temporarily unavailable, the text is recovered via the Internet Archive (a note
+  says so on the page; the official link still points at the EMA)
 - `dist/search-index.json`: consumed by the client-side search
 - `dist/a-propos.html`: the "About" page
 - `style.css`, `search.js`, and a `.gz`/`.br` sibling for every text file

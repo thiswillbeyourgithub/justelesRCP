@@ -124,6 +124,11 @@ Key facts that aren't obvious from a single file:
   section list; `render_record()` emits a `<details class="toc">` of jump links
   (plus the version slot) into `{{TOC}}`. It is a sticky sidebar on wide screens
   and a collapsible block on phones (see `.rcp-layout`/`.toc` in `style.css`).
+- **Every page has an `<h1>` drug/presentation-name header** at the top, emitted
+  from the shared template's `{{TITLE}}` slot (filled with the drug name by
+  `render_record`, `render_eu_page` and the stub branch alike, `.rcp-title` in
+  `style.css`). So `_stub_content`/`_eu_full_content` must NOT emit their own `<h1>`
+  (it would duplicate the heading); the ANSM body's `AmmDenomination` is separate.
 - **The build is incremental** (`main()` in `build.py`). It no longer wipes
   `dist/`; instead `dist/.build-manifest.json` maps each CIS to a hash of its
   inputs (raw HTML + mapped name). A record whose hash is unchanged and whose
@@ -362,21 +367,33 @@ Key facts that aren't obvious from a single file:
   overlay per drug at `data/eu/<cis>.html[.gz]` (its OWN manifest,
   `data/.scrape-ema-manifest.json`, so the EMA TTL/last_fetch never collides with
   the ANSM one). It stays DRY by importing scrape-rcp.py's manifest/queue/overlay
-  helpers (parameterised by path/dir) rather than re-implementing them. The
-  overlay wrapper bakes three self-describing facts so build stays
+  helpers (parameterised by path/dir) rather than re-implementing them. **Internet
+  Archive fallback:** when the live EMA PDF fails to download (network error, 404,
+  or a 200 that is actually an HTML error page: `_fetch_pdf` requires the `%PDF-`
+  signature), `process_one` falls back to the Wayback Machine (`_wayback_pdf`, the
+  availability API + the raw `id_` snapshot) and converts the archived copy. The
+  reader NEVER sees the archive URL (the overlay still bakes the real EMA URL as its
+  source button); we only STAMP that the archive was used, so these can be re-tried
+  later against the live EMA: on the overlay (`data-ema-archive="1"`) and in the
+  manifest (`via_archive: true`, which `scrape-ema.py --retry-archived` re-fetches).
+  The overlay wrapper bakes these self-describing facts so build stays
   overlay-self-contained (no EMA-manifest read at build): `data-ema-date` (the
   ModDate), `data-ema-fetched` (OUR capture date), `data-ema-pdf` (the source PDF
-  URL). `build.render_eu_page(cis, overlay, meta, tpl, pdf_fallback)` is the
+  URL), and `data-ema-archive` (present only on archive-sourced overlays).
+  `build.render_eu_page(cis, overlay, meta, tpl, pdf_fallback)` is the
   single-page `/eu/` renderer (the counterpart of `render_record`), reused by BOTH
   `build_stubs` (batch) and the refresh service (on-demand). Its freshness banner
   mirrors an ANSM page's two dates: the ModDate is the "à jour au" headline
   (`data-rcp-ansm`) and OUR fetch date the "vérifiée le" line + refresh key
   (`data-rcp-asof`); keying the refresh off the fetch date (not the ModDate)
   makes a refresh detectable even when the EMA PDF is unchanged (the common case).
-  It also bakes two source buttons (direct PDF + EMA search). Keep the /eu/
+  It also bakes two source buttons (direct PDF + EMA search) and, when the overlay
+  is archive-sourced (`_eu_via_archive`), a warn-tinted note telling the reader the
+  text came through a web archive. Keep the /eu/
   full-page contract in sync across `ema_pdf.convert`/`_overlay_html`
-  (scrape-ema.py), `render_eu_page`/`_eu_date`/`_eu_fetched`/`_eu_pdf`/`_eu_toc`
-  (build.py), and `.rcp-eu`/`.ema-annexe`/`figure` in `style.css`. The EMA link
+  (scrape-ema.py), `render_eu_page`/`_eu_date`/`_eu_fetched`/`_eu_pdf`/`_eu_toc`/
+  `_eu_via_archive` (build.py), and `.rcp-eu`/`.ema-annexe`/`figure`/
+  `.rcp-archive-note` in `style.css`. The EMA link
   is a search only as a *fallback*; a fetched page links the exact PDF. **NOTHING
   is fetched from the EMA at build time** (the site stays 100% static); the PDF is
   fetched only by `scrape-ema.py` or the refresh service's EMA lane.
@@ -408,6 +425,9 @@ uv run scrape-ema.py --limit 60   # OPTIONAL bulk scrape of EMA product-informat
                                   # ema_pdf links scrape-rcp.py harvested; own manifest
                                   # data/.scrape-ema-manifest.json. The refresh service's EMA crawler
                                   # does routine freshening; use this for a first seed / ad-hoc batch.
+                                  # Falls back to the Internet Archive if a live EMA PDF fails (never
+                                  # exposes the archive URL; stamps via_archive). --retry-archived
+                                  # re-fetches just the archive-sourced CIS against the live EMA.
 uv run build.py           # build ./dist from ./data (overlay wins over the 2022 CSV; a data/eu
                           #  overlay makes /eu/<cis> a full converted page instead of a stub)
 uv run refresh-service.py # optional: run the refresh API on :8460 (behind Caddy /api/*)

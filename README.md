@@ -41,7 +41,8 @@ ANSM / BDPM. Conçu comme une alternative légère aux sites de médicaments len
 `build.py` lit le dump des RCP de l'ANSM (`data/CIS_RCP.csv` :
 `Code_CIS <TAB> RCP_html`), nettoie et restyle chaque document, puis écrit :
 
-- `dist/rcp/<cis>-<slug>.html` : une page nettoyée par médicament, avec une table
+- `dist/rcp/<cis>-<slug>.html` : une page nettoyée par médicament, avec un titre
+  (nom du médicament / présentation) en haut de page et une table
   des matières latérale (« Sommaire ») pour naviguer entre les rubriques
 - `dist/eu/<cis>-<slug>.html` : pour les médicaments à AMM européenne centralisée
   (dont le RCP est publié par l'EMA et non par l'ANSM, ex. Abilify). Quand le PDF
@@ -50,7 +51,9 @@ ANSM / BDPM. Conçu comme une alternative légère aux sites de médicaments len
   un lien direct vers le PDF officiel de l'EMA en haut de page ; sinon, une page
   d'aiguillage légère qui renvoie vers le RCP officiel sur le site de l'EMA et vers
   les génériques équivalents présents ici. Dans les deux cas ils restent trouvables
-  via la recherche
+  via la recherche. Si le PDF de l'EMA est momentanément indisponible, le texte est
+  récupéré via l'Internet Archive (une mention l'indique sur la page ; le lien
+  officiel reste celui de l'EMA)
 - `dist/search-index.json` : consommé par la recherche côté client
 - `dist/a-propos.html` : la page « À propos »
 - `style.css`, `search.js`, et un jumeau `.gz`/`.br` pour chaque fichier texte
