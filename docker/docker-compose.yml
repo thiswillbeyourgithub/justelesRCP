@@ -89,10 +89,12 @@ services:
     # REFRESH_UID/REFRESH_GID in docker/.env if your host uid differs (e.g. VPS).
     user: "${REFRESH_UID:-1000}:${REFRESH_GID:-1000}"
     # Same env file as web. Tuning knobs (all optional, sane defaults in the
-    # script): REFRESH_RATE_SECONDS (crawler lane, default 120),
+    # script): REFRESH_RATE_SECONDS (ANSM crawler lane, default 120),
     # REFRESH_DEMAND_RATE_SECONDS (on-demand button/auto lane, default 5),
-    # REFRESH_MIN_INTERVAL_SECONDS, REFRESH_QUEUE_MAX, REFRESH_CRAWL (perpetual
-    # crawler on/off) + REFRESH_CRAWL_TTL_DAYS, RCP_OVERLAY_GZIP. See docker/env.example.
+    # REFRESH_MIN_INTERVAL_SECONDS, REFRESH_QUEUE_MAX, REFRESH_CRAWL (ANSM
+    # crawler on/off) + REFRESH_CRAWL_TTL_DAYS; the EMA /eu/ crawler lane
+    # REFRESH_EMA_CRAWL (on/off) + REFRESH_EMA_RATE_SECONDS (default 300, gentle)
+    # + REFRESH_EMA_CRAWL_TTL_DAYS (default 180); RCP_OVERLAY_GZIP. See docker/env.example.
     env_file:
       - .env
     volumes:
@@ -117,6 +119,16 @@ services:
       - ../data/rcp:/app/data/rcp
       - ../data/.scrape-manifest.json:/app/data/.scrape-manifest.json
       - ../dist/rcp:/app/dist/rcp
+      # Same three writable paths for the EMA /eu/ lane (button + crawler on a
+      # centrally-authorized drug): its overlay dir, its rebuilt-page dir, and its
+      # SEPARATE manifest. Like the RCP manifest, the EMA manifest must exist as a
+      # file on the host before first `up` (else Docker makes a directory);
+      # deploy.sh writes `{}` for it, and scrape.load/save_manifest tolerate a
+      # directory / write in place on the read-only rootfs. The /eu/ overlay dir is
+      # also where the crawler discovers which pages to refresh (_build_eu_order).
+      - ../data/eu:/app/data/eu
+      - ../data/.scrape-ema-manifest.json:/app/data/.scrape-ema-manifest.json
+      - ../dist/eu:/app/dist/eu
     read_only: true
     tmpfs:
       - /tmp
