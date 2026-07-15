@@ -171,6 +171,9 @@ a:hover { text-decoration: underline; }
   .toc > summary { cursor: default; }
 }
 
+/* Drug/presentation name header at the top of every page (RCP, full /eu/, stub);
+   emitted from the {{TITLE}} template slot. Sits above the CIS line + banner. */
+.rcp .rcp-title { font-size: 1.5rem; line-height: 1.25; margin: 0 0 .3rem; }
 .rcp .cis { color: var(--muted); font-size: .85rem; margin: 0 0 1.5rem; }
 /* Freshness banner: ANSM's own revision date (.rcp-primary, the headline) plus
    a small "verified by us" line (.rcp-checked); see app-init.js. ".stale" is
@@ -231,8 +234,8 @@ a:hover { text-decoration: underline; }
    the ANSM, so it has no /rcp/ page here. build_stubs() renders either a
    lightweight stub (.rcp-stub, a pointer out) or, once scrape-ema.py has fetched
    and converted the EMA PDF, a full converted document (.rcp-eu, the same lead +
-   the EMA SmPC/notice text). Both are noindex and reachable via search only. */
-.rcp-stub h1, .rcp-eu h1 { font-size: 1.4rem; margin: .5rem 0 1rem; }
+   the EMA SmPC/notice text). Both are noindex and reachable via search only.
+   The name header (h1.rcp-title) comes from the shared template, above. */
 .rcp-stub .stub-lead, .rcp-eu .stub-lead {
   padding: .7rem .9rem; background: var(--card);
   border: 1px solid var(--line); border-left: 3px solid var(--accent);

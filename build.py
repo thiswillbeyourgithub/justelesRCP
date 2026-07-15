@@ -48,7 +48,7 @@ from lxml import html as lxml_html
 
 import bdpm  # shared, pure-stdlib BDPM tokenising + frequency scoring
 
-__version__ = "0.19.2"  # single source of truth; bump patch/minor per change
+__version__ = "0.19.3"  # single source of truth; bump patch/minor per change
 
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
@@ -1033,8 +1033,9 @@ def _stub_content(
     links straight to that document; otherwise it falls back to an EMA brand
     search (never 404s, fetches nothing at build time)."""
     out = [
+        # The drug/presentation name header is emitted by the page template
+        # ({{TITLE}}), shared with RCP + full /eu/ pages, so it is not repeated here.
         '<div class="rcp-stub">',
-        f"<h1>{_esc(name)}</h1>",
         '<p class="stub-lead">Ce médicament bénéficie d\'une autorisation de mise '
         "sur le marché (AMM) <strong>européenne centralisée</strong>. Son résumé "
         "des caractéristiques du produit (RCP) n'est pas publié par l'ANSM, mais "
@@ -1152,8 +1153,10 @@ def _eu_toc_html(groups: list[tuple[str, str, list[tuple[str, str]]]]) -> str:
 
 def _eu_full_content(name: str, eu: str, holder: str, overlay_html: str) -> str:
     """Body of a full /eu/ page: a short EU-authorization lead + EU number/holder,
-    then the converted EMA document. The EMA source buttons + freshness banner are
-    placed in the {{ASOF}} slot by build_stubs (same as RCP pages)."""
+    then the converted EMA document. The drug/presentation name header is emitted by
+    the page template ({{TITLE}}), shared with RCP + stub pages, so it is not
+    repeated here. The EMA source buttons + freshness banner are placed in the
+    {{ASOF}} slot by build_stubs (same as RCP pages)."""
     bits = []
     if eu:
         bits.append(f"N° d'AMM européenne : <strong>{_esc(eu)}</strong>")
@@ -1167,7 +1170,7 @@ def _eu_full_content(name: str, eu: str, holder: str, overlay_html: str) -> str:
         "l'Agence européenne des médicaments (EMA), converti par justelesRCP depuis "
         "le PDF officiel. En cas de doute, reportez-vous au PDF ci-dessus.</p>"
     )
-    return f'<div class="rcp-eu"><h1>{_esc(name)}</h1>{lead}{meta}</div>{overlay_html}'
+    return f'<div class="rcp-eu">{lead}{meta}</div>{overlay_html}'
 
 
 def render_eu_page(cis: str, overlay_html: str, meta: tuple[str, str, str] | None,
