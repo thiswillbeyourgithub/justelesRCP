@@ -416,6 +416,70 @@ def page_cis_from_dist() -> set[str]:
     return {p.name.split("-", 1)[0] for p in rcp_dir.glob("*.html")}
 
 
+def iter_rcp_raw(scrape_dates: dict[str, str] | None = None, stats: dict | None = None):
+    """Yield ``(cis, raw, asof)`` for every drug that renders an RCP page.
+
+    Sources merged with the scraped ``data/rcp`` overlay winning over the 2022 CSV
+    cell (an empty overlay means "scraped, no RCP" and is skipped, not fallen back);
+    overlay-only CIS absent from the baseline are yielded afterwards. ``asof`` is the
+    freshness date (scrape date for overlay data, else BASELINE_DATE). This is the
+    importable core of main()'s ``records()``; embed-rcp.py reuses it so the
+    build-time embeddings cover exactly the pages the build renders. ``stats``, if
+    given, gets ``stats['empty']`` incremented for each skipped empty RCP.
+    """
+    if scrape_dates is None:
+        scrape_dates = _load_scrape_dates()
+
+    def _overlay(cis: str) -> str | None:
+        # A present overlay always supersedes the CSV cell (fresher); an empty file
+        # is a real "scraped, no RCP" value returned as "" so the caller skips it.
+        if not RCP_OVERLAY_DIR.is_dir():
+            return None
+        path = _overlay_path(cis)
+        return _read_overlay(path) if path is not None else None
+
+    def _bump_empty() -> None:
+        if stats is not None:
+            stats["empty"] = stats.get("empty", 0) + 1
+
+    seen: set[str] = set()
+    if CSV_PATH.exists():
+        with CSV_PATH.open(encoding="utf-8", newline="") as fh:
+            reader = csv.reader(fh, delimiter="\t")
+            next(reader, None)  # header: Code_CIS / RCP_html
+            for row in reader:
+                if len(row) < 2:
+                    continue
+                cis = row[0].strip()
+                seen.add(cis)
+                overlay = _overlay(cis)
+                if overlay is None:
+                    raw, asof = row[1], BASELINE_DATE
+                else:
+                    raw, asof = overlay, scrape_dates.get(cis) or _overlay_date(cis)
+                if not raw.strip():
+                    _bump_empty()  # no published RCP (or empty overlay)
+                    continue
+                yield cis, raw, asof
+    # Overlay-only drugs: scraped CIS that never existed in the 2022 baseline. The
+    # CIS is the filename up to the first dot (8 digits, never dotted).
+    if RCP_OVERLAY_DIR.is_dir():
+        overlay_cis = {
+            p.name.split(".", 1)[0]
+            for p in (*RCP_OVERLAY_DIR.glob("*.html"), *RCP_OVERLAY_DIR.glob("*.html.gz"))
+        }
+        for cis in sorted(overlay_cis):
+            if cis in seen:
+                continue
+            raw = _overlay(cis)
+            if raw is None:
+                continue
+            if not raw.strip():
+                _bump_empty()
+                continue
+            yield cis, raw, scrape_dates.get(cis) or _overlay_date(cis)
+
+
 # --- cross-drug backlinks (xref) --------------------------------------------
 # An RCP body often names OTHER drugs or active substances (e.g. a
 # contraindication mentioning "ritonavir"). build_xref_index() builds, once per
@@ -1673,66 +1737,16 @@ def main() -> None:
     skipped_empty = 0
     reused = 0
 
-    def _overlay(cis: str) -> str | None:
-        """Return the scraped overlay HTML for a CIS, or None if no overlay file.
-
-        A present overlay file always supersedes the CSV baseline cell (fresher
-        data). An empty file is a real value ("scraped, no RCP") and is returned
-        as "" so the caller skips it rather than falling back to the stale cell.
-        """
-        if not RCP_OVERLAY_DIR.is_dir():
-            return None
-        path = _overlay_path(cis)
-        return _read_overlay(path) if path is not None else None
-
     def records():
         """Yield (cis, raw, asof) for non-empty RCPs; count empties as a side effect.
 
-        Sources are merged with the overlay winning: for each CIS the scraped
-        data/rcp/<cis>.html is used when present, else the 2022 CSV cell. Overlay
-        files whose CIS is absent from the baseline CSV are yielded afterwards.
-        asof is the page's freshness date: the scrape date for overlay data
-        (manifest, else the overlay file's mtime), or BASELINE_DATE for a CSV cell.
+        Thin wrapper over the module-level iter_rcp_raw() (shared with embed-rcp.py);
+        the empties it skips are tallied into skipped_empty for the final report.
         """
         nonlocal skipped_empty
-        seen: set[str] = set()
-        if CSV_PATH.exists():
-            with CSV_PATH.open(encoding="utf-8", newline="") as fh:
-                reader = csv.reader(fh, delimiter="\t")
-                next(reader, None)  # header: Code_CIS / RCP_html
-                for row in reader:
-                    if len(row) < 2:
-                        continue
-                    cis = row[0].strip()
-                    seen.add(cis)
-                    overlay = _overlay(cis)
-                    if overlay is None:
-                        raw, asof = row[1], BASELINE_DATE
-                    else:
-                        raw, asof = overlay, scrape_dates.get(cis) or _overlay_date(cis)
-                    if not raw.strip():
-                        skipped_empty += 1  # no published RCP (or empty overlay)
-                        continue
-                    yield cis, raw, asof
-        # Overlay-only drugs: scraped CIS that never existed in the 2022 baseline.
-        # Collect CIS from both formats (<cis>.html and <cis>.html.gz); the CIS is
-        # the filename up to the first dot (8 digits, never dotted). Read through
-        # _overlay so gz/plain and the newest-wins rule stay in one place.
-        if RCP_OVERLAY_DIR.is_dir():
-            overlay_cis = {
-                p.name.split(".", 1)[0]
-                for p in (*RCP_OVERLAY_DIR.glob("*.html"), *RCP_OVERLAY_DIR.glob("*.html.gz"))
-            }
-            for cis in sorted(overlay_cis):
-                if cis in seen:
-                    continue
-                raw = _overlay(cis)
-                if raw is None:
-                    continue
-                if not raw.strip():
-                    skipped_empty += 1
-                    continue
-                yield cis, raw, scrape_dates.get(cis) or _overlay_date(cis)
+        stats = {"empty": 0}
+        yield from iter_rcp_raw(scrape_dates, stats)
+        skipped_empty += stats["empty"]
 
     def output_ok(slug: str) -> bool:
         """True when a slug's page and both precompressed siblings still exist."""
