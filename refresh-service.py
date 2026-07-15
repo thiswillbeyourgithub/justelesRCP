@@ -126,8 +126,39 @@ def _fmt_dhm(seconds: float) -> str:
     return f"{d}d{h}h{m}m"
 
 
+class _CrawlLane:
+    """Per-lane state for a perpetual crawler. There are two: the ANSM ``/rcp/``
+    pages and the EMA ``/eu/`` pages. Each rotates its OWN frequency-ordered set
+    through its OWN slow rate, manifest and TTL, so the crawler methods
+    (_build_crawl_order / _claim_next_crawl / _idle_wait_seconds / _crawl_run) are
+    written once and driven by whichever lane, instead of being duplicated. The two
+    lanes still share the Refresher's ``_lock`` and ``_pending`` (so the same CIS is
+    never fetched twice at once) and its ``_handle`` (which routes each CIS to the
+    right fetch path via ``_is_eu``).
+
+    ``order_fn`` is a callable returning the frequency-ordered CIS list (lanes order
+    different sets and may raise SystemExit if the BDPM inputs are missing). ``order``
+    is built once in the worker thread; ``idx`` is the rotating cursor; ``idle`` marks
+    a rotation that found nothing due; ``last_fetch`` is this lane's throttle mark,
+    touched only by its own worker thread (so it needs no lock).
+    """
+
+    def __init__(self, name, enabled, ttl_days, rate, manifest, order_fn):
+        self.name = name
+        self.enabled = enabled
+        self.ttl_days = ttl_days
+        self.rate = rate
+        self.manifest = manifest      # the lane's manifest dict (shared ref)
+        self.order_fn = order_fn      # () -> list[str], may raise SystemExit
+        self.order: list[str] = []
+        self.idx = 0
+        self.idle = False
+        self.idle_logged = False
+        self.last_fetch = 0.0
+
+
 class Refresher:
-    """Serialises refreshes behind TWO rate-limited worker threads, one per lane.
+    """Serialises refreshes behind rate-limited worker threads, one per lane.
 
     Splitting the lanes onto separate workers is what makes a click feel instant:
     it no longer waits behind the crawler's slow global gap. Each worker sleeps its
@@ -139,21 +170,25 @@ class Refresher:
       after an idle period fetches almost at once. A CIS already queued or in flight
       is not enqueued again (dedup), and a CIS refreshed within ``min_interval``
       seconds is reported "fresh" without any fetch.
-    * a perpetual CRAWLER (worker ``_crawl_run``, throttled by the large ``rate``)
-      that rotates through every page in frequency order, picking the next one whose
-      captured copy is older than ``crawl_ttl_days``. When a full rotation finds
-      nothing due, it idles until the oldest fresh page ages past the TTL, then
-      resumes. Set ``crawl=False`` to disable it (only the on-demand worker runs).
+    * TWO perpetual CRAWLERS (worker ``_crawl_run`` per lane, see ``_CrawlLane``),
+      one for the ANSM ``/rcp/`` pages (throttled by ``rate``) and one for the EMA
+      ``/eu/`` pages (throttled by the slower ``eu_rate``, since the EMA is strict
+      about automated access). Each rotates its own frequency-ordered set, picking
+      the next page whose captured copy is older than its lane TTL; when a full
+      rotation finds nothing due it idles until the oldest fresh page ages past the
+      TTL, then resumes. ``crawl=False`` / ``eu_crawl=False`` disables either.
 
-    The two workers share ``_pending`` (under ``_lock``) so the same CIS is never
-    fetched by both at once, and ``_persist_lock`` so their manifest writes never
-    race on the temp file. Each worker owns its own ``_last_*_fetch`` monotonic mark
-    (written only by that thread), so the throttles need no lock.
+    All workers share ``_pending`` (under ``_lock``) so the same CIS is never fetched
+    by two at once, and ``_persist_lock`` so their manifest writes never race on the
+    temp file. Each worker owns its own throttle mark (written only by that thread),
+    so the throttles need no lock.
     """
 
     def __init__(self, *, rate: float, demand_rate: float, min_interval: float,
                  timeout: float, gzip_overlay: bool, user_agent: str, queue_max: int,
-                 crawl: bool = True, crawl_ttl_days: int = 365) -> None:
+                 crawl: bool = True, crawl_ttl_days: int = 365,
+                 eu_crawl: bool = True, eu_rate: float = 300.0,
+                 eu_crawl_ttl_days: int = 180) -> None:
         self.rate = rate
         self.demand_rate = demand_rate
         self.min_interval = min_interval
@@ -170,19 +205,8 @@ class Refresher:
         # cis -> trigger source ("user" | "auto" | "crawl") while queued/in flight
         self._pending: dict[str, str] = {}
         self._manifest = scrape.load_manifest()
-        # Per-lane throttle marks; each is touched only by its own worker thread.
+        # On-demand lane throttle mark (each crawler lane owns its own, see _CrawlLane).
         self._last_demand_fetch = 0.0
-        self._last_crawl_fetch = 0.0
-        # Perpetual crawler state (see _claim_next_crawl / _idle_wait_seconds).
-        # _crawl_order is the frequency-ordered list of pages to rotate through,
-        # built once in the worker thread; _crawl_idx is the rotating cursor;
-        # _crawl_idle records whether the last rotation found nothing due.
-        self._crawl = crawl
-        self._crawl_ttl_days = crawl_ttl_days
-        self._crawl_order: list[str] = []
-        self._crawl_idx = 0
-        self._crawl_idle = False
-        self._idle_logged = False
         # Crawl statistics, surfaced in the logs and at GET /api/stats. Counts of
         # *completed* refreshes by outcome (ok/empty/error) and by trigger source
         # (user = button, auto = >1yr page-load refresh, crawl = background crawler),
@@ -228,16 +252,41 @@ class Refresher:
         self._ema_links = ema_scrape.ema_links(self._manifest)
         logger.info("primed EMA lane: {} centrally-authorized /eu/ CIS, {} PDF links",
                     len(self._eu_cis), len(self._ema_links))
-        # Two workers: the on-demand lane always runs; the crawler only when enabled.
+        # Two perpetual crawler lanes, each rotating its own frequency-ordered set on
+        # its own rate + manifest + TTL (the shared crawler methods are driven by
+        # whichever lane): the ANSM /rcp/ pages, and the slower EMA /eu/ pages.
+        self._ansm_lane = _CrawlLane(
+            "rcp", crawl, crawl_ttl_days, rate, self._manifest,
+            lambda: scrape.build_queue(crawl_ttl_days, force=True, restrict=page_cis))
+        self._eu_lane = _CrawlLane(
+            "eu", eu_crawl, eu_crawl_ttl_days, eu_rate, self._ema_manifest,
+            self._build_eu_order)
+        self._crawl_lanes = (self._ansm_lane, self._eu_lane)
+        # Workers: the on-demand lane always runs; each crawl lane only when enabled.
         self._demand_worker = threading.Thread(target=self._demand_run,
                                                name="demand", daemon=True)
-        self._crawl_worker = threading.Thread(target=self._crawl_run,
-                                              name="crawler", daemon=True)
+        self._crawl_workers = [
+            (lane, threading.Thread(target=self._crawl_run, args=(lane,),
+                                    name=f"crawler-{lane.name}", daemon=True))
+            for lane in self._crawl_lanes
+        ]
 
     def start(self) -> None:
         self._demand_worker.start()
-        if self._crawl:
-            self._crawl_worker.start()
+        for lane, worker in self._crawl_workers:
+            if lane.enabled:
+                worker.start()
+
+    def _build_eu_order(self) -> list[str]:
+        """Frequency-ordered /eu/ CIS the EMA crawler rotates through: centrally-
+        authorized CIS that have a known EMA PDF link OR an already-built overlay (so
+        _eu_url can resolve a URL to refetch). Reuses scrape.build_queue's ordering;
+        raises SystemExit (caught by _build_crawl_order) if the BDPM inputs are gone."""
+        have = {p.name.split(".")[0] for p in build.EU_OVERLAY_DIR.glob("*.html*")}
+        targets = (set(self._ema_links) | have) & self._eu_cis
+        if not targets:
+            return []
+        return scrape.build_queue(0, force=True, restrict=targets)
 
     # -- state helpers -------------------------------------------------------
 
@@ -305,26 +354,34 @@ class Refresher:
         """
         return n * (self.demand_rate + min(self.demand_rate, 10.0) / 2 + 1.0)
 
-    def _due_count_locked(self) -> int:
-        """Count crawl pages still due per the crawl TTL. CALLER MUST HOLD ``_lock``.
+    def _due_count_locked(self, lane: _CrawlLane) -> int:
+        """Count a lane's crawl pages still due per its TTL. CALLER MUST HOLD ``_lock``.
 
-        A live sweep-size hint: how many pages the crawler still has to fetch
-        before it goes idle. O(len(order)) but cheap (a dict lookup + one ISO
-        parse each), and only ever run under the lock the callers already hold.
+        A live sweep-size hint: how many pages the lane still has to fetch before it
+        goes idle. O(len(order)) but cheap (a dict lookup + one ISO parse each), and
+        only ever run under the lock the callers already hold.
         """
-        if not self._crawl:
+        if not lane.enabled:
             return 0
-        return sum(1 for cis in self._crawl_order
-                   if scrape.is_due(self._manifest.get(cis), self._crawl_ttl_days))
+        return sum(1 for cis in lane.order
+                   if scrape.is_due(lane.manifest.get(cis), lane.ttl_days))
 
-    def _crawl_eta_seconds(self, due: int) -> float:
-        """Rough seconds to finish the current crawl sweep of ``due`` pages.
+    @staticmethod
+    def _crawl_eta_seconds(due: int, rate: float) -> float:
+        """Rough seconds to finish a crawl sweep of ``due`` pages on a lane's ``rate``.
 
-        The crawler is serial on the slow ``rate`` lane: each due page costs the
-        base rate plus, on average, half the 0..min(rate,10)s jitter. Mirrors
+        Each lane crawler is serial on its slow rate: each due page costs the base
+        rate plus, on average, half the 0..min(rate,10)s jitter. Mirrors
         ``_eta_seconds`` for the on-demand lane. Zero when nothing is due (idle).
         """
-        return due * (self.rate + min(self.rate, 10.0) / 2)
+        return due * (rate + min(rate, 10.0) / 2)
+
+    def _gauge_locked(self, lane: _CrawlLane) -> dict:
+        """One lane's crawl gauge for GET /api/stats. CALLER MUST HOLD ``_lock``."""
+        due = self._due_count_locked(lane)
+        return {"enabled": lane.enabled, "total": len(lane.order), "idx": lane.idx,
+                "ttl_days": lane.ttl_days, "idle": lane.idle, "due": due,
+                "eta_seconds": round(self._crawl_eta_seconds(due, lane.rate), 1)}
 
     def stats(self) -> dict:
         """Snapshot of the crawl counters (served at GET /api/stats)."""
@@ -332,70 +389,66 @@ class Refresher:
             snap = dict(self._stats)
             queued = self._demand.qsize()
             pending = len(self._pending)
-            due = self._due_count_locked()
-            crawl = {"enabled": self._crawl, "total": len(self._crawl_order),
-                     "idx": self._crawl_idx, "ttl_days": self._crawl_ttl_days,
-                     "idle": self._crawl_idle, "due": due,
-                     "eta_seconds": round(self._crawl_eta_seconds(due), 1)}
+            crawl = self._gauge_locked(self._ansm_lane)
+            crawl_eu = self._gauge_locked(self._eu_lane)
         snap["done"] = snap["ok"] + snap["empty"] + snap["error"]
         snap["queued"] = queued  # on-demand (button/auto) requests waiting
         snap["pending"] = pending
         snap["eta_seconds"] = round(self._eta_seconds(queued), 1)
-        snap["crawl"] = crawl
+        snap["crawl"] = crawl        # ANSM /rcp/ lane (unchanged shape)
+        snap["crawl_eu"] = crawl_eu  # EMA /eu/ lane, same shape
         return snap
 
-    # -- perpetual crawler ---------------------------------------------------
+    # -- perpetual crawler (one instance per lane) ---------------------------
 
-    def _build_crawl_order(self) -> None:
-        """Build the frequency-ordered page list the crawler rotates through.
+    def _build_crawl_order(self, lane: _CrawlLane) -> None:
+        """Build the frequency-ordered page list a lane rotates through.
 
-        Reuses scrape.build_queue (the SAME frequency ordering the batch scraper
-        CLI uses) with ``force=True`` so it returns EVERY page in priority order,
-        restricted to the CIS that actually render a page here (never a pageless
-        CIS). Runs once in the worker thread so the HTTP server can start serving
+        Reuses the lane's ``order_fn`` (scrape.build_queue's frequency ordering, the
+        SAME the batch scrapers use), restricted to CIS that actually render a page.
+        Runs once in the worker thread so the HTTP server can start serving
         immediately; per-page due-ness is checked live in _claim_next_crawl, not
         frozen here. Degrades to no crawler (empty order) if the BDPM inputs are
         missing rather than crashing the service.
         """
-        if not self._crawl:
+        if not lane.enabled:
             return
         try:
-            order = scrape.build_queue(self._crawl_ttl_days, force=True,
-                                       restrict=self._page_cis)
+            order = lane.order_fn()
         except SystemExit as exc:  # e.g. missing CIS_bdpm; degrade, don't crash
-            logger.warning("crawler disabled: {}", exc)
-            self._crawl = False
+            logger.warning("{} crawler disabled: {}", lane.name, exc)
+            lane.enabled = False
             return
-        self._crawl_order = order
-        logger.info("crawler armed: {} pages in frequency order, ttl {}d, rate {}s",
-                    len(order), self._crawl_ttl_days, self.rate)
+        lane.order = order
+        logger.info("{} crawler armed: {} pages in frequency order, ttl {}d, rate {}s",
+                    lane.name, len(order), lane.ttl_days, lane.rate)
 
-    def _claim_next_crawl(self) -> str | None:
-        """Claim the next due page to crawl, or None if a full rotation finds none.
+    def _claim_next_crawl(self, lane: _CrawlLane) -> str | None:
+        """Claim the lane's next due page to crawl, or None if a rotation finds none.
 
         Rotates a cursor through the frequency-ordered page list, returning the
-        first CIS that is due per the crawl TTL (see scrape.is_due) and not already
-        queued/in flight on-demand. The claimed CIS is marked pending as "crawl" so
-        a concurrent button click for the SAME page dedups instead of double-fetching.
-        A full rotation with nothing due flips the crawler to idle and returns None.
+        first CIS that is due per the lane TTL (see scrape.is_due) and not already
+        queued/in flight (in the SHARED ``_pending``, so the two lanes + on-demand
+        never double-fetch a CIS). The claimed CIS is marked pending as "crawl"; a
+        full rotation with nothing due flips the lane to idle and returns None.
         """
         with self._lock:
-            n = len(self._crawl_order)
+            n = len(lane.order)
             for _ in range(n):
-                cis = self._crawl_order[self._crawl_idx]
-                self._crawl_idx = (self._crawl_idx + 1) % n
+                cis = lane.order[lane.idx]
+                lane.idx = (lane.idx + 1) % n
                 if cis in self._pending:
-                    continue  # already queued/in flight on-demand
-                if scrape.is_due(self._manifest.get(cis), self._crawl_ttl_days):
+                    continue  # already queued/in flight (on-demand or other lane)
+                if scrape.is_due(lane.manifest.get(cis), lane.ttl_days):
                     self._pending[cis] = "crawl"
-                    self._crawl_idle = False
-                    self._idle_logged = False
+                    lane.idle = False
+                    lane.idle_logged = False
                     return cis
-            self._crawl_idle = True
+            lane.idle = True
             return None
 
-    def _idle_wait_seconds(self) -> float:
-        """Seconds until the oldest fresh page next crosses the crawl TTL (capped).
+    def _idle_wait_seconds(self, lane: _CrawlLane) -> float:
+        """Seconds until the lane's oldest fresh page next crosses its TTL (capped).
 
         Called only after a full rotation found nothing due, so every page has a
         recent last_fetch: wake at the soonest one's expiry so the crawler resumes
@@ -405,11 +458,11 @@ class Refresher:
         """
         cap = 3600.0
         now = datetime.now(timezone.utc)
-        ttl = timedelta(days=self._crawl_ttl_days)
+        ttl = timedelta(days=lane.ttl_days)
         soonest: float | None = None
         with self._lock:
-            for cis in self._crawl_order:
-                last = (self._manifest.get(cis) or {}).get("last_fetch")
+            for cis in lane.order:
+                last = (lane.manifest.get(cis) or {}).get("last_fetch")
                 if not last:
                     return 1.0
                 try:
@@ -532,30 +585,31 @@ class Refresher:
                                                           self.demand_rate)
                 self._handle(client, cis, source)
 
-    def _crawl_run(self) -> None:
-        """Perpetual crawler worker: serial, on the slow ``rate`` limit.
+    def _crawl_run(self, lane: _CrawlLane) -> None:
+        """Perpetual crawler worker for ONE lane: serial, on that lane's rate limit.
 
-        Builds the frequency-ordered page list once (here, not in __init__, so the
-        HTTP server starts serving immediately instead of blocking on the BDPM I/O),
-        then rotates the cursor, refreshing each due page and idling when none is.
+        Builds the lane's frequency-ordered page list once (here, not in __init__, so
+        the HTTP server starts serving immediately instead of blocking on the BDPM
+        I/O), then rotates the cursor, refreshing each due page and idling when none
+        is. ``_handle`` routes each CIS to the ANSM or EMA fetch path via ``_is_eu``.
         """
-        self._build_crawl_order()
-        if not self._crawl or not self._crawl_order:
-            logger.info("crawler: nothing to crawl (disabled or empty order)")
+        self._build_crawl_order(lane)
+        if not lane.enabled or not lane.order:
+            logger.info("{} crawler: nothing to crawl (disabled or empty order)", lane.name)
             return
         with self._client() as client:
             while True:
-                cis = self._claim_next_crawl()
+                cis = self._claim_next_crawl(lane)
                 if cis is None:  # nothing due: idle until the oldest page ages out
-                    wait = self._idle_wait_seconds()
-                    if not self._idle_logged:
-                        logger.info("crawler idle: all {} pages within {}d; next due in {}",
-                                    len(self._crawl_order), self._crawl_ttl_days,
+                    wait = self._idle_wait_seconds(lane)
+                    if not lane.idle_logged:
+                        logger.info("{} crawler idle: all {} pages within {}d; next due in {}",
+                                    lane.name, len(lane.order), lane.ttl_days,
                                     scrape._fmt_dur(wait))
-                        self._idle_logged = True
+                        lane.idle_logged = True
                     time.sleep(wait)
                     continue
-                self._last_crawl_fetch = self._wait_rate(self._last_crawl_fetch, self.rate)
+                lane.last_fetch = self._wait_rate(lane.last_fetch, lane.rate)
                 self._handle(client, cis, "crawl")
 
     def _persist(self, manifest: dict, path=None) -> None:
@@ -591,34 +645,46 @@ class Refresher:
     def _record(self, cis: str, source: str, outcome: str, result: str) -> None:
         """Tally one completed refresh and emit its progress line.
 
-        ``outcome`` is 'ok' | 'empty' | 'error'. A crawler item logs its position
-        in the frequency rotation plus the sweep ETA (still-due pages x the crawl
-        rate); an on-demand item logs the live on-demand queue depth + ETA. A
-        compact aggregate line follows at the first completion and every 10th, so
-        the overall run is visible at INFO without the per-request DEBUG chatter.
+        ``outcome`` is 'ok' | 'empty' | 'error'. A crawler item logs which lane
+        (rcp/eu) plus its position in that lane's rotation and its sweep ETA
+        (still-due pages x the lane's rate); an on-demand item logs the live
+        on-demand queue depth + ETA. A compact aggregate line (both lanes' due +
+        ETA) follows at the first completion and every 10th, so the overall run is
+        visible at INFO without the per-request DEBUG chatter.
         """
         with self._lock:
             self._stats[outcome] += 1
             self._stats[source] += 1
             snap = dict(self._stats)
             to_go = self._demand.qsize()
-            idx, total = self._crawl_idx, len(self._crawl_order)
-            due = self._due_count_locked()
-        done = snap["ok"] + snap["empty"] + snap["error"]
-        crawl_eta = _fmt_dhm(self._crawl_eta_seconds(due))
+            lane = None
+            if source == "crawl":
+                lane = self._eu_lane if self._is_eu(cis) else self._ansm_lane
+                lane_name, lane_idx, lane_total = lane.name, lane.idx, len(lane.order)
+                lane_due = self._due_count_locked(lane)
+                lane_rate = lane.rate
+            agg = None
+            done = snap["ok"] + snap["empty"] + snap["error"]
+            if done == 1 or done % 10 == 0:  # both lanes' due, only for the aggregate
+                agg = (self._due_count_locked(self._ansm_lane),
+                       self._due_count_locked(self._eu_lane))
         if source == "crawl":
-            logger.info("crawl {}/{} {} -> {} | due~{} sweep-eta {} | on-demand to-go={}",
-                        idx, total, cis, result, due, crawl_eta, to_go)
+            logger.info("crawl[{}] {}/{} {} -> {} | due~{} sweep-eta {} | on-demand to-go={}",
+                        lane_name, lane_idx, lane_total, cis, result, lane_due,
+                        _fmt_dhm(self._crawl_eta_seconds(lane_due, lane_rate)), to_go)
         else:
             logger.info("refreshed {} [{}] -> {} | on-demand to-go={} eta {}", cis, source,
                         result, to_go, scrape._fmt_dur(self._eta_seconds(to_go)))
-        if done == 1 or done % 10 == 0:
+        if agg is not None:
+            a_due, e_due = agg
             logger.info(
                 "stats | done={} (crawl={} auto={} user={}) ok={} empty={} err={} "
-                "| crawl due~{} sweep-eta {} | on-demand to-go={} eta {}",
+                "| rcp-crawl due~{} eta {} | eu-crawl due~{} eta {} | on-demand to-go={} eta {}",
                 done, snap["crawl"], snap["auto"], snap["user"],
                 snap["ok"], snap["empty"], snap["error"],
-                due, crawl_eta, to_go, scrape._fmt_dur(self._eta_seconds(to_go)),
+                a_due, _fmt_dhm(self._crawl_eta_seconds(a_due, self._ansm_lane.rate)),
+                e_due, _fmt_dhm(self._crawl_eta_seconds(e_due, self._eu_lane.rate)),
+                to_go, scrape._fmt_dur(self._eta_seconds(to_go)),
             )
 
     def _process(self, client, cis: str, source: str) -> None:
@@ -790,6 +856,22 @@ REFRESHER: Refresher | None = None  # set in main(), read by _Handler
               help="Crawler staleness threshold: it refreshes any page whose captured "
                    "copy is older than this, then idles until the oldest one ages past "
                    "it again (env REFRESH_CRAWL_TTL_DAYS). Default 365 (~12 months).")
+@click.option("--eu-crawl/--no-eu-crawl", default=True, show_default=True,
+              envvar="REFRESH_EMA_CRAWL",
+              help="Run the perpetual crawler for the EMA /eu/ pages, on its own slow "
+                   "--eu-rate lane and separate manifest (env REFRESH_EMA_CRAWL). The "
+                   "EMA is strict about automated access, so keep it slow. --no-eu-crawl "
+                   "leaves /eu/ pages to the on-demand button + manual scrape-ema.py.")
+@click.option("--eu-rate", type=float, default=300.0, show_default=True,
+              envvar="REFRESH_EMA_RATE_SECONDS",
+              help="Base seconds between outbound EMA fetches on the /eu/ crawler lane "
+                   "(env REFRESH_EMA_RATE_SECONDS). Default 300 (~5 min): a deliberately "
+                   "gentle trickle, since the EMA is strict about scraping.")
+@click.option("--eu-crawl-ttl-days", type=int, default=180, show_default=True,
+              envvar="REFRESH_EMA_CRAWL_TTL_DAYS",
+              help="Staleness threshold for the /eu/ crawler (env "
+                   "REFRESH_EMA_CRAWL_TTL_DAYS). Default 180 (~6 months): EMA SmPC PDFs "
+                   "change rarely, so a long window keeps EMA traffic minimal.")
 @click.option("--timeout", type=float, default=30.0, show_default=True,
               help="Per-request HTTP timeout in seconds.")
 @click.option("--gzip/--no-gzip", "gzip_overlay", default=True, show_default=True,
@@ -805,7 +887,8 @@ REFRESHER: Refresher | None = None  # set in main(), read by _Handler
                    "per-request DEBUG chatter (status polls, refresh POSTs) out of the "
                    "logs; the /api/health check is never logged at any level.")
 def main(host: str, port: int, rate: float, demand_rate: float, min_interval: float,
-         queue_max: int, crawl: bool, crawl_ttl_days: int, timeout: float,
+         queue_max: int, crawl: bool, crawl_ttl_days: int, eu_crawl: bool,
+         eu_rate: float, eu_crawl_ttl_days: int, timeout: float,
          gzip_overlay: bool, user_agent: str | None, log_level: str) -> None:
     """Run the RCP refresh service (see module docstring)."""
     global REFRESHER
@@ -821,12 +904,15 @@ def main(host: str, port: int, rate: float, demand_rate: float, min_interval: fl
     # server below starts accepting (and /api/health passes) without waiting on I/O.
     REFRESHER = Refresher(rate=rate, demand_rate=demand_rate, min_interval=min_interval,
                           timeout=timeout, gzip_overlay=gzip_overlay, user_agent=ua,
-                          queue_max=queue_max, crawl=crawl, crawl_ttl_days=crawl_ttl_days)
+                          queue_max=queue_max, crawl=crawl, crawl_ttl_days=crawl_ttl_days,
+                          eu_crawl=eu_crawl, eu_rate=eu_rate, eu_crawl_ttl_days=eu_crawl_ttl_days)
     REFRESHER.start()
     logger.info("refresh service on {}:{} (crawl-rate {}s, demand-rate {}s, "
-                "min-interval {}s, overlay={}, crawl={})", host, port, rate, demand_rate,
-                min_interval, "gzip" if gzip_overlay else "plain",
-                f"on ttl={crawl_ttl_days}d" if crawl else "off")
+                "min-interval {}s, overlay={}, rcp-crawl={}, eu-crawl={})",
+                host, port, rate, demand_rate, min_interval,
+                "gzip" if gzip_overlay else "plain",
+                f"on ttl={crawl_ttl_days}d" if crawl else "off",
+                f"on rate={eu_rate}s ttl={eu_crawl_ttl_days}d" if eu_crawl else "off")
     ThreadingHTTPServer((host, port), _Handler).serve_forever()
 
 
