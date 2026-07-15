@@ -144,6 +144,11 @@ Key facts that aren't obvious from a single file:
   wins if both coexist), so the flag only trades disk/rsync size for
   greppability. `records()` prefers the overlay over the baseline CSV cell (a
   *zero-byte* overlay means "scraped, no RCP" and is skipped, not fallen back).
+  On a page with no RCP body (an EMA-centrally-authorized drug), `extract_ema_pdf`
+  also harvests the real EMA `product-information` `_fr.pdf` href the ANSM page
+  links to and stores it in the manifest as `ema_pdf`; `build_stubs` uses it to
+  point the `/eu/` stub straight at the document (see the EU-stub bullet). Nothing
+  is fetched from the EMA: the href is read off the already-fetched ANSM page.
   Ordering is frequency-first: `--frequency` (default `data/drugs_frequency.jsonl`)
   is a JSONL of `{term, score}` (drug/substance name -> priority) matched to each
   CIS's accent-folded token pool: its denomination plus, when the optional
@@ -268,10 +273,18 @@ Key facts that aren't obvious from a single file:
   emits a lightweight `dist/eu/<cis>-<slug>.html` landing for each (~1879): it
   explains the EU-authorization case, shows the EU number + holder (parsed by
   `load_cap_meta()` from `CIS_bdpm.txt`: a row with an `EU/x/xx/xxx` number or a
-  `centralisée` procedure), links to the official RCP via an **EMA medicines-search
-  URL by brand root** (`_ema_search_url`/`_brand_root`: a search, never a
-  constructed EPAR deep link, so it can't 404, and **NOTHING is fetched from the
-  EMA at build time**, so the site stays 100% static), and, ONLY when a
+  `centralisée` procedure), links to the official RCP via **the exact EMA
+  product-information PDF when known, else an EMA medicines-search URL by brand
+  root**. The direct link is NOT constructed here: the ANSM `/medicament/<cis>/extrait`
+  page for a centrally-authorized drug carries no RCP body but DOES link the real
+  EMA `_fr.pdf`; `scrape-rcp.py`'s `extract_ema_pdf` harvests that href at SCRAPE
+  time into the manifest (`ema_pdf`), and `build_stubs` reads it via
+  `_load_ema_links()` and prefers it (`_stub_content(..., ema_pdf)` labels it
+  "(PDF)"). A stub whose CIS hasn't been scraped since this landed falls back to
+  `_ema_search_url`/`_brand_root` (a search, never a constructed EPAR deep link,
+  so it can't 404). Either way **NOTHING is fetched from the EMA at build time**
+  (the PDF href is captured during the ANSM scrape, which already runs), so the
+  site stays 100% static. ONLY when a
   same-substance generic actually renders here, links to it via `/?q=<substance>`
   (~880; the substance is the longest of the stub's `CIS_COMPO` active-substance
   tokens that also appears in a real page name, salts/short words dropped via
@@ -288,12 +301,16 @@ Key facts that aren't obvious from a single file:
   empty RCP, the other non-empty), so an unchanged rebuild reuses all of them.
   `src/app-init.js` gates the on-demand refresh button on a baked `data-rcp-asof`,
   which stubs lack, so no useless "Rafraîchir" button appears on them. Keep the
-  contract in sync across `build_stubs`/`load_cap_meta`/`_stub_content`, the
-  `{{HEADEXTRA}}` slot in `src/rcp.html`, the `eu`-flag branch in `src/search.js`,
-  the asof gate in `src/app-init.js`, and `.rcp-stub`/`.stub-*` in `style.css`.
-  This is **phase 1** (findability + a pointer to the EMA); a later phase could
-  fetch the EMA French SmPC PDF into a real overlay, which is why the EMA link is a
-  search and not yet the exact document.
+  contract in sync across `build_stubs`/`load_cap_meta`/`_stub_content`/
+  `_load_ema_links` (build.py) and `extract_ema_pdf` + the manifest `ema_pdf`
+  field (scrape-rcp.py), the `{{HEADEXTRA}}` slot in `src/rcp.html`, the
+  `eu`-flag branch in `src/search.js`, the asof gate in `src/app-init.js`, and
+  `.rcp-stub`/`.stub-*` in `style.css`.
+  This is **phase 1** (findability + a pointer to the EMA); the EMA link is now
+  the exact French `product-information` PDF for any stub whose CIS has been
+  scraped (harvested from the ANSM page, not fetched from the EMA), falling back
+  to a brand search otherwise. A later **phase 2** could pull that SmPC PDF into a
+  real on-site overlay.
 - **Precompression (.gz/.br) is baked at build time** so Caddy spends zero CPU
   compressing. `compress()` writes both siblings; the Caddyfile uses
   `precompressed br gzip`.

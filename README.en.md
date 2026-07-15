@@ -43,8 +43,9 @@ for-profit medicine sites.
   table of contents ("Sommaire") to jump between sections
 - `dist/eu/<cis>-<slug>.html`: for centrally-authorized medicines (whose RCP is
   published by the EMA, not the ANSM, e.g. Abilify), a small landing page that
-  points to the official RCP on the EMA site and to any equivalent generics
-  available here. This keeps them findable through the search
+  points to the official RCP on the EMA site (the exact PDF when the ANSM page
+  links it, otherwise an EMA search) and to any equivalent generics available
+  here. This keeps them findable through the search
 - `dist/search-index.json`: consumed by the client-side search
 - `dist/a-propos.html`: the "About" page
 - `style.css`, `search.js`, and a `.gz`/`.br` sibling for every text file
