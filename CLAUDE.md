@@ -40,15 +40,20 @@ Data flow:
 ```
 data/CIS_RCP.csv    (TSV: Code_CIS <TAB> RCP_html, CSV-quoted multi-line HTML)
 data/CIS_bdpm.txt   (official CIS -> drug name, latin-1, tab-separated)
+data/rcp/<cis>.html[.gz]   ANSM re-scrape overlay (scrape-rcp.py, wins over CSV)
+data/eu/<cis>.html[.gz]    EMA SmPC converted from the PDF (scrape-ema.py + ema_pdf.py;
+                           wraps the same <div id="textDocument"> envelope)
       | build.py
       v
 dist/rcp/<cis>-<slug>.html   one cleaned page per drug (slug from drug name),
                              with a sidebar table of contents (ToC) of sections
 dist/search-index.json       [{cis,name,slug}] consumed by client-side search
-                             (+ {cis,name,slug,eu:1} rows for /eu/ stubs below)
-dist/eu/<cis>-<slug>.html    EU-authorization stub: a centrally-authorized drug
-                             whose RCP lives at the EMA (empty ANSM cell). noindex,
-                             findable via search only, NOT in browse
+                             (+ {cis,name,slug,eu:1} rows for /eu/ pages below)
+dist/eu/<cis>-<slug>.html    EU-authorization page for a centrally-authorized drug
+                             whose RCP lives at the EMA (empty ANSM cell): a full
+                             converted SmPC/notice if data/eu has an overlay, else a
+                             lightweight stub pointing to the EMA. noindex, findable
+                             via search only, NOT in browse
 dist/browse/index.html       A-Z landing (letter grid with counts)
 dist/browse/<letter>.html    alphabetical drug list per letter ('#' -> num.html)
 dist/index.html a-propos.html style.css search.js
@@ -214,15 +219,43 @@ Key facts that aren't obvious from a single file:
   click never waits behind it). Missing BDPM inputs degrade it to off (empty order,
   the `_crawl_run` worker just exits) rather than crashing; `REFRESH_CRAWL=0`
   disables it (crawl worker not started), leaving only button/auto refreshes.
+  **The EMA `/eu/` lane.** Centrally-authorized drugs have no ANSM page: the same
+  service ALSO refreshes their `/eu/` pages (button + a second crawler) through a
+  parallel EMA lane, so one runtime component covers both. It imports
+  `scrape-ema.py` (which imports `ema_pdf.py`) by path and reuses
+  `process_one` -> re-read overlay -> `build.render_eu_page` to fetch one EMA PDF,
+  convert it and rebuild that one `dist/eu/<slug>.html`. The lane is fully DRY: the
+  crawler machinery is generalised into a `_CrawlLane` object (name, ttl, rate,
+  manifest, order function, cursor/idle state), and there are two instances,
+  `_ansm_lane` and `_eu_lane`, driven by the SAME lane-parameterised methods
+  (`_build_crawl_order(lane)`, `_claim_next_crawl(lane)`, `_gauge_locked(lane)`,
+  `_crawl_run(lane)`, …). `_process` dispatches on `_is_eu(cis)` (a CIS is EU iff
+  it is in the cap-meta set but has no RCP page) to `_process_ema` vs
+  `_process_ansm`, and `_entry(cis)` / `_persist(manifest, path)` route to the EMA
+  manifest (`data/.scrape-ema-manifest.json`) vs the ANSM one, so the two lanes'
+  TTL/last_fetch never collide. The EMA lane has its OWN knobs
+  (`REFRESH_EMA_CRAWL`, default on; `REFRESH_EMA_RATE_SECONDS`, default 300s, gentle
+  because the EMA is strict; `REFRESH_EMA_CRAWL_TTL_DAYS`, default 180) and its own
+  worker/rate limit, so an EMA fetch never blocks an ANSM one and vice-versa. Its
+  crawl order (`_build_eu_order()`) is the frequency-ordered set of centrally-
+  authorized CIS that either have an `ema_pdf` link harvested in the ANSM manifest
+  OR already have a `data/eu` overlay; the on-demand `_eu_url(cis)` falls back to
+  the PDF URL baked into the overlay when the ANSM manifest has no link, so a `/eu/`
+  page keeps refreshing even with zero harvested links. `render_eu_page` needs no
+  live EMA read at build (the overlay is self-describing), and everything stays
+  import-safe (`scrape-ema.py`/`ema_pdf.py` guard `__main__`). Missing inputs (no
+  cap-meta, no PDF links, no overlays) degrade the lane to off (empty order, worker
+  exits); `REFRESH_EMA_CRAWL=0` disables it entirely.
   **Crawl statistics + logging.** Each refresh is tagged with its trigger
   *source* (`user` = button, `auto` = the >1yr page-load refresh, `crawl` = the
   perpetual crawler, set internally and NOT acceptable from a caller); `app-init.js`
   sends `?src=user`/`?src=auto` and the service records counts by source and outcome
   (ok/empty/error) plus on-demand queue depth/ETA, logged as per-item +
   rolling-aggregate lines and exposed at `GET /api/stats` (which also carries a
-  `crawl` gauge: `{enabled,total,idx,ttl_days,idle,due,eta_seconds}`, where `due`
-  is the still-due page count and `eta_seconds` the sweep ETA = `due` x the crawl
-  rate; the crawl/aggregate log lines print the same value as `sweep-eta` in
+  `crawl` gauge for the ANSM lane AND a `crawl_eu` gauge for the EMA lane, same
+  shape: `{enabled,total,idx,ttl_days,idle,due,eta_seconds}`, where `due`
+  is the still-due page count and `eta_seconds` the sweep ETA = `due` x that lane's
+  crawl rate; the crawl/aggregate log lines print both as `sweep-eta` in
   `DdHhMm` form (`_fmt_dhm`, since a full sweep spans days), distinct from
   the on-demand `eta` which drains the button/auto queue and reads 00:00 when no
   clicks are pending). `request()` must NOT call
@@ -270,13 +303,16 @@ Key facts that aren't obvious from a single file:
   page, not counted in browse). This is expected, not an error. But the centrally-
   authorized ones among them now get an EU-authorization stub instead of vanishing
   (next bullet).
-- **EU-authorization stub pages (`/eu/`, `build_stubs()`).** A big share of the
+- **EU-authorization pages (`/eu/`, `build_stubs()`).** A big share of the
   empty-RCP CIS are EMA-centrally-authorized (`procédure centralisée`), whose RCP
   text is published by the EMA, not the ANSM (ABILIFY/aripiprazole, many biologics
   and oncology drugs). They render no RCP page and so were unfindable by search
   (the original bug report: searching "abilify" returned nothing). `build_stubs()`
-  emits a lightweight `dist/eu/<cis>-<slug>.html` landing for each (~1879): it
-  explains the EU-authorization case, shows the EU number + holder (parsed by
+  emits one `dist/eu/<cis>-<slug>.html` per such CIS (~1883), in ONE of two forms
+  per CIS: a **full converted page** when `data/eu/<cis>.html[.gz]` has an EMA
+  overlay (the SmPC/notice converted from the EMA PDF, rendered by `render_eu_page`,
+  see the next bullet), otherwise a **lightweight stub** that only points to the EMA.
+  The stub: it explains the EU-authorization case, shows the EU number + holder (parsed by
   `load_cap_meta()` from `CIS_bdpm.txt`: a row with an `EU/x/xx/xxx` number or a
   `centralisée` procedure), links to the official RCP via **the exact EMA
   product-information PDF when known, else an EMA medicines-search URL by brand
@@ -305,17 +341,45 @@ Key facts that aren't obvious from a single file:
   into the incremental manifest (stub CIS never collide with RCP CIS: one has an
   empty RCP, the other non-empty), so an unchanged rebuild reuses all of them.
   `src/app-init.js` gates the on-demand refresh button on a baked `data-rcp-asof`,
-  which stubs lack, so no useless "Rafraîchir" button appears on them. Keep the
-  contract in sync across `build_stubs`/`load_cap_meta`/`_stub_content`/
-  `_load_ema_links` (build.py) and `extract_ema_pdf` + the manifest `ema_pdf`
-  field (scrape-rcp.py), the `{{HEADEXTRA}}` slot in `src/rcp.html`, the
-  `eu`-flag branch in `src/search.js`, the asof gate in `src/app-init.js`, and
-  `.rcp-stub`/`.stub-*` in `style.css`.
-  This is **phase 1** (findability + a pointer to the EMA); the EMA link is now
-  the exact French `product-information` PDF for any stub whose CIS has been
-  scraped (harvested from the ANSM page, not fetched from the EMA), falling back
-  to a brand search otherwise. A later **phase 2** could pull that SmPC PDF into a
-  real on-site overlay.
+  which stubs lack (but a full page bakes), so the "Rafraîchir" button appears on
+  full pages and not on stubs. Keep the stub contract in sync across
+  `build_stubs`/`load_cap_meta`/`_stub_content`/`_load_ema_links` (build.py) and
+  `extract_ema_pdf` + the manifest `ema_pdf` field (scrape-rcp.py), the
+  `{{HEADEXTRA}}` slot in `src/rcp.html`, the `eu`-flag branch in `src/search.js`,
+  the asof gate in `src/app-init.js`, and `.rcp-stub`/`.stub-*` in `style.css`.
+- **EMA SmPC conversion, the `/eu/` full page (phase 2, done).** `ema_pdf.py`
+  (PEP 723, `pymupdf`/fitz, pure + import-safe) converts an EMA
+  product-information PDF into ONE self-contained HTML blob wrapped in the SAME
+  `<div id="textDocument">` envelope the ANSM overlays use: `convert(pdf_bytes)`
+  reflows text into the QRD-numbered `AmmAnnexeTitre*` headings the site already
+  styles, rebuilds real `<table>`s (`find_tables`), embeds meaningful figures
+  base64 (dropping tiny pictograms, transcoding to JPEG/PNG, downscaling), groups
+  the doc into collapsible `<details class="ema-annexe">` blocks (the SmPC open),
+  and reads the capture date from the PDF `ModDate` (else `CreationDate`).
+  `scrape-ema.py` (PEP 723; imports scrape-rcp.py + ema_pdf.py) is the EMA
+  counterpart of `scrape-rcp.py`: it reads the `ema_pdf` links scrape-rcp.py
+  harvested into the ANSM manifest, fetches each PDF politely, and writes one
+  overlay per drug at `data/eu/<cis>.html[.gz]` (its OWN manifest,
+  `data/.scrape-ema-manifest.json`, so the EMA TTL/last_fetch never collides with
+  the ANSM one). It stays DRY by importing scrape-rcp.py's manifest/queue/overlay
+  helpers (parameterised by path/dir) rather than re-implementing them. The
+  overlay wrapper bakes three self-describing facts so build stays
+  overlay-self-contained (no EMA-manifest read at build): `data-ema-date` (the
+  ModDate), `data-ema-fetched` (OUR capture date), `data-ema-pdf` (the source PDF
+  URL). `build.render_eu_page(cis, overlay, meta, tpl, pdf_fallback)` is the
+  single-page `/eu/` renderer (the counterpart of `render_record`), reused by BOTH
+  `build_stubs` (batch) and the refresh service (on-demand). Its freshness banner
+  mirrors an ANSM page's two dates: the ModDate is the "à jour au" headline
+  (`data-rcp-ansm`) and OUR fetch date the "vérifiée le" line + refresh key
+  (`data-rcp-asof`); keying the refresh off the fetch date (not the ModDate)
+  makes a refresh detectable even when the EMA PDF is unchanged (the common case).
+  It also bakes two source buttons (direct PDF + EMA search). Keep the /eu/
+  full-page contract in sync across `ema_pdf.convert`/`_overlay_html`
+  (scrape-ema.py), `render_eu_page`/`_eu_date`/`_eu_fetched`/`_eu_pdf`/`_eu_toc`
+  (build.py), and `.rcp-eu`/`.ema-annexe`/`figure` in `style.css`. The EMA link
+  is a search only as a *fallback*; a fetched page links the exact PDF. **NOTHING
+  is fetched from the EMA at build time** (the site stays 100% static); the PDF is
+  fetched only by `scrape-ema.py` or the refresh service's EMA lane.
 - **Precompression (.gz/.br) is baked at build time** so Caddy spends zero CPU
   compressing. `compress()` writes both siblings; the Caddyfile uses
   `precompressed br gzip`.
@@ -339,17 +403,27 @@ uv run scrape-rcp.py --limit 60   # OPTIONAL manual/one-time bulk scrape into da
                                   # env: RCP_OVERLAY_GZIP (gzip overlays, default on),
                                   # RCP_SCRAPE_RATE_SECONDS (base gap between fetches);
                                   # logs a progress bar + ETA and the trigger (user/timer)
-uv run build.py           # build ./dist from ./data (overlay wins over the 2022 CSV)
+uv run scrape-ema.py --limit 60   # OPTIONAL bulk scrape of EMA product-information PDFs into
+                                  # data/eu/ overlays (converted to HTML by ema_pdf.py). Reads the
+                                  # ema_pdf links scrape-rcp.py harvested; own manifest
+                                  # data/.scrape-ema-manifest.json. The refresh service's EMA crawler
+                                  # does routine freshening; use this for a first seed / ad-hoc batch.
+uv run build.py           # build ./dist from ./data (overlay wins over the 2022 CSV; a data/eu
+                          #  overlay makes /eu/<cis> a full converted page instead of a stub)
 uv run refresh-service.py # optional: run the refresh API on :8460 (behind Caddy /api/*)
-                          # runs a perpetual frequency-ordered crawler + on-demand button/auto refreshes
+                          # runs TWO perpetual frequency-ordered crawlers (ANSM + EMA /eu/) +
+                          #  on-demand button/auto refreshes for both
                           # knobs (env): REFRESH_RATE_SECONDS (default 120), REFRESH_CRAWL (1=on) +
-                          # REFRESH_CRAWL_TTL_DAYS (365), REFRESH_LOG_LEVEL (INFO, health never logged);
-                          # GET /api/stats returns crawl counters + a crawl gauge
+                          # REFRESH_CRAWL_TTL_DAYS (365); EMA lane REFRESH_EMA_CRAWL (1=on) +
+                          # REFRESH_EMA_RATE_SECONDS (300) + REFRESH_EMA_CRAWL_TTL_DAYS (180);
+                          # REFRESH_LOG_LEVEL (INFO, health never logged);
+                          # GET /api/stats returns crawl counters + crawl (ANSM) + crawl_eu gauges
 cp docker/env.example docker/.env                      # optional: umami analytics / DEV banner / refresh knobs
 docker compose -f docker/docker-compose.yml up -d      # serve ./dist on :8459 + refresh service (read-only, hardened)
 docker compose -f docker/docker-compose.yml up --build # after changing Caddyfile/compose/refresh.Dockerfile
-                                                       # OR the scripts baked into the refresh image
-                                                       # (build.py / scrape-rcp.py / refresh-service.py / bdpm.py / src/rcp.html):
+                                                       # OR the scripts baked into the refresh image (build.py /
+                                                       # scrape-rcp.py / scrape-ema.py / ema_pdf.py /
+                                                       # refresh-service.py / bdpm.py / src/rcp.html):
                                                        # a plain `up` reuses the old image and ships stale code
 ```
 
@@ -390,19 +464,23 @@ Restart is not needed (Caddy reads the mounted dir live), but a
   `refresh`, `docker/refresh.Dockerfile`), kept apart from `web` precisely so the
   web server can stay fully read-only. It is `read_only: true`, `cap_drop: ALL`,
   `no-new-privileges`, tmpfs `/tmp`, and is NOT published to the host (no `ports:`);
-  it is only reachable through Caddy's `/api/*` proxy. Its ONLY writable mounts are
-  the three narrow paths it must write (`data/rcp`, `dist/rcp`, and the
-  `data/.scrape-manifest.json` file); everything else is mounted read-only: the
+  it is only reachable through Caddy's `/api/*` proxy. Its writable mounts are the
+  narrow paths it must write, in two matching triples (one per lane): the ANSM lane
+  writes `data/rcp`, `dist/rcp`, and the `data/.scrape-manifest.json` file; the EMA
+  `/eu/` lane writes `data/eu`, `dist/eu`, and the SEPARATE
+  `data/.scrape-ema-manifest.json` file. Everything else is mounted read-only: the
   CIS->name map (`data/CIS_bdpm.txt`) plus the backlink-index inputs
-  (`data/CIS_COMPO_bdpm.txt`, `data/CIS_GENER_bdpm.txt`, `data/drugs_frequency.jsonl`).
-  Note the single-file mounts (`data/.scrape-manifest.json`, `data/CIS_bdpm.txt`,
+  (`data/CIS_COMPO_bdpm.txt`, `data/CIS_GENER_bdpm.txt`, `data/drugs_frequency.jsonl`),
+  which the EMA lane also reuses for its cap-meta + crawl ordering.
+  Note the single-file mounts (both manifests, `data/CIS_bdpm.txt`,
   and those three backlink files) must exist as real files on the host before `up`,
   else Docker auto-creates a *directory* in their place. The manifest still crashes
   the service if it is a directory, but the CIS_bdpm/COMPO/GENER/frequency reads are
   now `is_file`-guarded (`load_names` tolerates it; `build_xref_index` /
   `bdpm.column_tokens` degrade to fewer/no backlinks) rather than raising
   IsADirectoryError. `deploy.sh` handles all of them (heals a stray directory, writes
-  `{}` for the manifest, and rsyncs `CIS_bdpm.txt` + the three backlink files since
+  `{}` for both manifests, `mkdir`s `data/eu`, syncs `data/eu` overlays up/down like
+  `data/rcp`, and rsyncs `CIS_bdpm.txt` + the three backlink files since
   the main rsync excludes `/data`). It runs as
   `${REFRESH_UID:-1000}:${REFRESH_GID:-1000}` so
   the overlays and rebuilt pages it writes stay owned by the host user (clean
@@ -420,8 +498,10 @@ Restart is not needed (Caddy reads the mounted dir live), but a
   The refresh image's build context is the repo ROOT (compose `context: ..`), so a
   root `.dockerignore` is REQUIRED to exclude `dist/` (~720M) and `data/` (~260M);
   without it every `up --build` ships ~1GB to the daemon and can fail the build on a
-  small VPS ("no space left on device"), leaving no containers. The Dockerfile only
-  needs `build.py` / `scrape-rcp.py` / `refresh-service.py` / `bdpm.py` / `src/rcp.html`.
+  small VPS ("no space left on device"), leaving no containers. The Dockerfile bakes
+  `build.py` / `scrape-rcp.py` / `scrape-ema.py` / `ema_pdf.py` / `refresh-service.py`
+  / `bdpm.py` / `src/rcp.html`, and pip-installs `pymupdf` (fitz) alongside the other
+  deps because `ema_pdf.py` needs it for the EMA PDF conversion.
 
 ## Gotchas
 

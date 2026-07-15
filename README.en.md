@@ -42,10 +42,12 @@ for-profit medicine sites.
 - `dist/rcp/<cis>-<slug>.html`: one cleaned page per medicine, with a sidebar
   table of contents ("Sommaire") to jump between sections
 - `dist/eu/<cis>-<slug>.html`: for centrally-authorized medicines (whose RCP is
-  published by the EMA, not the ANSM, e.g. Abilify), a small landing page that
-  points to the official RCP on the EMA site (the exact PDF when the ANSM page
-  links it, otherwise an EMA search) and to any equivalent generics available
-  here. This keeps them findable through the search
+  published by the EMA, not the ANSM, e.g. Abilify). When the EMA
+  product-information PDF has been fetched (`scrape-ema.py`, converted to clean
+  HTML by `ema_pdf.py`), it shows the **full converted RCP**, with a direct link to
+  the official EMA PDF at the top of the page; otherwise a lightweight landing page
+  that points to the official RCP on the EMA site and to any equivalent generics
+  available here. Either way they stay findable through the search
 - `dist/search-index.json`: consumed by the client-side search
 - `dist/a-propos.html`: the "About" page
 - `style.css`, `search.js`, and a `.gz`/`.br` sibling for every text file
@@ -93,6 +95,8 @@ the current official text, so its age alone is not staleness.
 
 ```bash
 uv run scrape-rcp.py --limit 60   # refresh 60 drugs (most-read first)
+uv run scrape-ema.py --limit 60   # fetch + convert EMA PDFs for centrally-authorized
+                                  # drugs into full /eu/ pages (optional)
 uv run build.py                    # rebuild (incremental: only changes)
 ```
 
@@ -134,6 +138,13 @@ of waiting behind the crawler's slow trickle (`REFRESH_RATE_SECONDS`, ~2 min); b
 lanes stay serial and gentle. It keeps crawl statistics by trigger (button /
 automatic / crawler) available at `GET /api/stats`. Tuning (`REFRESH_*`) lives in
 `docker/.env`; see `docker/env.example`.
+
+The same service also handles the `/eu/` pages of centrally-authorized drugs, through
+a **separate EMA lane** (a "Rafraîchir" button on a `/eu/` page plus a second crawler)
+that fetches the EMA PDF, converts it and rebuilds the page. This lane has its own
+knobs (`REFRESH_EMA_CRAWL`, `REFRESH_EMA_RATE_SECONDS` at 300 s by default since the
+EMA is stricter, `REFRESH_EMA_CRAWL_TTL_DAYS` at 180 days) and its own manifest,
+independent of the ANSM lane.
 
 ## Data source and licence
 

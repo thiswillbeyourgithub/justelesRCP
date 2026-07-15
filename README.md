@@ -44,11 +44,13 @@ ANSM / BDPM. Conçu comme une alternative légère aux sites de médicaments len
 - `dist/rcp/<cis>-<slug>.html` : une page nettoyée par médicament, avec une table
   des matières latérale (« Sommaire ») pour naviguer entre les rubriques
 - `dist/eu/<cis>-<slug>.html` : pour les médicaments à AMM européenne centralisée
-  (dont le RCP est publié par l'EMA et non par l'ANSM, ex. Abilify), une page
-  d'aiguillage qui renvoie vers le RCP officiel sur le site de l'EMA (le PDF exact
-  quand la page ANSM le référence, sinon une recherche EMA) et vers les
-  génériques équivalents présents ici. Ils restent ainsi trouvables via la
-  recherche
+  (dont le RCP est publié par l'EMA et non par l'ANSM, ex. Abilify). Quand le PDF
+  d'informations produit de l'EMA a été récupéré (`scrape-ema.py`, converti en HTML
+  propre par `ema_pdf.py`), c'est le **RCP complet converti** qui est affiché, avec
+  un lien direct vers le PDF officiel de l'EMA en haut de page ; sinon, une page
+  d'aiguillage légère qui renvoie vers le RCP officiel sur le site de l'EMA et vers
+  les génériques équivalents présents ici. Dans les deux cas ils restent trouvables
+  via la recherche
 - `dist/search-index.json` : consommé par la recherche côté client
 - `dist/a-propos.html` : la page « À propos »
 - `style.css`, `search.js`, et un jumeau `.gz`/`.br` pour chaque fichier texte
@@ -101,6 +103,8 @@ l'obsolescence.
 
 ```bash
 uv run scrape-rcp.py --limit 60   # rafraîchit 60 médicaments (les plus consultés d'abord)
+uv run scrape-ema.py --limit 60   # récupère + convertit les PDF EMA des médicaments à AMM
+                                  # centralisée en pages /eu/ complètes (facultatif)
 uv run build.py                    # régénère (incrémental : seuls les changements)
 ```
 
@@ -148,6 +152,13 @@ filet lent du crawler (`REFRESH_RATE_SECONDS`, ~2 min) ; les deux voies restent
 séquentielles et douces. Il tient des statistiques de crawl par
 origine (bouton / automatique / crawler) consultables via `GET /api/stats`. Les
 réglages (`REFRESH_*`) sont dans `docker/.env` ; voir `docker/env.example`.
+
+Le même service gère aussi les pages `/eu/` des médicaments à AMM centralisée, via
+une **voie EMA distincte** (bouton « Rafraîchir » sur une page `/eu/` et un second
+crawler) qui récupère le PDF de l'EMA, le convertit et régénère la page. Cette voie
+a ses propres réglages (`REFRESH_EMA_CRAWL`, `REFRESH_EMA_RATE_SECONDS` à 300 s par
+défaut car l'EMA est plus stricte, `REFRESH_EMA_CRAWL_TTL_DAYS` à 180 jours) et son
+propre manifeste, indépendants de la voie ANSM.
 
 ## Source des données et licence
 
