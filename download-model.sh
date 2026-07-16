@@ -12,33 +12,60 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-# @huggingface/transformers bundles onnxruntime-web, so the one npm tarball gives us
-# both the browser ESM entry and the wasm runtime. Keep in sync with the RUNTIME_MODEL
-# in src/rcp-semsearch.js and EMBED_MODEL in embed-rcp.py (same weights, ONNX build).
+# @huggingface/transformers ships the browser JS (transformers.min.js) but NOT the
+# heavy wasm binaries; those live in its onnxruntime-web dependency. So we pull two
+# npm tarballs: transformers for the JS entry, onnxruntime-web for the wasm runtime.
+# ORT_VERSION MUST match the onnxruntime-web version transformers pins (the wasm has
+# to match the JS glue bundled in transformers.min.js), so bump both together. Keep
+# the model in sync with RUNTIME_MODEL (src/rcp-semsearch.js) + EMBED_MODEL
+# (embed-rcp.py): the baked passage vectors and the runtime query vector must come
+# from the same weights.
 TRANSFORMERS_VERSION="4.2.0"
+ORT_VERSION="1.26.0-dev.20260416-b7804b056c"   # == @huggingface/transformers@4.2.0's onnxruntime-web pin
 MODEL_REPO="Xenova/multilingual-e5-small"
 HF_BASE="https://huggingface.co/${MODEL_REPO}/resolve/main"
-NPM_TARBALL="https://registry.npmjs.org/@huggingface/transformers/-/transformers-${TRANSFORMERS_VERSION}.tgz"
+TRANSFORMERS_TARBALL="https://registry.npmjs.org/@huggingface/transformers/-/transformers-${TRANSFORMERS_VERSION}.tgz"
+ORT_TARBALL="https://registry.npmjs.org/onnxruntime-web/-/onnxruntime-web-${ORT_VERSION}.tgz"
 
 mkdir -p vendor/ort "models/${MODEL_REPO}/onnx"
 
-# 1. transformers.js + the onnxruntime-web wasm it needs, from the npm tarball. We
-#    take the browser ESM entry (transformers.min.js, imported by rcp-semsearch.js)
-#    plus the single-thread CPU wasm runtime and its asyncify sibling (belt-and-braces
-#    for the proxy path; rcp-semsearch.js sets numThreads=1 + proxy=false).
+# The wasm MUST be served from our own origin: rcp-semsearch.js points ort's
+# wasmPaths at /vendor/ort/ and never falls back to a CDN, so an incomplete vendor/
+# breaks the offline guarantee. Each file is checked INDIVIDUALLY (not gated behind
+# one another) so a re-run after a partial download self-heals.
+
+# 1a. transformers.js browser ESM entry (imported by rcp-semsearch.js), from the
+#     @huggingface/transformers tarball. Small (~0.5 MB); the wasm is NOT in here.
 if [ ! -f vendor/transformers.min.js ]; then
   echo "Downloading @huggingface/transformers@${TRANSFORMERS_VERSION} (npm)..."
   tmp="$(mktemp -d)"
   trap 'rm -rf "$tmp"' EXIT
-  wget -O "$tmp/tf.tgz" "$NPM_TARBALL"
+  wget -O "$tmp/tf.tgz" "$TRANSFORMERS_TARBALL"
   tar -xzf "$tmp/tf.tgz" -C "$tmp"   # -> $tmp/package/dist/...
-  cp "$tmp/package/dist/transformers.min.js" vendor/
-  for f in ort-wasm-simd-threaded.wasm ort-wasm-simd-threaded.mjs \
-           ort-wasm-simd-threaded.asyncify.wasm ort-wasm-simd-threaded.asyncify.mjs; do
-    cp "$tmp/package/dist/$f" vendor/ort/
+  cp -f "$tmp/package/dist/transformers.min.js" vendor/
+  rm -rf "$tmp"; trap - EXIT
+  echo "  vendor/transformers.min.js ready."
+fi
+
+# 1b. The onnxruntime-web wasm runtime that transformers.min.js loads at run time:
+#     the single-thread CPU build plus its asyncify sibling (belt-and-braces for the
+#     proxy path; rcp-semsearch.js sets numThreads=1 + proxy=false). ~36 MB total.
+#     These are the exact basenames transformers.min.js references from wasmPaths.
+ORT_FILES="ort-wasm-simd-threaded.wasm ort-wasm-simd-threaded.mjs \
+           ort-wasm-simd-threaded.asyncify.wasm ort-wasm-simd-threaded.asyncify.mjs"
+ort_need=0
+for f in $ORT_FILES; do [ -f "vendor/ort/$f" ] || ort_need=1; done
+if [ "$ort_need" = 1 ]; then
+  echo "Downloading onnxruntime-web@${ORT_VERSION} wasm (npm)..."
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' EXIT
+  wget -O "$tmp/ort.tgz" "$ORT_TARBALL"
+  tar -xzf "$tmp/ort.tgz" -C "$tmp"   # -> $tmp/package/dist/...
+  for f in $ORT_FILES; do
+    cp -f "$tmp/package/dist/$f" vendor/ort/
   done
   rm -rf "$tmp"; trap - EXIT
-  echo "  vendor/transformers.min.js + vendor/ort/*.wasm ready."
+  echo "  vendor/ort/*.wasm ready."
 fi
 
 # 2. The ONNX encoder + tokenizer from the Hugging Face hub. The int8-quantised
