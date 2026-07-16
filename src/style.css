@@ -333,8 +333,10 @@ a:hover { text-decoration: underline; }
 .rcp .ema-annexe[id], .rcp .ema-annexe > summary[id] { scroll-margin-top: 4rem; }
 .rcp figure { margin: 1rem 0; text-align: center; }
 .rcp figure img { max-width: 100%; height: auto; }
-/* Two-level sidebar ToC on full /eu/ pages: the annex groups, with the SmPC's
-   numbered sections nested under it. */
+/* Nested sidebar ToC entries: on RCP pages the numbered subsections (4.1, 4.2...)
+   under their top-level section, and on full /eu/ pages the SmPC's sections under
+   their annex group. The descendant selector indents any further-nested level too
+   (if _TOC_DEPTH is bumped past 2). */
 .toc nav ol ol { padding-left: .9rem; }
 .toc nav ol ol a { font-size: .85em; opacity: .85; }
 

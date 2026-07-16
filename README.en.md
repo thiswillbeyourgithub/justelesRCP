@@ -44,7 +44,8 @@ for-profit medicine sites.
 
 - `dist/rcp/<cis>-<slug>.html`: one cleaned page per medicine, with a heading
   (drug / presentation name) at the top and a sidebar
-  table of contents ("Sommaire") to jump between sections
+  table of contents ("Sommaire") to jump between sections and their
+  subsections (4.1, 4.2, …)
 - `dist/eu/<cis>-<slug>.html`: for centrally-authorized medicines (whose RCP is
   published by the EMA, not the ANSM, e.g. Abilify). When the EMA
   product-information PDF has been fetched (`scrape-ema.py`, converted to clean

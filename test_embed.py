@@ -67,7 +67,7 @@ def test_quantize_roundtrip():
 
 def test_section_chunks_align_with_toc():
     _, _, toc, _ = build.clean_rcp(SAMPLE)
-    toc_ids = [sid for sid, _ in toc]
+    toc_ids = [sid for sid, _, _ in toc]
     # Two titled sections -> sec-0, sec-1; the empty-title heading gets no id.
     assert toc_ids == ["sec-0", "sec-1"], toc_ids
 
@@ -93,6 +93,51 @@ def test_empty_and_untitled():
     assert build.section_chunks("<div id='textDocument'></div>") == []
     assert build.section_chunks("not even html") == [] or True  # must not raise
     print("ok  test_empty_and_untitled")
+
+
+# A page with two top-level sections, the second carrying two numbered subsections
+# (AmmAnnexeTitre2) and one deeper heading (AmmAnnexeTitre3, excluded at depth 2).
+SAMPLE_NESTED = """<html><body><div id="textDocument">
+  <p class="AmmAnnexeTitre1">1. DENOMINATION DU MEDICAMENT</p>
+  <p>DOLIPRANE 1000 mg.</p>
+  <p class="AmmAnnexeTitre1">4. DONNEES CLINIQUES</p>
+  <p class="AmmAnnexeTitre2">4.1 Indications therapeutiques</p>
+  <p>Traitement de la douleur.</p>
+  <p class="AmmAnnexeTitre2">4.2 Posologie et mode d'administration</p>
+  <p class="AmmAnnexeTitre3">Posologie</p>
+  <p>1 comprime par prise.</p>
+</div></body></html>"""
+
+
+def test_nested_toc_keeps_sec_namespace_stable():
+    # The sidebar ToC now nests subsections, but the top-level sec-N ids (shared with
+    # the semantic-search .vec.json anchors) MUST NOT shift: sub-headings live in a
+    # separate sub-N namespace, so already-embedded vectors stay aligned.
+    _, cleaned, toc, _ = build.clean_rcp(SAMPLE_NESTED)
+
+    # Two roots, both top-level, numbered sec-0 / sec-1 exactly as depth-1 would.
+    assert [sid for sid, _, _ in toc] == ["sec-0", "sec-1"], toc
+    denom, clinique = toc
+    assert denom[1].startswith("1. DENOMINATION") and denom[2] == []
+    # The two AmmAnnexeTitre2 headings nest UNDER "4. DONNEES CLINIQUES" as sub-0/sub-1
+    # (depth 2 stops before the AmmAnnexeTitre3 "Posologie" fragment).
+    children = clinique[2]
+    assert [sid for sid, _, _ in children] == ["sub-0", "sub-1"], children
+    assert "4.1 Indications" in children[0][1]
+    assert all(grandkids == [] for _, _, grandkids in children)
+
+    # The rendered anchors exist for both namespaces, and the ToC HTML nests them.
+    assert 'id="sec-0"' in cleaned and 'id="sec-1"' in cleaned
+    assert 'id="sub-0"' in cleaned and 'id="sub-1"' in cleaned
+    html = build._toc_html(toc)
+    assert '<a href="#sub-0">' in html and "<ol><li><a" in html.replace("\n", "")
+
+    # section_chunks is depth-1: it anchors chunks ONLY to top-level sec-N, never the
+    # sub-N subsections, so the semantic-search contract is untouched by the ToC depth.
+    chunk_ids = {sid for sid, _, _ in build.section_chunks(SAMPLE_NESTED)}
+    assert chunk_ids <= {"sec-0", "sec-1"}, chunk_ids
+    assert not any(sid.startswith("sub-") for sid in chunk_ids), chunk_ids
+    print("ok  test_nested_toc_keeps_sec_namespace_stable")
 
 
 SAMPLE_TABLE = """<html><body><div id="textDocument">
@@ -322,6 +367,7 @@ if __name__ == "__main__":
     test_quantize_roundtrip()
     test_section_chunks_align_with_toc()
     test_empty_and_untitled()
+    test_nested_toc_keeps_sec_namespace_stable()
     test_table_rows_stay_intact()
     test_layout_table_falls_back_flat()
     test_eu_overlay_preserves_existing_ids()

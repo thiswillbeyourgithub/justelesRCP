@@ -51,7 +51,7 @@ from lxml import html as lxml_html
 
 import bdpm  # shared, pure-stdlib BDPM tokenising + frequency scoring
 
-__version__ = "0.26.0"  # single source of truth; bump patch/minor per change
+__version__ = "0.27.0"  # single source of truth; bump patch/minor per change
 
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
@@ -823,32 +823,71 @@ def _denomination(doc) -> str:
     return ""
 
 
-def _build_toc(inner) -> list[tuple[str, str]]:
-    """Give each top-level section (AmmAnnexeTitre1, e.g. '1. DENOMINATION ...')
-    a stable id and return [(id, title)] for the on-page table of contents.
+# Depth of the sidebar table of contents. 1 = top-level sections only (the
+# original behaviour: '1. DENOMINATION DU MEDICAMENT', '4. DONNEES CLINIQUES'...);
+# 2 also nests the numbered subsections ('4.1 Indications', '4.2 Posologie', '4.3
+# Contre-indications'...) beneath them; 3/4 would additionally list the deeper,
+# mostly UNNUMBERED fragments ('Posologie', 'Grossesse'...), which a typical RCP
+# has by the dozen and would bury the ToC, so 2 is the sweet spot. Purely
+# cosmetic: bumping it re-renders every page on the next build but needs NO
+# re-scrape (all four heading levels are already in the stored ANSM HTML).
+_TOC_DEPTH = 2
 
-    Mutates the tree in place (adds id="sec-N"), so the ids land in the rendered
-    HTML and the sidebar links resolve to them.
+# One (possibly nested) ToC entry: (anchor id, heading text, child entries).
+TocEntry = tuple[str, str, list]
+
+
+def _build_toc(inner, depth: int = _TOC_DEPTH) -> list[TocEntry]:
+    """Give each heading (AmmAnnexeTitre1..``depth``) a stable id and return the
+    nested [(id, title, children)] tree for the on-page table of contents.
+
+    Mutates the tree in place so the ids land in the rendered HTML and the sidebar
+    links resolve to them. Top-level (AmmAnnexeTitre1) headings keep the 0-based
+    ``sec-N`` ids that section_chunks / the semantic-search .vec.json anchors also
+    use, so those NEVER shift when ``depth`` changes; deeper headings get a
+    separate ``sub-N`` namespace. ``depth=1`` reproduces the original flat,
+    top-level-only tree (used by section_chunks, which ignores sub-headings).
+    Empty-title headings are skipped (assigned no id, consume no number).
     """
-    toc: list[tuple[str, str]] = []
-    for el in inner.xpath(".//*[contains(@class, 'AmmAnnexeTitre1')]"):
+    sel = " or ".join(
+        f"contains(@class, 'AmmAnnexeTitre{lvl}')" for lvl in range(1, depth + 1)
+    )
+    roots: list[TocEntry] = []
+    stack: list[tuple[int, list]] = []  # (level, children list) of the open ancestors
+    n_top = n_sub = 0
+    for el in inner.xpath(f".//*[{sel}]"):
+        cls = el.get("class") or ""
+        level = next(
+            (lvl for lvl in range(1, depth + 1) if f"AmmAnnexeTitre{lvl}" in cls), None
+        )
+        if level is None:
+            continue
         title = " ".join(el.text_content().split())
         if not title:
             continue
-        sec_id = f"sec-{len(toc)}"
+        if level == 1:
+            sec_id = f"sec-{n_top}"
+            n_top += 1
+        else:
+            sec_id = f"sub-{n_sub}"
+            n_sub += 1
         el.set("id", sec_id)
-        toc.append((sec_id, title))
-    return toc
+        entry: TocEntry = (sec_id, title, [])
+        while stack and stack[-1][0] >= level:  # unwind to this heading's parent
+            stack.pop()
+        (stack[-1][1] if stack else roots).append(entry)
+        stack.append((level, entry[2]))
+    return roots
 
 
 def clean_rcp(
     raw: str, cis: str = "", xref: dict[str, tuple[str, str, str]] | None = None
-) -> tuple[str, str, list[tuple[str, str]], list[tuple[str, str]]]:
+) -> tuple[str, str, list[TocEntry], list[tuple[str, str]]]:
     """Return (denomination, cleaned_inner_html, toc, xref_links) for one RCP.
 
     Keeps the semantic structure (section anchors, headings, paragraphs) but
     removes ANSM decoration and inline font styling so style.css can reskin it.
-    The toc is the list of top-level sections for the sidebar navigation; when an
+    The toc is the nested section tree for the sidebar navigation; when an
     ``xref`` index is given, mentions of other drugs/substances in the body are
     wrapped in <a> links (skipping ``cis``'s own page) and the distinct targets
     are returned as ``xref_links`` for the "Médicaments liés" section.
@@ -987,9 +1026,11 @@ def section_chunks(raw: str, cis: str = "") -> list[tuple[str, str, str]]:
     # the rendered page. A converted /eu/ overlay ALREADY carries sec-N ids from
     # ema_pdf (which render_eu_page keeps verbatim, and its ids are QRD-numbered, not
     # a 0-based run), so re-running _build_toc would renumber them and desync the
-    # chunk anchors from the page. Only assign when they're absent.
+    # chunk anchors from the page. Only assign when they're absent. depth=1 so we
+    # touch ONLY the top-level sec-N ids these chunks anchor to (sub-headings are
+    # never embedded), keeping this independent of the sidebar ToC's _TOC_DEPTH.
     if not any(h.get("id") for h in headings):
-        _build_toc(inner)  # assigns id="sec-N"; empty-title headings get none
+        _build_toc(inner, depth=1)  # assigns id="sec-N"; empty-title headings get none
     chunks: list[tuple[str, str, str]] = []
 
     def _add(sec_id: str, title: str, body: str) -> bool:
@@ -1356,15 +1397,23 @@ def _init_worker(
     _SUBSTANCES = substances or {}
 
 
-def _toc_html(toc: list[tuple[str, str]]) -> str:
-    """Sidebar navigation for one RCP: a collapsible 'Sommaire' listing the
-    top-level sections, plus the runtime version slot. Empty string when a
-    document exposes no sections (nothing to navigate)."""
+def _toc_ol_html(entries: list[TocEntry]) -> str:
+    """Render nested ToC entries as a (recursively nested) <ol> of jump links."""
+    lis = "".join(
+        f'<li><a href="#{sec_id}">{_esc(title)}</a>'
+        f'{_toc_ol_html(children) if children else ""}</li>'
+        for sec_id, title, children in entries
+    )
+    return f"<ol>{lis}</ol>"
+
+
+def _toc_html(toc: list[TocEntry]) -> str:
+    """Sidebar navigation for one page: a collapsible 'Sommaire' listing the
+    sections (nested to _TOC_DEPTH on RCP pages, annexe > SmPC-section on full
+    /eu/ pages), plus the runtime version slot. Empty string when a document
+    exposes no sections (nothing to navigate). Shared by RCP and /eu/ pages."""
     if not toc:
         return ""
-    links = "".join(
-        f'<li><a href="#{sec_id}">{_esc(title)}</a></li>' for sec_id, title in toc
-    )
     # No `open`: ships collapsed so on phones it doesn't bury the top of the
     # document. On wide screens style.css reveals the content regardless of the
     # open state (permanent sidebar); src/toc.js snaps it shut after a section
@@ -1372,7 +1421,7 @@ def _toc_html(toc: list[tuple[str, str]]) -> str:
     return (
         '<details class="toc">'
         "<summary>Sommaire</summary>"
-        f'<nav aria-label="Sommaire"><ol>{links}</ol></nav>'
+        f'<nav aria-label="Sommaire">{_toc_ol_html(toc)}</nav>'
         '<p class="ver" data-app-version></p>'
         "</details>"
     )
@@ -1768,46 +1817,27 @@ def _eu_pdf_url(overlay_html: str, name: str, fallback: str = "") -> str:
     return _eu_pdf(overlay_html) or fallback or _ema_search_url(name)
 
 
-def _eu_toc(overlay_html: str) -> list[tuple[str, str, list[tuple[str, str]]]]:
+def _eu_toc(overlay_html: str) -> list[TocEntry]:
     """Two-level ToC parsed from an EMA overlay: each collapsible ``<details>``
     group (its ``<summary id>``), with the numbered sections (``<h2 id>``) of the
-    open group (the SmPC) as children. Mirrors ema_pdf.convert's structure."""
+    open group (the SmPC) as children. Mirrors ema_pdf.convert's structure; the
+    nested (id, title, children) shape feeds the shared _toc_html renderer."""
     try:
         root = lxml_html.fromstring(overlay_html)
     except Exception:
         return []
-    groups = []
+    groups: list[TocEntry] = []
     for det in root.findall(".//details"):
         summ = det.find("summary")
         if summ is None or not summ.get("id"):
             continue
-        subs = []
+        subs: list[TocEntry] = []
         if det.get("open") is not None:  # only the open group (SmPC) lists sections
             for h in det.findall(".//h2"):
                 if h.get("id"):
-                    subs.append((h.get("id"), h.text_content().strip()))
+                    subs.append((h.get("id"), h.text_content().strip(), []))
         groups.append((summ.get("id"), summ.text_content().strip(), subs))
     return groups
-
-
-def _eu_toc_html(groups: list[tuple[str, str, list[tuple[str, str]]]]) -> str:
-    """Sidebar ToC for a full /eu/ page: same ``<details class="toc">`` shell as
-    _toc_html but two levels deep (annexes > SmPC sections)."""
-    if not groups:
-        return ""
-    lis = []
-    for sid, label, subs in groups:
-        sub = ""
-        if subs:
-            sub = "<ol>" + "".join(
-                f'<li><a href="#{s}">{_esc(lbl)}</a></li>' for s, lbl in subs
-            ) + "</ol>"
-        lis.append(f'<li><a href="#{sid}">{_esc(label)}</a>{sub}</li>')
-    return (
-        '<details class="toc"><summary>Sommaire</summary>'
-        f'<nav aria-label="Sommaire"><ol>{"".join(lis)}</ol></nav>'
-        '<p class="ver" data-app-version></p></details>'
-    )
 
 
 def _eu_full_content(name: str, eu: str, holder: str, overlay_html: str) -> str:
@@ -1866,7 +1896,7 @@ def render_eu_page(cis: str, overlay_html: str, meta: tuple[str, str, str] | Non
         page_tpl.replace("{{TITLE}}", _esc(name))
         .replace("{{HEADEXTRA}}", '<meta name="robots" content="noindex">')
         .replace("{{CIS}}", _esc(cis))
-        .replace("{{TOC}}", _eu_toc_html(_eu_toc(overlay_html)))
+        .replace("{{TOC}}", _toc_html(_eu_toc(overlay_html)))
         .replace("{{ASOF}}", asof)
         .replace("{{CONTENT}}", _eu_full_content(name, eu, holder, overlay_html))
         .replace("{{XREF}}", "")

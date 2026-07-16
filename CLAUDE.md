@@ -125,11 +125,26 @@ Key facts that aren't obvious from a single file:
   `AmmDenomination`). `clean_rcp()` strips decoration (BackToTop images,
   inline `font-*` styles, scripts) but preserves those classes; `style.css`
   restyles them. If you change class names in one place, change both.
-- **Each RCP page has a sidebar table of contents.** `clean_rcp()` assigns
-  `id="sec-N"` to every top-level `AmmAnnexeTitre1` heading and returns the
-  section list; `render_record()` emits a `<details class="toc">` of jump links
-  (plus the version slot) into `{{TOC}}`. It is a sticky sidebar on wide screens
-  and a collapsible block on phones (see `.rcp-layout`/`.toc` in `style.css`).
+- **Each RCP page has a sidebar table of contents.** `_build_toc()` walks the
+  headings down to `_TOC_DEPTH` (default 2: top-level `AmmAnnexeTitre1` plus the
+  numbered `AmmAnnexeTitre2` subsections like "4.1 Indications", "4.2 Posologie")
+  and returns a NESTED `(id, title, children)` tree; `render_record()` emits a
+  `<details class="toc">` of jump links (plus the version slot) into `{{TOC}}` via
+  the shared, recursive `_toc_html`/`_toc_ol_html`. It is a sticky sidebar on wide
+  screens and a collapsible block on phones (see `.rcp-layout`/`.toc` in
+  `style.css`, whose `.toc nav ol ol` indents the nested level). CRITICAL id
+  contract: **only top-level headings get the 0-based `sec-N` ids**; deeper
+  headings get a SEPARATE `sub-N` namespace, so the `sec-N` anchors that
+  `section_chunks` / the semantic-search `.vec.json` share NEVER shift when
+  `_TOC_DEPTH` changes (already-embedded vectors stay aligned). `_TOC_DEPTH` is a
+  purely cosmetic knob: bumping it re-renders pages on the next build but needs NO
+  re-scrape (all four ANSM heading levels are already in the stored HTML);
+  `section_chunks` deliberately calls `_build_toc(inner, depth=1)` so it is
+  independent of the ToC depth. The SAME `_toc_html` renders the full `/eu/`
+  pages, fed by `_eu_toc()` (annexe group > SmPC section, same nested shape). Keep
+  the contract in sync across `_build_toc`/`_toc_html`/`_toc_ol_html`/`_eu_toc`/
+  `_TOC_DEPTH` (build.py), the `{{TOC}}` slot in `src/rcp.html`, `src/toc.js`, and
+  `.toc` in `style.css`.
 - **Every page has an `<h1>` drug/presentation-name header** at the top, emitted
   from the shared template's `{{TITLE}}` slot (filled with the drug name by
   `render_record`, `render_eu_page` and the stub branch alike, `.rcp-title` in
