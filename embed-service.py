@@ -81,9 +81,10 @@ def _load_module(filename: str, name: str):
 build = _load_module("build.py", "build")          # segmentation + shared vec writer
 onnx_embed = _load_module("onnx_embed.py", "onnx_embed")  # warm ONNX encoder
 
-_CIS_RE = re.compile(r"^\d{8}$")
-# Overlay lanes: (dist subdir, overlay dir). A CIS renders under exactly one.
-_LANES = (("rcp", build.RCP_OVERLAY_DIR), ("eu", build.EU_OVERLAY_DIR))
+# Overlay lanes (build.OVERLAY_LANES) and the CIS matcher (build.CIS_RE) are defined
+# once in build.py; reuse them here rather than re-declaring. The reconcile sweep also
+# iterates build.iter_overlay_paths, so the "which overlays exist" logic lives in one
+# place.
 # src values a caller may pass on /api/sem/page; anything else is treated as "user".
 _SOURCES = {"user", "crawl"}
 
@@ -135,7 +136,7 @@ class Embedder:
         """(raw, subdir) for a CRAWLED page (non-empty overlay in data/rcp or data/eu),
         else None. A zero-byte overlay ("scraped, no RCP") and a baseline-only page both
         return None (not embeddable)."""
-        for subdir, odir in _LANES:
+        for subdir, odir in build.OVERLAY_LANES:
             path = build._overlay_path(cis, odir)
             if path is None:
                 continue
@@ -242,23 +243,15 @@ class Embedder:
         re-embeds mtime-fresh pages whose baked model differs from the current one, so
         a model swap isn't hidden by the mtime gate forever."""
         queued = 0
-        for subdir, odir in _LANES:
-            if not odir.is_dir():
+        for cis, ov, subdir in build.iter_overlay_paths():
+            page = self._dist_page(cis, subdir)
+            if page is None:
                 continue
-            seen: set[str] = set()
-            for ov in (*odir.glob("*.html"), *odir.glob("*.html.gz")):
-                cis = ov.name.split(".", 1)[0]
-                if cis in seen or not _CIS_RE.match(cis):
-                    continue
-                seen.add(cis)
-                page = self._dist_page(cis, subdir)
-                if page is None:
-                    continue
-                vec = self._vec_path(page)
-                if build.vec_is_fresh(vec, ov, self.model, check_model=check_model):
-                    continue
-                if self._enqueue(cis, "sweep", front=False) == "queued":
-                    queued += 1
+            vec = self._vec_path(page)
+            if build.vec_is_fresh(vec, ov, self.model, check_model=check_model):
+                continue
+            if self._enqueue(cis, "sweep", front=False) == "queued":
+                queued += 1
         return queued
 
     def _reconcile_loop(self) -> None:

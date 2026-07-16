@@ -537,9 +537,9 @@ Key facts that aren't obvious from a single file:
   `.vec.json` with the SAME `src_hash`, so offline and online vectors never disagree.
   `onnx_embed.RUNTIME_MODEL` (server) and the model `download-model.sh` fetches MUST
   stay the same weights (query and passage vectors must match). Keep the contract in
-  sync across `section_chunks`/`quantize_int8`/`raw_hash`/`iter_overlay_raw`/
-  `dist_page_for`/`read_vec_meta`/`vec_is_fresh`/`vec_payload`/`write_vec_json`/
-  `embed_page_to_vec`
+  sync across `section_chunks`/`quantize_int8`/`raw_hash`/`iter_overlay_paths`/
+  `iter_overlay_raw`/`dist_page_for`/`read_vec_meta`/`vec_is_fresh`/`vec_payload`/
+  `write_vec_json`/`embed_page_to_vec` (+ the shared `OVERLAY_LANES`/`CIS_RE`)
   (build.py), `onnx_embed.py`, `embed-service.py`, `embed-rcp.py`,
   `src/rcp-semsearch.js`, the `<script>` in `src/rcp.html`, `.semsearch*` in
   `style.css`, `download-model.sh`, the `/api/sem/*` route + strict CSP in

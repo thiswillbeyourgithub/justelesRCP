@@ -287,6 +287,37 @@ def test_vec_is_fresh_gate():
     print("ok  test_vec_is_fresh_gate")
 
 
+def test_overlay_iterators_agree():
+    # iter_overlay_paths (path-level, shared by the embed sweep) and iter_overlay_raw
+    # (content-level, shared by embed-rcp) must agree: raw yields exactly the non-empty
+    # subset of the valid-CIS overlays paths enumerates, from the same lanes. This is
+    # the single "which overlays exist" definition both the runtime and offline embed
+    # paths build on.
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        rcp = d / "rcp"; rcp.mkdir()
+        eu = d / "eu"; eu.mkdir()
+        (rcp / "11111111.html").write_text("<div id='textDocument'>a</div>")
+        (rcp / "22222222.html").write_text("")            # zero-byte body -> not in raw
+        (rcp / "notacis.html").write_text("<div>x</div>")  # non-CIS name -> skipped
+        (eu / "33333333.html").write_text("<div id='textDocument'>b</div>")
+        saved = build.OVERLAY_LANES
+        build.OVERLAY_LANES = (("rcp", rcp), ("eu", eu))
+        try:
+            paths = list(build.iter_overlay_paths())
+            raws = list(build.iter_overlay_raw())
+        finally:
+            build.OVERLAY_LANES = saved
+        # Every valid-CIS overlay file is enumerated (incl. the empty one); the non-CIS
+        # name is skipped.
+        assert {c for c, _, _ in paths} == {"11111111", "22222222", "33333333"}
+        # raw keeps only the NON-empty overlays, tagged with the right subdir.
+        assert {(c, s) for c, _, s in raws} == {("11111111", "rcp"), ("33333333", "eu")}
+        # ...and raw is a strict subset of paths (never a page paths didn't list).
+        assert {c for c, _, _ in raws} <= {c for c, _, _ in paths}
+    print("ok  test_overlay_iterators_agree")
+
+
 if __name__ == "__main__":
     test_quantize_roundtrip()
     test_section_chunks_align_with_toc()
@@ -298,4 +329,5 @@ if __name__ == "__main__":
     test_write_read_vec_meta_roundtrip()
     test_raw_hash_is_the_staleness_key()
     test_vec_is_fresh_gate()
+    test_overlay_iterators_agree()
     print("\nAll tests passed.")

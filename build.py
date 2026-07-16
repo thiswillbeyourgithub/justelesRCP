@@ -1201,7 +1201,12 @@ def write_vec_json(dist_path: Path, payload: dict) -> None:
 
 # --- semantic-search page resolution + one-page embed (shared by the embed service
 #     AND embed-rcp.py, so the runtime and the offline pre-bake never disagree) -----
-_VEC_LANES = (("rcp", RCP_OVERLAY_DIR), ("eu", EU_OVERLAY_DIR))
+# The two overlay lanes as (dist subdir, overlay dir). Public: the embed service reuses
+# it (via iter_overlay_paths / _overlay_for) instead of re-declaring its own copy.
+OVERLAY_LANES = (("rcp", RCP_OVERLAY_DIR), ("eu", EU_OVERLAY_DIR))
+# Canonical CIS matcher (an 8-digit code): the one Python definition, shared by the
+# overlay iterators below and the embed service (which imports build).
+CIS_RE = re.compile(r"^\d{8}$")
 
 
 def dist_page_for(cis: str, subdir: str) -> Path | None:
@@ -1260,6 +1265,28 @@ def vec_is_fresh(vec: Path, overlay: Path, model: str, *, check_model: bool) -> 
     return True
 
 
+def iter_overlay_paths():
+    """Yield ``(cis, path, subdir)`` for every overlay FILE: one per CIS in ``data/rcp``
+    (subdir ``"rcp"``) and ``data/eu`` (subdir ``"eu"``), taking the newest of the
+    plain/.gz pair (``_overlay_path``). This is the path-level enumeration (no content
+    read), the SINGLE source of "which overlays exist" shared by ``iter_overlay_raw``
+    (which then reads + keeps non-empty overlays) and the embed service's reconcile
+    sweep (which only needs the path to stat its mtime), so the two never disagree on
+    the set. NEVER touches the frozen 2022 baseline CSV."""
+    for subdir, odir in OVERLAY_LANES:
+        if not odir.is_dir():
+            continue
+        seen: set[str] = set()
+        for ov in sorted((*odir.glob("*.html"), *odir.glob("*.html.gz"))):
+            cis = ov.name.split(".", 1)[0]
+            if cis in seen or not CIS_RE.match(cis):
+                continue
+            seen.add(cis)
+            path = _overlay_path(cis, odir)
+            if path is not None:
+                yield cis, path, subdir
+
+
 def iter_overlay_raw():
     """Yield ``(cis, raw, subdir)`` for every CRAWLED page: a non-empty overlay in
     ``data/rcp`` (subdir ``"rcp"``) or ``data/eu`` (subdir ``"eu"``). Skips zero-byte
@@ -1267,21 +1294,10 @@ def iter_overlay_raw():
     the semantic-search index only ever covers fresh, re-scraped text. Shared by the
     embed service's sweep intent and embed-rcp.py's offline pre-bake so both embed the
     exact same set."""
-    for subdir, odir in _VEC_LANES:
-        if not odir.is_dir():
-            continue
-        seen: set[str] = set()
-        for ov in sorted((*odir.glob("*.html"), *odir.glob("*.html.gz"))):
-            cis = ov.name.split(".", 1)[0]
-            if cis in seen or not re.fullmatch(r"\d{8}", cis):
-                continue
-            seen.add(cis)
-            path = _overlay_path(cis, odir)
-            if path is None:
-                continue
-            raw = _read_overlay(path)
-            if raw.strip():
-                yield cis, raw, subdir
+    for cis, path, subdir in iter_overlay_paths():
+        raw = _read_overlay(path)
+        if raw.strip():
+            yield cis, raw, subdir
 
 
 def embed_page_to_vec(cis: str, raw: str, subdir: str, encoder, *,
