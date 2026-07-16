@@ -382,8 +382,23 @@ class _Handler(BaseHTTPRequestHandler):
             return
         self._send(404, {"error": "not found"})
 
+    def _content_length(self) -> int | None:
+        """Parsed Content-Length: 0 when absent, a clamped non-negative int when valid,
+        or None when the header is present but not a number (a malformed header should be
+        a clean 400, not an unhandled ValueError -> 500 traceback)."""
+        raw = self.headers.get("Content-Length")
+        if not raw:
+            return 0
+        try:
+            return max(0, int(raw))
+        except ValueError:
+            return None
+
     def _handle_query(self) -> None:
-        length = int(self.headers.get("Content-Length") or 0)
+        length = self._content_length()
+        if length is None:
+            self._send(400, {"error": "invalid content-length"})
+            return
         # Hard cap the raw body so a giant POST can't tie up the encoder.
         if length > 8192:
             self._send(413, {"error": "query too long"})
