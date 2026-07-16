@@ -327,8 +327,12 @@
       setStatus("Aucun passage pertinent.");
       return;
     }
-    setStatus("");
-    setCurrent(0, true);
+    // Do NOT auto-jump to the first hit: renderHits() has lightly highlighted every
+    // ranked passage in place; let the reader choose which one to view (click a
+    // result, or step with the prev/next navigator / Enter). `current` stays -1
+    // until they pick, so the counter shows the total, not a position.
+    counter.textContent = hits.length + (hits.length > 1 ? " résultats" : " résultat");
+    setStatus("Cliquez un passage, ou naviguez avec ‹ ›.");
   }
 
   // Find the block element for a hit: the paragraph within section `secId` whose text
@@ -442,7 +446,9 @@
 
   prevBtn.addEventListener("click", () => {
     if (!hits.length) return;
-    setCurrent(current - 1, true);
+    // From the unselected state (current = -1) "Précédent" goes to the LAST hit,
+    // not second-to-last, which a bare current-1 would land on.
+    setCurrent(current < 0 ? hits.length - 1 : current - 1, true);
     track("recherche-rcp-nav", { sens: "precedent" });
   });
   nextBtn.addEventListener("click", () => {

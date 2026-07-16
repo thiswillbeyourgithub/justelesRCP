@@ -557,10 +557,18 @@ Key facts that aren't obvious from a single file:
   `src/rcp-semsearch.js` gates on `.rcp[data-cis]` (skips `.rcp-stub`); on first open
   it `POST`s `/api/sem/page/<cis>`, polls `GET` until `embedded`, then fetches the
   `.vec.json`; typing (>= min chars, 250 ms debounce, `AbortController` cancels the
-  superseded embed) `POST`s the query, dequantises + cosine-ranks locally, highlights
-  the matched paragraph (`.semsearch-hit`/`.semsearch-current`) and steps through hits
-  with the nav bar. If the embed service is absent, `/api/sem/*` 502s and the box
-  degrades to "indisponible". **The offline pre-bake** `embed-rcp.py` (optional; warms
+  superseded embed) `POST`s the query, dequantises + cosine-ranks locally, then LIGHTLY
+  tints every ranked passage (`.semsearch-hit`) but does NOT auto-jump: `current` stays
+  `-1` and the reader picks a passage (click a result, or step the nav bar / Enter),
+  which promotes it to `.semsearch-current` and scrolls to it (`setCurrent(i, true)` is
+  the ONLY scroll path; `rank()` never scrolls). The box is `position: sticky` (like the
+  ToC), so a reader can search a long RCP without scrolling back up; its offset stacks
+  under the sticky top bar + ToC (phone `top: 7.2rem`, desktop `3.6rem`; `.semsearch` in
+  `style.css`), and its results list scrolls internally (`max-height: 40vh`) so the stuck
+  panel never outgrows the screen. Both the search box and the ToC use the native
+  `<details>` disclosure triangle as their collapse affordance (`list-style-position:
+  inside`), kept consistent on purpose. If the embed service is absent, `/api/sem/*` 502s
+  and the box degrades to "indisponible". **The offline pre-bake** `embed-rcp.py` (optional; warms
   the backlog before a first deploy) reuses the SAME `onnx_embed.Encoder` and
   `build.embed_page_to_vec` over `build.iter_overlay_raw()`, writing the SAME
   `.vec.json` with the SAME `src_hash`, so offline and online vectors never disagree.

@@ -142,7 +142,10 @@ a:hover { text-decoration: underline; }
   background: var(--card); padding: .2rem .7rem .6rem;
 }
 .toc > summary {
-  cursor: pointer; font-weight: 700; padding: .7rem .2rem; list-style: none;
+  /* Native disclosure triangle (▸/▾) as the collapse affordance, for consistency
+     with the search box's summary; ☰ stays as the topic glyph, mirroring the
+     search's 🔎. list-style-position: inside keeps the marker in the padding box. */
+  cursor: pointer; font-weight: 700; padding: .7rem .2rem; list-style-position: inside;
 }
 .toc > summary::-webkit-details-marker { display: none; }
 .toc > summary::before { content: "\2630\00a0"; opacity: .6; font-weight: 400; }
@@ -167,8 +170,10 @@ a:hover { text-decoration: underline; }
      and older Blink; `::details-content` handles Chrome 131+ (content-visibility). */
   .toc:not([open]) > *:not(summary) { display: revert; }
   .toc::details-content { content-visibility: visible; }
-  /* The toggle stays put but reads as a heading, not a control. */
-  .toc > summary { cursor: default; }
+  /* The toggle stays put but reads as a heading, not a control: no cursor, and
+     no disclosure triangle (the panel is permanently open here, so an arrow would
+     be misleading). ☰ stays. */
+  .toc > summary { cursor: default; list-style: none; }
 }
 
 /* Drug/presentation name header at the top of every page (RCP, full /eu/, stub);
@@ -217,9 +222,19 @@ a:hover { text-decoration: underline; }
    prev/next navigator. Built in JS and shaped like the .toc panel; the query is
    encoded server-side (embed-service.py), so nothing heavy loads in the browser. */
 .semsearch {
+  /* Sticky like the Sommaire, so a reader can search / step through hits without
+     scrolling back to the top of a long RCP. On phones it rides just under the
+     sticky Sommaire bar (top:3.2rem, ~2.8rem tall collapsed); on desktop it sits at
+     the top of the reading column (same offset as the sidebar ToC). Its results
+     list scrolls internally (below), so the stuck panel never outgrows the screen.
+     z-index below the ToC (5) and the top bar (10). The phone top (7.2rem) clears
+     the collapsed Sommaire bar, which sticks at 3.2rem and is ~3.9rem tall, so the
+     two ride as a clean two-bar stack. */
+  position: sticky; top: 7.2rem; z-index: 4;
   margin: 0 0 1.5rem; border: 1px solid var(--line); border-radius: .6rem;
   background: var(--card); padding: .2rem .7rem .5rem;
 }
+@media (min-width: 60rem) { .semsearch { top: 3.6rem; } }
 .semsearch > summary {
   cursor: pointer; font-weight: 600; padding: .5rem .3rem; list-style-position: inside;
 }
@@ -242,7 +257,11 @@ a:hover { text-decoration: underline; }
 }
 .semsearch-prev:hover, .semsearch-next:hover { background: var(--card); }
 .semsearch-counter { color: var(--muted); font-size: .85rem; margin: 0 auto; }
-.semsearch-results { list-style: none; margin: .4rem 0 .2rem; padding: 0; }
+.semsearch-results {
+  list-style: none; margin: .4rem 0 .2rem; padding: 0;
+  /* Bounded + scrollable so the sticky panel stays compact with many hits. */
+  max-height: 40vh; overflow-y: auto;
+}
 .semsearch-results li + li { border-top: 1px solid var(--line); }
 .semsearch-hit-link {
   display: block; width: 100%; box-sizing: border-box; text-align: left;
