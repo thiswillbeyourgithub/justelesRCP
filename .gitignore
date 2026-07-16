@@ -2,6 +2,12 @@
 /data/
 /dist/
 
+# Self-hosted semantic-search assets fetched by download-model.sh (~120 MB):
+# transformers.js + onnxruntime-web wasm, and the ONNX encoder. build.py mirrors
+# them into dist/ at build time; like data/, they are large and never committed.
+/vendor/
+/models/
+
 # Local, machine-specific Claude notes
 claude.local.md
 TODO.md
