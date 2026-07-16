@@ -213,8 +213,9 @@ a:hover { text-decoration: underline; }
 .rcp-refresh button:disabled { color: var(--muted); cursor: default; opacity: .7; }
 .rcp-refresh .msg { color: var(--muted); }
 /* Per-drug semantic search (src/rcp-semsearch.js): a collapsible box that asks the
-   reader for a natural-language question and jumps to the closest section. Built in
-   JS and shaped like the .toc panel; the heavy encoder loads only when it's opened. */
+   reader for a natural-language question and highlights the closest passages with a
+   prev/next navigator. Built in JS and shaped like the .toc panel; the query is
+   encoded server-side (embed-service.py), so nothing heavy loads in the browser. */
 .semsearch {
   margin: 0 0 1.5rem; border: 1px solid var(--line); border-radius: .6rem;
   background: var(--card); padding: .2rem .7rem .5rem;
@@ -232,18 +233,35 @@ a:hover { text-decoration: underline; }
 }
 .semsearch-input:focus { outline: 2px solid var(--accent); border-color: transparent; }
 .semsearch-status { color: var(--muted); font-size: .8rem; margin: .5rem .2rem 0; min-height: 1em; }
-.semsearch-results { list-style: none; margin: .6rem 0 .2rem; padding: 0; }
+/* Prev/next navigator across the ranked passages. */
+.semsearch-nav { display: flex; align-items: center; gap: .5rem; margin: .6rem .2rem .2rem; }
+.semsearch-nav[hidden] { display: none; }
+.semsearch-prev, .semsearch-next {
+  font: inherit; cursor: pointer; padding: .3rem .7rem;
+  border: 1px solid var(--line); border-radius: .4rem; background: var(--bg); color: var(--fg);
+}
+.semsearch-prev:hover, .semsearch-next:hover { background: var(--card); }
+.semsearch-counter { color: var(--muted); font-size: .85rem; margin: 0 auto; }
+.semsearch-results { list-style: none; margin: .4rem 0 .2rem; padding: 0; }
 .semsearch-results li + li { border-top: 1px solid var(--line); }
-.semsearch-hit-link { display: block; padding: .5rem .3rem; color: var(--fg); }
-.semsearch-hit-link:hover { background: var(--bg); text-decoration: none; }
+.semsearch-hit-link {
+  display: block; width: 100%; box-sizing: border-box; text-align: left;
+  font: inherit; cursor: pointer; padding: .5rem .3rem;
+  background: none; border: 0; color: var(--fg);
+}
+.semsearch-hit-link:hover { background: var(--bg); }
 .semsearch-hit-link strong { display: block; color: var(--accent); font-size: .92rem; }
 .semsearch-snippet { display: block; color: var(--muted); font-size: .82rem; margin-top: .15rem; }
-/* Transient highlight on the section a result jumps to (theme-aware via --accent;
-   if color-mix is unsupported the animation is simply ignored, no highlight). */
-.semsearch-flash { animation: semsearch-flash 2s ease-out; border-radius: .3rem; }
-@keyframes semsearch-flash {
-  from { background: color-mix(in srgb, var(--accent) 30%, transparent); }
-  to { background: transparent; }
+.semsearch-current-item .semsearch-hit-link { background: var(--bg); }
+.semsearch-current-item .semsearch-hit-link strong::before { content: "\25B8\00a0"; }
+/* Persistent highlight on the matched paragraph(s) in the RCP body: every ranked hit
+   gets a subtle tint, the active one a stronger tint + an accent bar and a scroll
+   margin so a sticky header doesn't hide it. Theme-aware via color-mix on --accent;
+   a browser without color-mix simply gets no tint (graceful). */
+.semsearch-hit { background: color-mix(in srgb, var(--accent) 12%, transparent); border-radius: .3rem; }
+.semsearch-current {
+  background: color-mix(in srgb, var(--accent) 26%, transparent);
+  box-shadow: inset 3px 0 0 var(--accent); scroll-margin: 5rem;
 }
 /* Cross-drug backlinks: inline links to other drugs' pages injected into the RCP
    body by build.py (_linkify), and the "Médicaments liés" list at the foot
