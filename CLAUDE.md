@@ -125,6 +125,20 @@ Key facts that aren't obvious from a single file:
   `AmmDenomination`). `clean_rcp()` strips decoration (BackToTop images,
   inline `font-*` styles, scripts) but preserves those classes; `style.css`
   restyles them. If you change class names in one place, change both.
+- **The frozen 2022 baseline CSV has Windows-1252-as-Latin-1 mojibake, repaired
+  at render time.** Its punctuation (apostrophes `’`, quotes, dashes, ellipsis)
+  was stored as the raw cp1252 byte mis-decoded into the matching *invisible* C1
+  control (e.g. the apostrophe `0x92` became U+0092), so `d’élimination` displayed
+  as `d élimination` (the apostrophe silently vanished; ~1.8M occurrences across
+  `dist`). `_demojibake()` (via a `_C1_DEMOJIBAKE` translate map of the whole
+  U+0080..U+009F range, which is never legitimate here, back to its cp1252 char) is
+  applied in `_parse_clean()`, the single point BOTH the rendered page and the
+  semantic-search chunks are parsed from, so the reader and the embeddings get the
+  same repaired text. It is a **pure render-time fix (no re-scrape, just a
+  rebuild)** and a **no-op on overlays** (fresh ANSM/EMA scrapes are clean UTF-8:
+  re-scraping a drug is the ONLY way to fix the rarer residual defects where the
+  original export used a genuine space instead of an apostrophe, which no
+  codepoint map can recover). Covered by `test_demojibake_restores_lost_apostrophes`.
 - **Each RCP page has a sidebar table of contents.** `_build_toc()` walks the
   headings down to `_TOC_DEPTH` (default 2: top-level `AmmAnnexeTitre1` plus the
   numbered `AmmAnnexeTitre2` subsections like "4.1 Indications", "4.2 Posologie")

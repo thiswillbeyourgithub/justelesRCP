@@ -95,6 +95,38 @@ def test_empty_and_untitled():
     print("ok  test_empty_and_untitled")
 
 
+def test_demojibake_restores_lost_apostrophes():
+    # The frozen 2022 CSV stores Windows-1252 punctuation mis-decoded as Latin-1, so
+    # the apostrophe byte 0x92 survives as the invisible C1 control U+0092 and the
+    # apostrophe vanishes on the page ("d'élimination" -> "d élimination"). _parse_clean
+    # must repair it on BOTH the rendered body and the search chunks.
+    moji = (
+        '<div id="textDocument">'
+        '<p class="AmmAnnexeTitre1">4.2 Posologie</p>'
+        # 0x92 apostrophes (mojibake), a 0x96 en-dash and a 0x85 ellipsis.
+        "<p>Précautions délimination et modalités demploi "
+        "– dose 110 mg</p>"
+        "</div>"
+    )
+    _, cleaned, _, _ = build.clean_rcp(moji)
+    # No C1 control survives, and the real punctuation is back.
+    assert not any(0x80 <= ord(ch) <= 0x9F for ch in cleaned), "C1 control leaked"
+    assert "d’élimination" in cleaned, cleaned      # 0x92 -> ’
+    assert "d’emploi" in cleaned, cleaned
+    assert "1–10 mg" in cleaned, cleaned                 # 0x96 -> –
+    assert "mg…" in cleaned, cleaned                     # 0x85 -> …
+
+    # The same repair reaches the semantic-search chunk text (parsed via _parse_clean).
+    chunk_text = " ".join(c for _, _, c in build.section_chunks(moji))
+    assert "d’élimination" in chunk_text, chunk_text
+    assert not any(0x80 <= ord(ch) <= 0x9F for ch in chunk_text)
+
+    # Already-clean UTF-8 (a fresh scrape) is untouched: proper ’ and straight ' pass through.
+    clean = "<div id='textDocument'><p>l’efficacité et l'emploi</p></div>"
+    assert build._demojibake(clean) == clean
+    print("ok  test_demojibake_restores_lost_apostrophes")
+
+
 # A page with two top-level sections, the second carrying two numbered subsections
 # (AmmAnnexeTitre2) and one deeper heading (AmmAnnexeTitre3, excluded at depth 2).
 SAMPLE_NESTED = """<html><body><div id="textDocument">
@@ -367,6 +399,7 @@ if __name__ == "__main__":
     test_quantize_roundtrip()
     test_section_chunks_align_with_toc()
     test_empty_and_untitled()
+    test_demojibake_restores_lost_apostrophes()
     test_nested_toc_keeps_sec_namespace_stable()
     test_table_rows_stay_intact()
     test_layout_table_falls_back_flat()

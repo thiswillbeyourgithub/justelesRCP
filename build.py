@@ -51,7 +51,7 @@ from lxml import html as lxml_html
 
 import bdpm  # shared, pure-stdlib BDPM tokenising + frequency scoring
 
-__version__ = "0.27.0"  # single source of truth; bump patch/minor per change
+__version__ = "0.27.1"  # single source of truth; bump patch/minor per change
 
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
@@ -775,15 +775,49 @@ _STRIP_XPATH = (
 )
 
 
+# The frozen 2022 baseline CSV stores Windows-1252 punctuation (the apostrophes
+# '', quotes "", dashes, ellipsis) mis-decoded as Latin-1: e.g. the apostrophe
+# byte 0x92 survives as the INVISIBLE C1 control U+0092 instead of U+2019, so
+# "d'élimination" renders as "d élimination" (the apostrophe silently vanishes).
+# Repair it by mapping the whole C1 range (U+0080..U+009F, which is never
+# legitimate in this text: they are non-printing controls) back to the Windows-1252
+# character each byte was actually meant to be; the handful of undefined cp1252
+# slots (0x81/0x8D/0x8F/0x90/0x9D) are dropped. Fresh ANSM/EMA scrapes are already
+# clean UTF-8, so this is a no-op on overlays. This is a pure render-time fix: it
+# needs NO re-scrape, just a rebuild (build.py edits bust the incremental cache).
+def _c1_demojibake_map() -> dict:
+    table: dict = {}
+    for byte in range(0x80, 0xA0):
+        try:
+            table[byte] = bytes([byte]).decode("cp1252")
+        except UnicodeDecodeError:
+            table[byte] = None  # undefined cp1252 slot: drop the stray control char
+    return table
+
+
+_C1_DEMOJIBAKE = _c1_demojibake_map()
+
+
+def _demojibake(raw: str) -> str:
+    """Repair Windows-1252-as-Latin-1 mojibake (see _C1_DEMOJIBAKE): turn the
+    invisible C1 controls back into '' "" - ... etc. Cheap str.translate; a no-op on
+    already-clean overlay HTML (no C1 controls). Applied in _parse_clean, the single
+    point BOTH the rendered page and the semantic-search chunks are parsed from, so
+    the reader and the embeddings see the same repaired text."""
+    return raw.translate(_C1_DEMOJIBAKE)
+
+
 def _parse_clean(raw: str):
     """Parse raw ANSM HTML and strip decoration (BackToTop arrows, script/style,
     inline font styling), returning the lxml document.
 
     Factored out of clean_rcp so section_chunks segments the IDENTICAL tree the
     rendered page is built from (same strip rules, so a chunk's text matches what
-    the reader sees). Keeps the Amm* class hooks style.css restyles.
+    the reader sees). Keeps the Amm* class hooks style.css restyles. Repairs the
+    baseline CSV's Windows-1252 mojibake first (see _demojibake) so lost apostrophes
+    come back on both the page and its search chunks.
     """
-    doc = lxml_html.fromstring(raw)
+    doc = lxml_html.fromstring(_demojibake(raw))
     for node in doc.xpath(_STRIP_XPATH):
         node.getparent().remove(node)
     # Drop inline font/size styling; keep the class hooks (AmmDenomination, ...).
