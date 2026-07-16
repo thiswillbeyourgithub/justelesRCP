@@ -95,6 +95,7 @@
   // --- state ----------------------------------------------------------------
   let phase = "idle"; // idle | preparing | ready | error
   let chunks = null; // [{sec, snippet, vec: Float32Array}]
+  let pageDim = 0; // dim of this page's section vectors, to guard a model/dim mismatch
   let readyPromise = null;
   let queryController = null; // aborts a superseded /api/sem/embed
   let hits = []; // [{sec, snippet, score, el}]
@@ -222,6 +223,7 @@
       vec: decodeVec(c.q),
     }));
     if (!chunks.length) throw fail("Aucun contenu indexé pour cette page.");
+    pageDim = chunks[0].vec.length; // query vectors must match this dim (same model)
   }
 
   function sleep(ms) {
@@ -265,6 +267,14 @@
       return;
     }
     if (controller !== queryController) return; // a newer query already superseded us
+    // The query encoder and this page's section vectors must share a dimension (same
+    // model). If they disagree, the page was embedded by a different model and needs
+    // re-indexing: surface it instead of silently ranking a truncated dot product.
+    if (pageDim && qv.length !== pageDim) {
+      clearHits();
+      setStatus("Index de cette page à mettre à jour, réessayez plus tard.");
+      return;
+    }
     rank(qv);
   }
 
