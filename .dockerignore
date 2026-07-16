@@ -10,6 +10,8 @@
 .git
 dist
 data
+vendor
+models
 docker/.env
 **/__pycache__
 *.pyc

@@ -643,8 +643,9 @@ Restart is not needed (Caddy reads the mounted dir live), but a
   (a `.tmp` sibling is EROFS / renaming onto a bind-mount point is EBUSY); keep that
   fallback. Runtime knobs come from `docker/.env` (`env_file`) as `REFRESH_*` / `RCP_OVERLAY_GZIP`.
   The refresh image's build context is the repo ROOT (compose `context: ..`), so a
-  root `.dockerignore` is REQUIRED to exclude `dist/` (~720M) and `data/` (~260M);
-  without it every `up --build` ships ~1GB to the daemon and can fail the build on a
+  root `.dockerignore` is REQUIRED to exclude `dist/` (~720M), `data/` (~260M) and
+  the semantic-search `vendor/` + `models/` (~130M, the Dockerfile COPYs neither);
+  without it every `up --build` ships ~1GB+ to the daemon and can fail the build on a
   small VPS ("no space left on device"), leaving no containers. The Dockerfile bakes
   `build.py` / `scrape-rcp.py` / `scrape-ema.py` / `ema_pdf.py` / `refresh-service.py`
   / `bdpm.py` / `src/rcp.html`, and pip-installs `pymupdf` (fitz) alongside the other
