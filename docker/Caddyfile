@@ -14,6 +14,16 @@
 		file_server
 	}
 
+	# Per-drug semantic-search API -> the embed service container (embed-service.py
+	# on :8461, not published to the host). MORE SPECIFIC than /api/* below, so it
+	# must come first. Same-origin: the query POST (/api/sem/embed) is covered by the
+	# strict `connect-src 'self'` CSP. If the embed service is absent, this 502s and
+	# the search box degrades to an "indisponible" note (the encoder model is no
+	# longer shipped to the browser, so nothing else regresses).
+	handle /api/sem/* {
+		reverse_proxy embed:8461
+	}
+
 	# On-demand RCP refresh API -> the companion service container (refresh-service.py
 	# on :8460, not published to the host). Same-origin, so the strict `connect-src
 	# 'self'` CSP below covers the fetch()es from app-init.js. If the refresh service
@@ -41,14 +51,6 @@
 		try_files {path} {path}.html {path}/index.html
 	}
 
-	# The self-hosted semantic-search assets (transformers.js + the ONNX encoder and
-	# model, ~120 MB) live under /vendor and /models. They are versioned by
-	# download-model.sh (a new version = a new build that changes the referencing
-	# code), so they are safe to cache hard; everything else stays no-cache so a
-	# redeploy shows up immediately (see the Cache-Control note below).
-	@immutable path /vendor/* /models/*
-	@volatile not path /vendor/* /models/*
-
 	header {
 		X-Content-Type-Options "nosniff"
 		Referrer-Policy "no-referrer"
@@ -56,10 +58,11 @@
 		# docker/entrypoint.sh derives from ANALYTICS_URL into ANALYTICS_ORIGIN
 		# (empty when analytics is off, leaving the CSP with no extra origin).
 		# script-src allows loading the tracker; connect-src allows its beacon.
-		# 'wasm-unsafe-eval' lets the client-side semantic-search encoder instantiate
-		# its WebAssembly (transformers.js + onnxruntime-web); it does NOT enable
-		# JS eval() and is scoped to script-src only. Everything else stays self-only.
-		Content-Security-Policy "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self' 'wasm-unsafe-eval' {$ANALYTICS_ORIGIN:}; connect-src 'self' {$ANALYTICS_ORIGIN:}; base-uri 'none'; frame-ancestors 'none'"
+		# The semantic-search encoder now runs SERVER-SIDE (embed-service.py), so the
+		# browser no longer instantiates any WebAssembly: the previous
+		# 'wasm-unsafe-eval' relaxation is gone and the query POST to /api/sem/embed
+		# is same-origin, covered by connect-src 'self'. Everything stays self-only.
+		Content-Security-Policy "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self' {$ANALYTICS_ORIGIN:}; connect-src 'self' {$ANALYTICS_ORIGIN:}; base-uri 'none'; frame-ancestors 'none'"
 		-Server
 	}
 	# Always revalidate so a redeploy is picked up immediately. This is an early
@@ -71,10 +74,9 @@
 	# max-age=86400 on .css/.js let stale assets live in the browser for up to a
 	# day, so a soft reload kept showing the old UI. (An upstream reverse proxy
 	# or CDN in front of :8459 could still cache; make sure it honors no-cache.)
-	# The immutable /vendor + /models assets are the sole exception (opt out of the
-	# revalidate-every-time rule so a returning reader doesn't refetch the ~120 MB).
-	header @volatile Cache-Control "no-cache"
-	header @immutable Cache-Control "public, max-age=31536000, immutable"
+	# The old immutable /vendor + /models exception is gone: the ~120 MB encoder
+	# model is no longer served to browsers (it runs in the embed container).
+	header Cache-Control "no-cache"
 
 	log {
 		output stdout

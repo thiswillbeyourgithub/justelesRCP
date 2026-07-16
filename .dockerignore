@@ -1,12 +1,13 @@
-# Keep the refresh image (docker/refresh.Dockerfile) build context small.
+# Keep the refresh AND embed image build contexts small (docker/refresh.Dockerfile
+# and docker/embed.Dockerfile).
 #
-# That image's build context is the repo ROOT (compose: `context: ..`), but the
-# image only COPYs build.py / scrape-rcp.py / refresh-service.py / src/rcp.html.
-# Without these excludes the context would include dist/ (~720M) and data/
-# (~260M): every `docker compose up --build` would tar and ship ~1GB to the
-# daemon, which is slow and can FAIL the build on a small VPS ("no space left on
-# device"), aborting `up` so no containers get created. Only the big/irrelevant
-# paths are listed; the handful of small files the Dockerfile needs stay in.
+# Both images' build context is the repo ROOT (compose: `context: ..`), but they only
+# COPY a handful of small .py files + src/rcp.html. Without these excludes the context
+# would include dist/ (~720M), data/ (~260M) and models/ (~120M, mounted read-only at
+# runtime, never baked): every `docker compose up --build` would tar and ship ~1GB+ to
+# the daemon, which is slow and can FAIL the build on a small VPS ("no space left on
+# device"), aborting `up` so no containers get created. Only the big/irrelevant paths
+# are listed; the handful of small files the Dockerfiles need stay in.
 .git
 dist
 data

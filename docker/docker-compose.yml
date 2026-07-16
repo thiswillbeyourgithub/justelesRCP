@@ -147,3 +147,71 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  # Warm server-side embedder (embed-service.py): keeps ONE ONNX sentence encoder
+  # resident and (1) embeds the reader's per-drug semantic-search query on request
+  # (POST /api/sem/embed) so the browser downloads no model, and (2) (re-)embeds each
+  # CRAWLED page's sections in the background, writing the served <slug>.vec.json
+  # sidecars (never the frozen 2022 baseline). Caddy reverse-proxies /api/sem/* to it
+  # (see Caddyfile); never exposed to the host (no ports:). Kept separate from `web`
+  # (read-only) and given only the narrow writable mounts it needs (dist/rcp,
+  # dist/eu). Entirely optional: leave it out (docker compose ... up web refresh) and
+  # the search box degrades to "indisponible", the site staying 100% static.
+  embed:
+    build:
+      context: ..
+      dockerfile: docker/embed.Dockerfile
+      args:
+        # Same build-time git stamp as refresh (see refresh.Dockerfile's git.sha
+        # LABEL). deploy.sh exports GIT_SHA; a plain local build falls back to
+        # "unknown". Build-time only, so it stays out of env_file / env.example.
+        GIT_SHA: ${GIT_SHA:-unknown}
+    container_name: justelesrcp-embed
+    restart: unless-stopped
+    # Match the host user that owns ../dist so the .vec.json files the service writes
+    # stay owned by you and sync cleanly (same rationale as refresh). Defaults to
+    # 1000:1000; override with EMBED_UID/EMBED_GID in docker/.env if your host uid
+    # differs (e.g. VPS).
+    user: "${EMBED_UID:-1000}:${EMBED_GID:-1000}"
+    # Same env file as the others. Tuning knobs (all optional, sane defaults in the
+    # script): EMBED_ENABLE (background reconcile sweep on/off), EMBED_INTRA_THREADS,
+    # EMBED_BACKLOG_RATE_SECONDS, EMBED_RECONCILE_SECONDS, EMBED_QUEUE_MAX,
+    # EMBED_MIN_QUERY_CHARS (10) / EMBED_MAX_QUERY_CHARS (400), EMBED_QUERY_CACHE,
+    # EMBED_MODEL_DIR, REFRESH_TRIGGER_URL (embed -> refresh, for baseline
+    # auto-crawl), EMBED_LOG_LEVEL. See docker/env.example.
+    env_file:
+      - .env
+    volumes:
+      # Read-only: the warm encoder model + tokenizer (download-model.sh fetches it
+      # into ./models). Mounted, not baked, so it stays out of the image / build
+      # context; EMBED_MODEL_DIR defaults to /app/models/Xenova/multilingual-e5-small.
+      - ../models:/app/models:ro
+      # Read-only: the crawled overlays are the ONLY text this service embeds (never
+      # the 2022 baseline CSV, which is not mounted here at all). It reads the raw
+      # HTML to segment + embed each page's sections.
+      - ../data/rcp:/app/data/rcp:ro
+      - ../data/eu:/app/data/eu:ro
+      # The ONLY writable locations: the two dist page dirs, where it writes each
+      # page's <slug>.vec.json (+ .gz/.br) next to the .html and reads the .html
+      # filenames to resolve slugs (build.page_cis_from_dist / _dist_page). No
+      # manifest mount: staleness is content-hash baked into each .vec.json.
+      - ../dist/rcp:/app/dist/rcp
+      - ../dist/eu:/app/dist/eu
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8461/api/sem/health').status==200 else 1)"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
