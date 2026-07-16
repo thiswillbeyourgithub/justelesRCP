@@ -28,6 +28,7 @@ Run:  uv run build.py         (reads ./data, writes ./dist)
 
 from __future__ import annotations
 
+import base64
 import copy
 import csv
 import gzip
@@ -37,6 +38,7 @@ import json
 import os
 import re
 import shutil
+import struct
 import sys
 import unicodedata
 import urllib.parse
@@ -49,19 +51,12 @@ from lxml import html as lxml_html
 
 import bdpm  # shared, pure-stdlib BDPM tokenising + frequency scoring
 
-__version__ = "0.24.1"  # single source of truth; bump patch/minor per change
+__version__ = "0.25.0"  # single source of truth; bump patch/minor per change
 
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
 SRC = ROOT / "src"
 DIST = ROOT / "dist"
-# Semantic-search assets, all gitignored + fetched/produced out of band (like data/
-# and dist/). VENDOR_DIR/MODELS_DIR are populated by download-model.sh (transformers.js
-# + onnxruntime-web wasm, and the self-hosted ONNX encoder ~120 MB); build.py mirrors
-# them into dist/ so they are served same-origin under the strict CSP. EMB_OVERLAY_DIR
-# holds embed-rcp.py's per-drug vector sidecars, baked into dist/rcp/<slug>.vec.json.
-VENDOR_DIR = ROOT / "vendor"
-MODELS_DIR = ROOT / "models"
 
 CSV_PATH = DATA / "CIS_RCP.csv"
 BDPM_PATH = DATA / "CIS_bdpm.txt"
@@ -86,7 +81,9 @@ RCP_OVERLAY_DIR = DATA / "rcp"
 # build_stubs renders these as full /eu/ pages; kept separate from data/rcp so
 # records() never turns one into a /rcp/ page (the drug's ANSM RCP stays empty).
 EU_OVERLAY_DIR = DATA / "eu"
-EMB_OVERLAY_DIR = DATA / "emb"
+# Per-drug semantic-search section vectors live in dist/<rcp|eu>/<slug>.vec.json,
+# written by the embed service (runtime) or embed-rcp.py (offline), NOT baked here:
+# build.py only prunes orphaned .vec.json when a slug is dropped (see _prune loops).
 # Incremental-build cache. Lives inside dist/ (already gitignored) and records,
 # per CIS, the hash of the inputs that produced its page so an unchanged record
 # can be reused instead of re-parsed and re-compressed. See main().
@@ -496,8 +493,8 @@ def iter_eu_raw():
     embed-rcp.py so per-drug semantic search covers /eu/ pages too. The overlay is
     the same ``<div id="textDocument">`` envelope, with sec-N anchors already baked
     by ema_pdf, so section_chunks segments it exactly like an RCP page. A CIS is
-    either an ANSM RCP page OR an /eu/ page (never both), so the data/emb sidecars
-    and the embed manifest keyed by CIS never collide across the two lanes."""
+    either an ANSM RCP page OR an /eu/ page (never both), so their per-CIS
+    <slug>.vec.json under dist/rcp vs dist/eu never collide across the two lanes."""
     if not EU_OVERLAY_DIR.is_dir():
         return
     eu_cis = {
@@ -1153,80 +1150,45 @@ def compress(path: Path) -> None:
     )
 
 
-# --- semantic-search sidecars + vendored model assets -----------------------
-def _emb_sidecar_path(cis: str) -> Path | None:
-    """Newest embed-rcp.py sidecar for a CIS (``data/emb/<cis>.json[.gz]``), or None.
-    Mirrors _overlay_path's gz/plain + newest-wins resolution."""
-    if not EMB_OVERLAY_DIR.is_dir():
-        return None
-    cands = [
-        p for p in (EMB_OVERLAY_DIR / f"{cis}.json.gz", EMB_OVERLAY_DIR / f"{cis}.json")
-        if p.exists()
-    ]
-    return max(cands, key=lambda p: p.stat().st_mtime) if cands else None
+# --- semantic-search: the served .vec.json sidecar -------------------------
+# Per-drug section vectors are computed server-side now (the warm ONNX encoder in
+# embed-service.py, or embed-rcp.py offline), NOT baked from data/emb here. These two
+# helpers are the SHARED writer both use, so the served format has one definition.
+def vec_payload(chunks, vecs, model: str, query_prefix: str, src_hash: str) -> dict:
+    """Build one page's served .vec.json dict from its section chunks + float vectors.
+
+    ``chunks`` is section_chunks()'s ``[(sec_id, snippet, chunk_text), ...]``; ``vecs``
+    is an aligned iterable of L2-normalised float vectors (one per chunk). Each vector
+    is int8-quantised (quantize_int8, the canonical formula) and base64-packed: the
+    SAME wire format src/rcp-semsearch.js decodes. ``src_hash`` (sha256 of the raw
+    overlay) is baked in as the self-describing staleness key, so a re-crawl that
+    produced identical bytes hashes the same and the embedder skips re-embedding."""
+    out_chunks = []
+    dim = 0
+    for (sec_id, snippet, _text), vec in zip(chunks, vecs):
+        q = quantize_int8(list(vec))
+        dim = len(q)
+        b64 = base64.b64encode(struct.pack(f"{len(q)}b", *q)).decode("ascii")
+        out_chunks.append({"sec": sec_id, "snippet": snippet, "q": b64})
+    return {
+        "model": model,
+        "dim": dim,
+        "query_prefix": query_prefix,
+        "src_hash": src_hash,
+        "chunks": out_chunks,
+    }
 
 
-def _read_emb_sidecar(path: Path) -> bytes:
-    """Read a sidecar, gunzipping ``.json.gz`` transparently; return raw JSON bytes."""
-    data = path.read_bytes()
-    return gzip.decompress(data) if path.suffix == ".gz" else data
-
-
-def write_vec_sidecars(index: list[dict], subdir: str = "rcp") -> int:
-    """Bake ``dist/<subdir>/<slug>.vec.json`` for every page whose CIS has an
-    embed-rcp.py sidecar, and prune stale ones. Returns the number written.
-
-    The sidecar already carries the client shape (embed-rcp.py wrote it), so this is
-    a gz-transparent copy, NOT a re-encode: no model runs here. Decoupled from the
-    page-render cache on purpose (the page HTML never contains the vectors), so it
-    stays correct whether a page was a cache hit or a miss, and a refreshed page (the
-    refresh service rewrites only the .html) keeps its .vec.json. Incremental: skip
-    when the dist copy is newer than the source sidecar. A kept page whose sidecar
-    disappeared has its stale .vec.json removed; orphaned slugs are pruned by the
-    caller's page-prune (extended to .vec.json)."""
-    out_dir = DIST / subdir
-    if not out_dir.is_dir():
-        return 0
-    written = 0
-    kept: set[str] = set()
-    for row in index:
-        slug = row["slug"]  # "<cis>-<name>.html"
-        vec = out_dir / slug.replace(".html", ".vec.json")
-        src = _emb_sidecar_path(row["cis"])
-        if src is None:
-            vec.unlink(missing_ok=True)  # embeddings gone -> drop the stale sidecar
-            continue
-        kept.add(vec.name)
-        if vec.exists() and vec.stat().st_mtime >= src.stat().st_mtime:
-            continue  # up to date
-        vec.write_bytes(_read_emb_sidecar(src))
-        written += 1
-    # Prune .vec.json whose page slug no longer renders (slug set changed).
-    for stale in out_dir.glob("*.vec.json"):
-        if stale.name not in kept:
-            stale.unlink(missing_ok=True)
-    return written
-
-
-def _mirror_tree(src: Path, dst: Path) -> int:
-    """Copy new/changed files from src/ into dst/ (skip unchanged by mtime+size), so
-    a ~120 MB model tree is copied once, not every build. Returns files copied.
-    Used to serve the vendored transformers.js/ort/model same-origin from dist/."""
-    if not src.is_dir():
-        return 0
-    copied = 0
-    for s in src.rglob("*"):
-        if not s.is_file():
-            continue
-        d = dst / s.relative_to(src)
-        if d.exists():
-            st_s, st_d = s.stat(), d.stat()
-            if st_d.st_size == st_s.st_size and st_d.st_mtime >= st_s.st_mtime:
-                continue
-        d.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(s, d)
-        copied += 1
-    return copied
+def write_vec_json(dist_path: Path, payload: dict) -> None:
+    """Write one ``dist/<rcp|eu>/<slug>.vec.json`` (+ .gz/.br via compress) atomically.
+    The vectors live in this SEPARATE sidecar, never inline in the page HTML, so a
+    page stays refresh-safe (the refresh service rewrites only the .html)."""
+    dist_path.parent.mkdir(parents=True, exist_ok=True)
+    data = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    tmp = dist_path.with_name(dist_path.name + ".tmp")
+    tmp.write_bytes(data)
+    tmp.replace(dist_path)
+    compress(dist_path)
 
 
 # --- per-record rendering, run in a worker process pool ---------------------
@@ -1803,6 +1765,9 @@ def build_stubs(
                 page.unlink()
                 page.with_suffix(".html.gz").unlink(missing_ok=True)
                 page.with_suffix(".html.br").unlink(missing_ok=True)
+                # Orphaned semantic-search sidecar (written by the embedder) too.
+                for suf in (".vec.json", ".vec.json.gz", ".vec.json.br"):
+                    (page.parent / (page.stem + suf)).unlink(missing_ok=True)
 
     if not cap:  # no BDPM file: build nothing, sweep away any prior stubs
         _prune(set())
@@ -2010,6 +1975,9 @@ def main() -> None:
             page.unlink()
             page.with_suffix(".html.gz").unlink(missing_ok=True)
             page.with_suffix(".html.br").unlink(missing_ok=True)
+            # Drop the orphaned semantic-search sidecar too (written by the embedder).
+            for suf in (".vec.json", ".vec.json.gz", ".vec.json.br"):
+                (page.parent / (page.stem + suf)).unlink(missing_ok=True)
             pruned += 1
 
     MANIFEST_PATH.write_text(
@@ -2049,22 +2017,16 @@ def main() -> None:
     for f in (*static_assets, "app-version.js", "search-index.json"):
         compress(DIST / f)
 
-    # Per-drug semantic search (optional, degrades to nothing when absent): bake the
-    # per-page vector sidecars embed-rcp.py produced, and mirror the vendored
-    # transformers.js + ONNX encoder into dist/ so they serve same-origin under the
-    # strict CSP. Both are no-ops when data/emb / vendor / models are missing.
-    vec_sidecars = write_vec_sidecars(index)
-    vec_sidecars += write_vec_sidecars(stub_index, subdir="eu")  # full /eu/ pages too
-    vendored = _mirror_tree(VENDOR_DIR, DIST / "vendor")
-    vendored += _mirror_tree(MODELS_DIR, DIST / "models")
+    # Per-drug semantic search: the section vectors (dist/<slug>.vec.json) are now
+    # written server-side by the embed service (or embed-rcp.py offline), NOT baked
+    # here; build.py only prunes orphaned .vec.json above when a slug is dropped.
 
     browse_pages = write_browse(index)
 
     print(
         f"done: {len(index)} RCP pages ({reused} reused, {pruned} pruned) "
         f"+ {len(stub_index)} EU stubs ({stub_reused} reused, {stub_rendered} built) "
-        f"+ {browse_pages} browse pages ({skipped_empty} empty CIS skipped) "
-        f"+ {vec_sidecars} vec sidecars, {vendored} vendored files -> {DIST}"
+        f"+ {browse_pages} browse pages ({skipped_empty} empty CIS skipped) -> {DIST}"
     )
 
 
