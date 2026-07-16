@@ -371,8 +371,12 @@ class _Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         parts = urlsplit(self.path)
         if parts.path == "/api/sem/embed":
-            self._handle_query()
+            self._handle_query()  # reads its own body
             return
+        # /api/sem/page and unknown routes carry no body from our frontend, but drain
+        # anything a client sends so a stray body can't desync the next keep-alive
+        # request on this connection.
+        self._drain_body()
         m = re.fullmatch(r"/api/sem/page/(\d{8})", parts.path)
         if m:
             src = parse_qs(parts.query).get("src", ["user"])[0]
@@ -381,6 +385,23 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(code, result)
             return
         self._send(404, {"error": "not found"})
+
+    def _drain_body(self) -> None:
+        """Read and discard a request body so keep-alive stays in sync. A small body is
+        drained; a large or malformed one just closes the connection (our frontend sends
+        none, so this is purely defensive)."""
+        length = self._content_length()
+        if not length:  # 0 (none) or None (malformed)
+            if length is None:
+                self.close_connection = True
+            return
+        if length > 65536:
+            self.close_connection = True
+            return
+        try:
+            self.rfile.read(length)
+        except Exception:
+            self.close_connection = True
 
     def _content_length(self) -> int | None:
         """Parsed Content-Length: 0 when absent, a clamped non-negative int when valid,
