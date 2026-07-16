@@ -69,6 +69,7 @@ import signal
 import sys
 import threading
 import time
+import urllib.request
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -201,13 +202,19 @@ class Refresher:
                  timeout: float, gzip_overlay: bool, user_agent: str, queue_max: int,
                  crawl: bool = True, crawl_ttl_days: int = 365,
                  eu_crawl: bool = True, eu_rate: float = 300.0,
-                 eu_crawl_ttl_days: int = 180) -> None:
+                 eu_crawl_ttl_days: int = 180, embed_notify_url: str = "") -> None:
         self.rate = rate
         self.demand_rate = demand_rate
         self.min_interval = min_interval
         self.timeout = timeout
         self.gzip_overlay = gzip_overlay
         self.user_agent = user_agent
+        # Best-effort URL of the sibling embed service. After a fresh overlay lands
+        # we ping it so it re-embeds this page for semantic search (content-hash
+        # gated on its side, so an unchanged re-crawl re-embeds nothing). Empty
+        # disables the notify; the embedder is optional and its own reconcile sweep
+        # is the backstop, so a failed/absent ping never disturbs the refresh.
+        self._embed_notify_url = (embed_notify_url or "").rstrip("/")
         # On-demand (button/auto) lane. It runs on its own fast worker and is the
         # only lane a caller can fill, so its bound is what sheds load as "busy".
         self._demand: queue.Queue[str] = queue.Queue(maxsize=queue_max)
@@ -813,6 +820,7 @@ class Refresher:
                 self._record(cis, source, "empty", "render produced nothing")
             else:
                 self._record(cis, source, "ok", f"{row['slug']} ({len(rcp)} bytes)")
+                self._notify_embed(cis)  # re-embed this page for semantic search
         self._persist_manifest()
 
     def _harvest_ema_url(self, client, cis: str) -> str:
@@ -878,11 +886,34 @@ class Refresher:
                 self._record(cis, source, "empty", "render produced nothing")
             else:
                 self._record(cis, source, "ok", f"{row['slug']} (eu, {entry.get('bytes', 0)} bytes)")
+                self._notify_embed(cis)  # re-embed this /eu/ page for semantic search
         elif status == "empty":
             self._record(cis, source, "empty", "EMA PDF yielded no HTML")
         else:
             self._record(cis, source, "error", f"ERROR {str(entry.get('error', ''))[:120]}")
         self._persist(self._ema_manifest, ema_scrape.EMA_MANIFEST_PATH)
+
+    def _notify_embed(self, cis: str) -> None:
+        """Tell the embed service a fresh overlay landed for this CIS, so it re-embeds
+        the page for semantic search (POST /api/sem/page/<cis>?src=crawl).
+
+        Fire-and-forget in a daemon thread so a slow or absent embedder never delays
+        the refresh worker, and every error is swallowed: the embedder is optional,
+        content-hash gated (an unchanged re-crawl re-embeds nothing on its side), and
+        its own periodic reconcile sweep is the backstop for any missed ping."""
+        base = self._embed_notify_url
+        if not base:
+            return
+        url = f"{base}/api/sem/page/{cis}?src=crawl"
+
+        def _fire() -> None:
+            try:
+                req = urllib.request.Request(url, data=b"", method="POST")
+                urllib.request.urlopen(req, timeout=5).close()
+            except Exception as exc:  # embedder optional; never disturb the refresh
+                logger.debug("embed notify for {} failed: {}", cis, str(exc)[:120])
+
+        threading.Thread(target=_fire, name=f"embed-notify-{cis}", daemon=True).start()
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -1004,6 +1035,13 @@ REFRESHER: Refresher | None = None  # set in main(), read by _Handler
               help="Store overlays gzip-compressed (matches scrape-rcp.py; env RCP_OVERLAY_GZIP).")
 @click.option("--user-agent", "user_agent", default=None,
               help="Override the HTTP User-Agent sent to the ANSM site.")
+@click.option("--embed-notify-url", default="http://embed:8461", show_default=True,
+              envvar="EMBED_NOTIFY_URL",
+              help="Base URL of the sibling embed service to ping after a fresh "
+                   "overlay lands, so it re-embeds the page for semantic search "
+                   "(env EMBED_NOTIFY_URL). Best-effort and content-hash gated on "
+                   "the embed side; set empty to disable (the embedder is optional "
+                   "and its own reconcile sweep is the backstop).")
 @click.option("--log-level", default="INFO", show_default=True, envvar="REFRESH_LOG_LEVEL",
               type=click.Choice(
                   ["TRACE", "DEBUG", "INFO", "SUCCESS", "WARNING", "ERROR", "CRITICAL"],
@@ -1014,7 +1052,8 @@ REFRESHER: Refresher | None = None  # set in main(), read by _Handler
 def main(host: str, port: int, rate: float, demand_rate: float, min_interval: float,
          queue_max: int, crawl: bool, crawl_ttl_days: int, eu_crawl: bool,
          eu_rate: float, eu_crawl_ttl_days: int, timeout: float,
-         gzip_overlay: bool, user_agent: str | None, log_level: str) -> None:
+         gzip_overlay: bool, user_agent: str | None, embed_notify_url: str,
+         log_level: str) -> None:
     """Run the RCP refresh service (see module docstring)."""
     global REFRESHER
     # Replace loguru's default DEBUG sink with one at the chosen level, so the
@@ -1030,7 +1069,8 @@ def main(host: str, port: int, rate: float, demand_rate: float, min_interval: fl
     REFRESHER = Refresher(rate=rate, demand_rate=demand_rate, min_interval=min_interval,
                           timeout=timeout, gzip_overlay=gzip_overlay, user_agent=ua,
                           queue_max=queue_max, crawl=crawl, crawl_ttl_days=crawl_ttl_days,
-                          eu_crawl=eu_crawl, eu_rate=eu_rate, eu_crawl_ttl_days=eu_crawl_ttl_days)
+                          eu_crawl=eu_crawl, eu_rate=eu_rate, eu_crawl_ttl_days=eu_crawl_ttl_days,
+                          embed_notify_url=embed_notify_url)
     REFRESHER.start()
 
     # SIGHUP arms a full re-crawl of both lanes without dropping any overlays
@@ -1046,11 +1086,12 @@ def main(host: str, port: int, rate: float, demand_rate: float, min_interval: fl
     signal.signal(signal.SIGHUP, _on_recrawl)
 
     logger.info("refresh service on {}:{} (crawl-rate {}s, demand-rate {}s, "
-                "min-interval {}s, overlay={}, rcp-crawl={}, eu-crawl={})",
+                "min-interval {}s, overlay={}, rcp-crawl={}, eu-crawl={}, embed-notify={})",
                 host, port, rate, demand_rate, min_interval,
                 "gzip" if gzip_overlay else "plain",
                 f"on ttl={crawl_ttl_days}d" if crawl else "off",
-                f"on rate={eu_rate}s ttl={eu_crawl_ttl_days}d" if eu_crawl else "off")
+                f"on rate={eu_rate}s ttl={eu_crawl_ttl_days}d" if eu_crawl else "off",
+                embed_notify_url or "off")
     ThreadingHTTPServer((host, port), _Handler).serve_forever()
 
 
