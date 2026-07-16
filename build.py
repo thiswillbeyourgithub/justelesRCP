@@ -895,6 +895,14 @@ def dequantize_int8(q) -> list[float]:
     return [x / 127 for x in q]
 
 
+def raw_hash(raw: str) -> str:
+    """Short content hash of an overlay's raw HTML, baked into its .vec.json as the
+    self-describing staleness key (a re-crawl that produced identical bytes hashes the
+    same -> no re-embed). SHARED by embed-service.py + embed-rcp.py so their staleness
+    decisions never diverge; matches the 16-hex form embed-rcp.py used."""
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
 def _norm_ws(text: str) -> str:
     return " ".join(text.split())
 
