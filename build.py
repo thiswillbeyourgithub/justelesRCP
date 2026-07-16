@@ -49,7 +49,7 @@ from lxml import html as lxml_html
 
 import bdpm  # shared, pure-stdlib BDPM tokenising + frequency scoring
 
-__version__ = "0.24.0"  # single source of truth; bump patch/minor per change
+__version__ = "0.24.1"  # single source of truth; bump patch/minor per change
 
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
@@ -487,6 +487,31 @@ def iter_rcp_raw(scrape_dates: dict[str, str] | None = None, stats: dict | None 
                 _bump_empty()
                 continue
             yield cis, raw, scrape_dates.get(cis) or _overlay_date(cis)
+
+
+def iter_eu_raw():
+    """Yield ``(cis, raw)`` for every /eu/ page that has a converted EMA overlay (a
+    FULL page, rendered by render_eu_page), skipping lightweight stubs (which have no
+    overlay = no captured text). The EMA counterpart of iter_rcp_raw, used by
+    embed-rcp.py so per-drug semantic search covers /eu/ pages too. The overlay is
+    the same ``<div id="textDocument">`` envelope, with sec-N anchors already baked
+    by ema_pdf, so section_chunks segments it exactly like an RCP page. A CIS is
+    either an ANSM RCP page OR an /eu/ page (never both), so the data/emb sidecars
+    and the embed manifest keyed by CIS never collide across the two lanes."""
+    if not EU_OVERLAY_DIR.is_dir():
+        return
+    eu_cis = {
+        p.name.split(".", 1)[0]
+        for p in (*EU_OVERLAY_DIR.glob("*.html"), *EU_OVERLAY_DIR.glob("*.html.gz"))
+    }
+    for cis in sorted(eu_cis):
+        path = _overlay_path(cis, EU_OVERLAY_DIR)
+        if path is None:
+            continue
+        raw = _read_overlay(path)
+        if not raw.strip():  # zero-byte sentinel: scraped, no document
+            continue
+        yield cis, raw
 
 
 # --- cross-drug backlinks (xref) --------------------------------------------
@@ -950,9 +975,16 @@ def section_chunks(raw: str, cis: str = "") -> list[tuple[str, str, str]]:
     except Exception:  # a handful of dumps have markup lxml refuses
         return []
     inner = _inner_of(doc)
-    toc = _build_toc(inner)  # assigns id="sec-N"; empty-title headings get none
-    if not toc:
+    headings = inner.xpath(".//*[contains(@class, 'AmmAnnexeTitre1')]")
+    if not headings:
         return []
+    # ANSM raw carries no ids: assign sec-N exactly as clean_rcp/_build_toc does for
+    # the rendered page. A converted /eu/ overlay ALREADY carries sec-N ids from
+    # ema_pdf (which render_eu_page keeps verbatim, and its ids are QRD-numbered, not
+    # a 0-based run), so re-running _build_toc would renumber them and desync the
+    # chunk anchors from the page. Only assign when they're absent.
+    if not any(h.get("id") for h in headings):
+        _build_toc(inner)  # assigns id="sec-N"; empty-title headings get none
     chunks: list[tuple[str, str, str]] = []
 
     def _add(sec_id: str, title: str, body: str) -> bool:
@@ -2022,6 +2054,7 @@ def main() -> None:
     # transformers.js + ONNX encoder into dist/ so they serve same-origin under the
     # strict CSP. Both are no-ops when data/emb / vendor / models are missing.
     vec_sidecars = write_vec_sidecars(index)
+    vec_sidecars += write_vec_sidecars(stub_index, subdir="eu")  # full /eu/ pages too
     vendored = _mirror_tree(VENDOR_DIR, DIST / "vendor")
     vendored += _mirror_tree(MODELS_DIR, DIST / "models")
 

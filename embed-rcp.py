@@ -138,20 +138,34 @@ def _encode_chunk_payload(model, chunks, passage_prefix: str, query_prefix: str)
     }
 
 
+def _iter_pages(include_eu: bool):
+    """Every ANSM RCP page, then (optionally) every FULL /eu/ page, normalised to
+    ``(cis, raw)``. Both segment identically via build.section_chunks (the /eu/
+    overlay is the same textDocument envelope with sec-N anchors), and a CIS is
+    only ever on ONE lane, so the per-CIS sidecar/manifest never collide. Kept
+    lazy (generators, not lists) so we never hold all the raw HTML in memory."""
+    for cis, raw, _asof in build.iter_rcp_raw():
+        yield cis, raw
+    if include_eu:
+        yield from build.iter_eu_raw()
+
+
 @click.command(context_settings={"help_option_names": ["-h", "--help"]})
 @click.option("--limit", default=60, show_default=True,
               help="Max number of drugs to embed this run (ignored with --all).")
 @click.option("--all", "do_all", is_flag=True, help="Embed every eligible drug.")
 @click.option("--only", metavar="CIS", multiple=True,
               help="Embed only these CIS code(s); repeatable. Implies --force.")
+@click.option("--eu/--no-eu", default=True, show_default=True,
+              help="Also embed full /eu/ (EMA) pages, not just ANSM RCP pages.")
 @click.option("--model", default=DEFAULT_MODEL, show_default=True,
               help="sentence-transformers model id.")
 @click.option("--gzip/--no-gzip", "gzip_sidecar", default=DEFAULT_GZIP, show_default=True,
               help="Gzip the sidecars (env EMBED_OVERLAY_GZIP).")
 @click.option("--force", is_flag=True,
               help="Re-embed even if the content hash and model are unchanged.")
-def main(limit, do_all, only, model, gzip_sidecar, force):
-    """Embed RCP sections into data/emb/<cis>.json[.gz] for client-side search."""
+def main(limit, do_all, only, eu, model, gzip_sidecar, force):
+    """Embed RCP (+ /eu/) sections into data/emb/<cis>.json[.gz] for client search."""
     global DEFAULT_MODEL
     DEFAULT_MODEL = model
     query_prefix, passage_prefix = _prefixes(model)
@@ -167,7 +181,7 @@ def main(limit, do_all, only, model, gzip_sidecar, force):
     encoder = SentenceTransformer(model)
 
     done = errors = skipped = 0
-    for cis, raw, _asof in build.iter_rcp_raw():
+    for cis, raw in _iter_pages(eu):
         if only_set and cis not in only_set:
             continue
         entry = manifest.get(cis)

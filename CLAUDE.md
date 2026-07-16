@@ -471,16 +471,28 @@ Key facts that aren't obvious from a single file:
   `build.section_chunks(raw, cis)` runs the SAME `clean_rcp` path as the rendered
   page, so its chunks carry the same `sec-N` ids the ToC/anchors use (a hit scrolls
   to a heading that exists); it returns `(sec_id, snippet, chunk_text)` per ~500-char
-  window and is the single source of truth, imported by `embed-rcp.py`. `embed-rcp.py`
-  (PEP723, sentence-transformers) iterates `build.iter_rcp_raw()`, embeds each chunk
+  window and is the single source of truth, imported by `embed-rcp.py`. It handles
+  BOTH page kinds: ANSM raw carries no ids so it assigns `sec-N` exactly as
+  `clean_rcp`/`_build_toc` does, while a converted `/eu/` overlay ALREADY carries
+  (QRD-numbered, non-sequential) `sec-N` ids from `ema_pdf` that `render_eu_page`
+  keeps verbatim, so it must NOT renumber them (it only calls `_build_toc` when the
+  headings have no id); a `<table>` is linearised row-by-row (`_linearize_table`:
+  each body row -> "header: cell; header: cell", kept intact and title-prefixed)
+  instead of `text_content()`-flattened into the section blob, so posology/table rows
+  stay retrievable; non-data/layout tables fall back to flat text. `embed-rcp.py`
+  (PEP723, sentence-transformers) iterates `build.iter_rcp_raw()` PLUS
+  `build.iter_eu_raw()` (full `/eu/` pages; `--no-eu` to skip), embeds each chunk
   with `intfloat/multilingual-e5-small` (384-dim, e5 `query:`/`passage:` prefixes),
   int8-quantises via `build.quantize_int8` (symmetric, `q=round(v*127)`, dequant
   `q/127`; the ONE canonical formula, mirrored in JS `decodeVec`), and writes one
   sidecar per drug `data/emb/<cis>.json[.gz]` under its own manifest
-  `data/.embed-manifest.json` (incremental: re-embed only when the raw HTML or model
-  hash changed). `build.py` repackages those into the served
-  `dist/rcp/<slug>.vec.json` via `write_vec_sidecars()` (mtime-incremental,
-  self-pruning) and `_mirror_tree()`s `vendor/` + `models/` into `dist/`. Vectors
+  `data/.embed-manifest.json` (a CIS is only ever RCP OR /eu/, never both, so the
+  per-CIS sidecar + manifest never collide across lanes; incremental: re-embed only
+  when the raw HTML or model hash changed). `build.py` repackages those into the
+  served `dist/rcp/<slug>.vec.json` AND `dist/eu/<slug>.vec.json` via
+  `write_vec_sidecars(index)` + `write_vec_sidecars(stub_index, subdir="eu")`
+  (mtime-incremental, self-pruning) and `_mirror_tree()`s `vendor/` + `models/` into
+  `dist/`. Vectors
   live in a SEPARATE `.vec.json` sidecar (NOT inline in the page and NOT in
   `_record_hash`/the template), so page HTML is unchanged and the feature is
   refresh-safe (the refresh service rewrites only `.html`; the `.vec.json` persists
@@ -540,7 +552,8 @@ uv run scrape-ema.py --limit 60   # OPTIONAL bulk scrape of EMA product-informat
                                   # exposes the archive URL; stamps via_archive). --retry-archived
                                   # re-fetches just the archive-sourced CIS against the live EMA.
 uv run embed-rcp.py --limit 60    # OPTIONAL offline embeddings for client-side per-drug semantic
-                                  # search: segments each RCP (shared build.section_chunks), embeds +
+                                  # search: segments each RCP + full /eu/ page (shared
+                                  # build.section_chunks; --no-eu for RCP only), embeds +
                                   # int8-quantises into data/emb/<cis>.json[.gz]; own manifest
                                   # data/.embed-manifest.json (incremental by raw-hash + model). Needs
                                   # ./download-model.sh's model. build.py bakes these into .vec.json.

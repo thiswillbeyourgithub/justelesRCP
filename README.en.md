@@ -169,9 +169,11 @@ independent of the ANSM lane.
 
 ## Per-drug semantic search (optional)
 
-Every RCP page has a "Rechercher dans ce RCP" box: type a natural-language
-question ("can I take it while pregnant?", "effects on the liver") and the box
-ranks and highlights the closest sections, within that one drug. It all happens in
+Every RCP page (and every full `/eu/` page converted from the EMA) has a
+"Rechercher dans ce RCP" box: type a natural-language question ("can I take it
+while pregnant?", "effects on the liver") and the box ranks and highlights the
+closest sections, within that one drug. Tables (posology, etc.) are indexed row by
+row so each row stays retrievable. It all happens in
 the browser: a small self-hosted multilingual model (~120 MB,
 `intfloat/multilingual-e5-small`) turns the question into a vector and compares it
 to the section vectors, precomputed at build time. No request is sent to any

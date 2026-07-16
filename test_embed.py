@@ -140,10 +140,38 @@ def test_layout_table_falls_back_flat():
     print("ok  test_layout_table_falls_back_flat")
 
 
+# A converted /eu/ (EMA) overlay: sec-N anchors are already baked by ema_pdf (and
+# QRD-numbered, so NON-sequential), nested inside a collapsible <details> group.
+SAMPLE_EU = """<div id="textDocument">
+  <details class="ema-annexe" open>
+    <summary id="grp-0">ANNEXE I : RESUME DES CARACTERISTIQUES DU PRODUIT</summary>
+    <h2 id="sec-4" class="AmmAnnexeTitre1">4. INFORMATIONS CLINIQUES</h2>
+    <p>Indications therapeutiques dans le traitement de la schizophrenie.</p>
+    <h2 id="sec-6" class="AmmAnnexeTitre1">6. INFORMATIONS PHARMACEUTIQUES</h2>
+    <p>Liste des excipients: lactose monohydrate.</p>
+  </details>
+</div>"""
+
+
+def test_eu_overlay_preserves_existing_ids():
+    # section_chunks must KEEP the overlay's sec-4 / sec-6 ids (render_eu_page emits
+    # exactly those anchors), not renumber them to sec-0 / sec-1 via _build_toc, else
+    # a hit would scroll to a section that doesn't exist on the /eu/ page.
+    chunks = build.section_chunks(SAMPLE_EU)
+    assert chunks, "expected chunks"
+    ids = {sid for sid, _, _ in chunks}
+    assert ids == {"sec-4", "sec-6"}, ids
+    by = {sid: c.lower() for sid, _, c in chunks}
+    assert "schizophrenie" in by["sec-4"], by
+    assert "excipients" in by["sec-6"], by
+    print("ok  test_eu_overlay_preserves_existing_ids")
+
+
 if __name__ == "__main__":
     test_quantize_roundtrip()
     test_section_chunks_align_with_toc()
     test_empty_and_untitled()
     test_table_rows_stay_intact()
     test_layout_table_falls_back_flat()
+    test_eu_overlay_preserves_existing_ids()
     print("\nAll tests passed.")

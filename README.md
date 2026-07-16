@@ -185,10 +185,12 @@ propre manifeste, indépendants de la voie ANSM.
 
 ## Recherche sémantique par médicament (optionnel)
 
-Chaque page RCP propose un encart « Rechercher dans ce RCP » : posez une question
-en langage naturel (« puis-je le prendre pendant la grossesse ? », « effets sur le
-foie ») et l'encart classe et met en avant les rubriques les plus proches, à
-l'intérieur de ce seul médicament. Tout se passe dans le navigateur : un petit
+Chaque page RCP (ainsi que chaque page `/eu/` au RCP complet converti depuis
+l'EMA) propose un encart « Rechercher dans ce RCP » : posez une question en langage
+naturel (« puis-je le prendre pendant la grossesse ? », « effets sur le foie ») et
+l'encart classe et met en avant les rubriques les plus proches, à l'intérieur de ce
+seul médicament. Les tableaux (posologie, etc.) sont indexés ligne par ligne pour
+que chaque ligne reste retrouvable. Tout se passe dans le navigateur : un petit
 modèle multilingue auto-hébergé (~120 Mo, `intfloat/multilingual-e5-small`)
 transforme la question en vecteur et le compare aux vecteurs des rubriques,
 précalculés à la construction. Aucune requête n'est envoyée à un serveur, aucun CDN
