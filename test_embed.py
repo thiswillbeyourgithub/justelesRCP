@@ -8,15 +8,24 @@
 """Unit tests for the pure semantic-search helpers in build.py.
 
 Run: ``uv run test_embed.py`` (no ML dependency; the model-side embedding lives in
-embed-rcp.py). Covers the two fiddly pure pieces the feature relies on:
+onnx_embed.py / embed-service.py). Covers the fiddly pure pieces the feature relies
+on:
 
 1. int8 quantise/dequantise round-trip stays within the ~1/127 error bound, so a
    query's cosine ranking over the baked section vectors is faithful.
 2. section_chunks() stays aligned with clean_rcp()'s sec-N anchors, so a search hit
    scrolls to a heading that actually exists in the rendered page.
+3. vec_payload/write_vec_json/read_vec_meta round-trip: the .vec.json the embed
+   service and embed-rcp.py write is decodable by the browser, and its baked
+   src_hash + model (the content-hash staleness key, no manifest) survives a
+   write+read via either the plain file or its .gz sibling.
 """
 
+import base64
 import math
+import struct
+import tempfile
+from pathlib import Path
 
 import build
 
@@ -167,6 +176,81 @@ def test_eu_overlay_preserves_existing_ids():
     print("ok  test_eu_overlay_preserves_existing_ids")
 
 
+def _decode_q(b64):
+    """Decode a base64 signed-int8 vector back to floats, exactly as the browser's
+    decodeVec does (mirror of build.quantize_int8: v = q / 127)."""
+    raw = base64.b64decode(b64)
+    q = struct.unpack(f"{len(raw)}b", raw)
+    return build.dequantize_int8(list(q))
+
+
+def test_vec_payload_roundtrip():
+    # vec_payload builds the exact wire format the browser consumes: {model, dim,
+    # query_prefix, src_hash, chunks:[{sec, snippet, q}]}, q = base64(int8).
+    chunks = [
+        ("sec-0", "prise pendant les repas", "4.2 posologie: a prendre au cours des repas"),
+        ("sec-3", "grossesse et allaitement", "4.6 grossesse: deconseille au 3e trimestre"),
+    ]
+    vecs = [
+        _l2_normalise([0.1 * (i - 3) for i in range(8)]),
+        _l2_normalise([(-1) ** i * 0.2 for i in range(8)]),
+    ]
+    payload = build.vec_payload(chunks, vecs, "Xenova/multilingual-e5-small",
+                                "query: ", "abc123def456")
+    assert payload["model"] == "Xenova/multilingual-e5-small"
+    assert payload["query_prefix"] == "query: "
+    assert payload["src_hash"] == "abc123def456"
+    assert payload["dim"] == 8, payload["dim"]
+    assert len(payload["chunks"]) == 2
+    c0 = payload["chunks"][0]
+    assert c0["sec"] == "sec-0" and c0["snippet"] == "prise pendant les repas"
+    # q decodes back to ~ the original vector, within the int8 error bound.
+    deq = _decode_q(c0["q"])
+    assert len(deq) == 8
+    for original, restored in zip(vecs[0], deq):
+        assert abs(original - restored) <= 1.0 / 127 + 1e-9, (original, restored)
+    print("ok  test_vec_payload_roundtrip")
+
+
+def test_write_read_vec_meta_roundtrip():
+    # write_vec_json writes the plain .vec.json + a .gz/.br sibling; read_vec_meta
+    # recovers the baked {src_hash, model} (the content-hash staleness key, no
+    # manifest) from EITHER the plain file or its .gz alone.
+    payload = build.vec_payload(
+        [("sec-0", "snip", "un texte")],
+        [_l2_normalise([0.3] * 6)],
+        "Xenova/multilingual-e5-small", "query: ", "feedface1234",
+    )
+    with tempfile.TemporaryDirectory() as d:
+        vec = Path(d) / "12345678-doliprane.vec.json"
+        build.write_vec_json(vec, payload)
+        assert vec.exists()
+        gz = vec.with_name(vec.name + ".gz")
+        assert gz.exists(), "expected a .gz sibling from compress()"
+        meta = build.read_vec_meta(vec)
+        assert meta == {"src_hash": "feedface1234",
+                        "model": "Xenova/multilingual-e5-small"}, meta
+        # With the plain file gone (as Caddy might serve only the .gz), the meta must
+        # still be readable from the compressed sibling.
+        vec.unlink()
+        meta_gz = build.read_vec_meta(vec)
+        assert meta_gz["src_hash"] == "feedface1234", meta_gz
+        # Missing entirely -> None (a not-yet-embedded page).
+        assert build.read_vec_meta(Path(d) / "00000000-none.vec.json") is None
+    print("ok  test_write_read_vec_meta_roundtrip")
+
+
+def test_raw_hash_is_the_staleness_key():
+    # The staleness gate (build.embed_page_to_vec) re-embeds iff raw_hash(raw) differs
+    # from the .vec.json's baked src_hash: deterministic, short, and flips on ANY
+    # change. So a no-op re-crawl that rewrote identical bytes hashes the same -> skip.
+    a = build.raw_hash("<div id='textDocument'>bonjour</div>")
+    assert a == build.raw_hash("<div id='textDocument'>bonjour</div>")  # deterministic
+    assert a != build.raw_hash("<div id='textDocument'>bonjour!</div>")  # any edit flips
+    assert len(a) == 16 and all(ch in "0123456789abcdef" for ch in a)
+    print("ok  test_raw_hash_is_the_staleness_key")
+
+
 if __name__ == "__main__":
     test_quantize_roundtrip()
     test_section_chunks_align_with_toc()
@@ -174,4 +258,7 @@ if __name__ == "__main__":
     test_table_rows_stay_intact()
     test_layout_table_falls_back_flat()
     test_eu_overlay_preserves_existing_ids()
+    test_vec_payload_roundtrip()
+    test_write_read_vec_meta_roundtrip()
+    test_raw_hash_is_the_staleness_key()
     print("\nAll tests passed.")
