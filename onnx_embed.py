@@ -30,6 +30,7 @@ Pure + import-safe (``__main__`` guard); no filesystem writes, no network.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections import OrderedDict
 from pathlib import Path
@@ -100,10 +101,13 @@ class Encoder:
                 self.dim = int(json.loads(cfg.read_text())["hidden_size"])
             except Exception:
                 pass
-        # Bounded LRU of query-string -> vector, so repeated/edited queries (common as
-        # the reader types) recompute nothing. Encoder-only concern; passages aren't
-        # cached (each is embedded once and persisted to its .vec.json).
-        self._q_cache: "OrderedDict[str, np.ndarray]" = OrderedDict()
+        # Bounded LRU of query-HASH -> vector, so repeated/edited queries (common as
+        # the reader types) recompute nothing. Keyed by a hash of the query text, NOT
+        # the text itself, so no plaintext query is ever retained in the process (only
+        # a hash -> lossy vector), keeping the "query dropped right after encoding"
+        # privacy promise literally true. Encoder-only concern; passages aren't cached
+        # (each is embedded once and persisted to its .vec.json).
+        self._q_cache: "OrderedDict[bytes, np.ndarray]" = OrderedDict()
         self._q_cache_max = max(0, int(query_cache))
 
     # -- core --------------------------------------------------------------
@@ -147,13 +151,16 @@ class Encoder:
 
     def encode_query(self, query: str) -> np.ndarray:
         """Embed ONE query (adds the query prefix), memoised in the LRU. Returns a
-        1-D float32 vector of length ``dim``."""
-        key = query.strip()
+        1-D float32 vector of length ``dim``. The cache is keyed by a hash of the query
+        so the plaintext text stays a local that is dropped when this returns; only a
+        hash -> vector pair lives in the LRU (never the query itself)."""
+        text = query.strip()
+        key = hashlib.blake2b(text.encode("utf-8"), digest_size=16).digest()
         cached = self._q_cache.get(key)
         if cached is not None:
             self._q_cache.move_to_end(key)
             return cached
-        vec = self.encode([key], prefix=self.query_prefix)[0]
+        vec = self.encode([text], prefix=self.query_prefix)[0]
         if self._q_cache_max:
             self._q_cache[key] = vec
             while len(self._q_cache) > self._q_cache_max:

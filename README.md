@@ -204,8 +204,10 @@ il n'envoie que le court texte de la requête à notre propre point d'accès
 rubriques, localement. Le compromis est une légère baisse de confidentialité : le
 texte de la requête transite désormais par notre serveur, mais il n'est **jamais
 journalisé** (seulement des compteurs et des latences) et abandonné aussitôt après
-vectorisation, sur un conteneur en lecture seule. La CSP stricte redevient
-`default-src 'self'` sans aucune ouverture WebAssembly.
+vectorisation (le petit cache en mémoire qui évite de recalculer les requêtes
+répétées est indexé par un hachage du texte, pas par le texte lui-même), sur un
+conteneur en lecture seule. La CSP stricte redevient `default-src 'self'` sans aucune
+ouverture WebAssembly.
 
 La recherche sémantique ne couvre que les pages **rafraîchies depuis la source
 officielle** (le re-scraping ANSM ou le PDF EMA), jamais la version figée de 2022. Le

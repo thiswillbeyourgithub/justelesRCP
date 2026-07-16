@@ -184,8 +184,10 @@ service (`embed-service.py`) that keeps a multilingual model
 short query text to our own same-origin `/api/sem/embed` and ranks the returned
 vector against the page's section vectors locally. The trade-off is a little
 privacy: the query text now transits our server, but it is **never logged** (only
-counts and latency) and dropped right after encoding, on a read-only container. The
-strict CSP goes back to `default-src 'self'` with no WebAssembly relaxation.
+counts and latency) and dropped right after encoding (the small in-memory cache that
+avoids recomputing repeated queries is keyed by a hash of the text, not the text
+itself), on a read-only container. The strict CSP goes back to `default-src 'self'`
+with no WebAssembly relaxation.
 
 Semantic search only covers pages that have been **refreshed from the official
 source** (the ANSM re-scrape or the EMA PDF), never the frozen 2022 baseline. The

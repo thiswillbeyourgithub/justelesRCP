@@ -474,7 +474,9 @@ Key facts that aren't obvious from a single file:
   wasm under `/vendor` + `/models`), which was the feature's worst wart and forced a
   `'wasm-unsafe-eval'` CSP relaxation. Now the browser downloads nothing; the trade
   is that the query text transits our same-origin server (never logged, dropped right
-  after encoding, read-only `cap_drop: ALL` container). **Segmentation is shared**:
+  after encoding: the warm encoder's query LRU is keyed by a BLAKE2 hash of the text,
+  not the text itself, so only a hash -> lossy vector is ever retained, read-only
+  `cap_drop: ALL` container). **Segmentation is shared**:
   `build.section_chunks(raw, cis)` runs the SAME `clean_rcp` path as the rendered
   page, so its chunks carry the same `sec-N` ids the ToC/anchors use (a hit scrolls
   to a heading that exists); it returns `(sec_id, snippet, chunk_text)` per ~500-char
