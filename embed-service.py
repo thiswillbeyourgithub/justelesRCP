@@ -94,7 +94,8 @@ class Embedder:
 
     def __init__(self, encoder, model: str, *, backlog: bool, backlog_rate: float,
                  reconcile_seconds: float, queue_max: int, refresh_url: str,
-                 timeout: float, min_chars: int, max_chars: int) -> None:
+                 timeout: float, min_chars: int, max_chars: int,
+                 max_concurrent_queries: int = 8, query_wait: float = 2.0) -> None:
         self.encoder = encoder
         self.model = model
         self.backlog = backlog
@@ -106,13 +107,21 @@ class Embedder:
         self.min_chars = max(1, min_chars)
         self.max_chars = max(self.min_chars, max_chars)
 
+        # Bound how many query encodes run at once so a flood of same-origin query POSTs
+        # can't pin every core (each request runs on its own ThreadingHTTPServer thread,
+        # which is otherwise unbounded). A brief wait absorbs normal bursts; past that a
+        # request is shed with 503 rather than piling onto the CPU. Per-IP rate limiting
+        # still belongs at the upstream proxy (see docs).
+        self.query_wait = max(0.0, query_wait)
+        self._query_slots = threading.BoundedSemaphore(max(1, int(max_concurrent_queries)))
+
         self._lock = threading.Lock()
         self._queue: deque[str] = deque()
         self._pending: "OrderedDict[str, str]" = OrderedDict()  # cis -> source
         self._running: str | None = None
         self._wake = threading.Event()
         self._stats = {"embedded": 0, "skipped": 0, "errors": 0,
-                       "queries": 0, "crawl_triggered": 0}
+                       "queries": 0, "queries_shed": 0, "crawl_triggered": 0}
 
     # -- lifecycle ---------------------------------------------------------
     def start(self) -> None:
@@ -308,10 +317,23 @@ class Embedder:
             self._stats["crawl_triggered"] += 1
         return "crawling" if ok else "unavailable"
 
+    def acquire_query_slot(self) -> bool:
+        """Reserve one of the bounded concurrent-encode slots (waits up to query_wait).
+        False -> the encoder is saturated, the caller should shed the request (503)."""
+        if self._query_slots.acquire(timeout=self.query_wait):
+            return True
+        with self._lock:
+            self._stats["queries_shed"] += 1
+        return False
+
+    def release_query_slot(self) -> None:
+        self._query_slots.release()
+
     def embed_query(self, q: str) -> dict:
         """Embed ONE query -> int8 base64 vector (same wire format as the passage
         vectors, so the client dequantises both with decodeVec). The query text is
-        never logged or persisted."""
+        never logged or persisted. Call under acquire_query_slot()/release_query_slot()
+        so concurrent encodes stay bounded."""
         vec = self.encoder.encode_query(q)
         qi = build.quantize_int8(vec.tolist())
         b64 = base64.b64encode(struct.pack(f"{len(qi)}b", *qi)).decode("ascii")
@@ -435,7 +457,15 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(400, {"error": f"query must be {EMBEDDER.min_chars}"
                                       f"-{EMBEDDER.max_chars} chars"})
             return
-        self._send(200, EMBEDDER.embed_query(q))
+        # Bound concurrent encodes (acquire only AFTER validation, so a bad request
+        # never holds a slot). Saturated -> 503 so the client backs off.
+        if not EMBEDDER.acquire_query_slot():
+            self._send(503, {"error": "busy"})
+            return
+        try:
+            self._send(200, EMBEDDER.embed_query(q))
+        finally:
+            EMBEDDER.release_query_slot()
 
 
 EMBEDDER: Embedder | None = None  # set in main(), read by _Handler
@@ -482,6 +512,11 @@ EMBEDDER: Embedder | None = None  # set in main(), read by _Handler
               envvar="EMBED_QUEUE_MAX",
               help="Max pending pages before non-user requests get 'busy' "
                    "(env EMBED_QUEUE_MAX).")
+@click.option("--max-concurrent-queries", type=int, default=8, show_default=True,
+              envvar="EMBED_MAX_CONCURRENT_QUERIES",
+              help="Max query encodes running at once (env EMBED_MAX_CONCURRENT_QUERIES); "
+                   "a flood past this is shed with 503 so it can't pin every core. Per-IP "
+                   "rate limiting still belongs at the upstream proxy.")
 @click.option("--refresh-url", default="http://refresh:8460", show_default=True,
               envvar="REFRESH_TRIGGER_URL",
               help="Base URL of the refresh service, used to crawl a baseline page on "
@@ -497,7 +532,7 @@ EMBEDDER: Embedder | None = None  # set in main(), read by _Handler
                    "logged; query text is never logged.")
 def main(host, port, model_dir, intra_threads, min_query_chars, max_query_chars,
          query_cache, backlog, backlog_rate, reconcile_seconds, queue_max,
-         refresh_url, timeout, log_level) -> None:
+         max_concurrent_queries, refresh_url, timeout, log_level) -> None:
     """Run the semantic-search embedder (see module docstring)."""
     global EMBEDDER
     logger.remove()
@@ -517,6 +552,7 @@ def main(host, port, model_dir, intra_threads, min_query_chars, max_query_chars,
         encoder, onnx_embed.RUNTIME_MODEL, backlog=backlog, backlog_rate=backlog_rate,
         reconcile_seconds=reconcile_seconds, queue_max=queue_max, refresh_url=refresh_url,
         timeout=timeout, min_chars=min_query_chars, max_chars=max_query_chars,
+        max_concurrent_queries=max_concurrent_queries,
     )
     EMBEDDER.start()
 

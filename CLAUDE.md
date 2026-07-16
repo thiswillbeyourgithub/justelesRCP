@@ -499,7 +499,9 @@ Key facts that aren't obvious from a single file:
   `_lock`, a priority queue, ONE background worker) embeds the query on request
   (`POST /api/sem/embed` -> `{q: base64-int8, dim}`, on a request thread so it never
   waits behind the worker; bounded LRU; `>= EMBED_MIN_QUERY_CHARS` / `<=
-  EMBED_MAX_QUERY_CHARS` else 400; query CONTENT never logged) and (re-)embeds each
+  EMBED_MAX_QUERY_CHARS` else 400; a `BoundedSemaphore` of `EMBED_MAX_CONCURRENT_QUERIES`
+  bounds concurrent encodes so a query flood can't pin every core, shedding past it with
+  503; query CONTENT never logged) and (re-)embeds each
   **crawled** page in the background (`POST /api/sem/page/<cis>` embeds now, front of
   queue; `GET /api/sem/page/<cis>` -> `{embedded, pending}`; `/api/sem/health` never
   logged; `/api/sem/stats`). **Crawled-only + content-hash staleness**: it embeds ONLY
@@ -606,8 +608,9 @@ uv run embed-service.py   # optional: warm SERVER-SIDE embedder on :8461 (behind
                           #  background, writing dist/<rcp|eu>/<slug>.vec.json (never the 2022 baseline)
                           # knobs (env): EMBED_ENABLE (backlog sweep 1=on), EMBED_INTRA_THREADS (4),
                           # EMBED_BACKLOG_RATE_SECONDS (2), EMBED_RECONCILE_SECONDS (60), EMBED_QUEUE_MAX
-                          #  (500), EMBED_MIN/MAX_QUERY_CHARS (10/400), EMBED_QUERY_CACHE (256),
-                          #  EMBED_MODEL_DIR, REFRESH_TRIGGER_URL (baseline auto-crawl), EMBED_LOG_LEVEL;
+                          #  (500), EMBED_MAX_CONCURRENT_QUERIES (8, bounds encode CPU; per-IP rate limit
+                          #  belongs at the proxy), EMBED_MIN/MAX_QUERY_CHARS (10/400), EMBED_QUERY_CACHE
+                          #  (256), EMBED_MODEL_DIR, REFRESH_TRIGGER_URL (baseline auto-crawl), EMBED_LOG_LEVEL;
                           # GET /api/sem/stats; query CONTENT is never logged (privacy)
 cp docker/env.example docker/.env                      # optional: umami analytics / DEV banner / refresh + embed knobs
 docker compose -f docker/docker-compose.yml up -d      # serve ./dist on :8459 + refresh + embed services (read-only, hardened)
