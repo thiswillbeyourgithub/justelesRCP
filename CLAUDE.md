@@ -585,9 +585,17 @@ Key facts that aren't obvious from a single file:
   loads). In the container, `docker/entrypoint.sh` renders an equivalent file
   from `docker/.env` into the `/gen` tmpfs and `docker/Caddyfile` serves THAT for
   `/app-config.js`, so the build stays config-free. `src/app-init.js` injects the
-  umami tag + a click tracker; `src/dev-banner.js` shows the WIP banner when
-  `DEV=1`. Keep the config keys in sync between `src/app-config.js` and the
-  heredoc in `docker/entrypoint.sh`.
+  umami tag + a delegated click tracker (`window.trackEvent(name, data)`, a no-op
+  when metrics are off / Do-Not-Track), and `src/dev-banner.js` shows the WIP
+  banner when `DEV=1`. Keep the config keys in sync between `src/app-config.js` and
+  the heredoc in `docker/entrypoint.sh`. **Analytics privacy for per-drug semantic
+  search:** the reader's query is NEVER sent to umami (it goes only to the
+  same-origin embed service). The click tracker explicitly skips `.semsearch` (so a
+  result snippet, i.e. page text, never becomes an event label), and
+  `src/rcp-semsearch.js` emits its own query-free events instead: `recherche-rcp`
+  (once per opened search session, `{resultats: <count>}`) and `recherche-rcp-nav`
+  (`{sens: "precedent"|"suivant"}` per prev/next click). Keep that skip + the two
+  events in sync across `src/app-init.js` and `src/rcp-semsearch.js`.
 
 ## Commands
 

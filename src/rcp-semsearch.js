@@ -10,6 +10,13 @@
 // dropped right after encoding (see the service + docs). Everything stays
 // same-origin, so the strict CSP (default-src 'self') holds with no relaxation.
 //
+// Analytics (umami, optional): we emit two PRIVACY-SAFE usage events via app-init's
+// guarded window.trackEvent - "recherche-rcp" once per opened search session and
+// "recherche-rcp-nav" per prev/next click - carrying ONLY coarse counts, NEVER the
+// reader's query text (which stays between the browser and the same-origin embed
+// service). The generic click tracker in app-init.js explicitly skips .semsearch so
+// no result snippet (page text) leaks as an event label either.
+//
 // Two halves:
 //   1. Per-page vectors: the embed service bakes dist/<rcp|eu>/<slug>.vec.json (int8,
 //      one vector per section chunk) as each page is CRAWLED (never the frozen 2022
@@ -102,9 +109,16 @@
   let current = -1;
   let highlighted = []; // elements currently tagged, for cleanup
   let lastRanked = ""; // the query behind the current hit list (Enter = next vs search)
+  let usageTracked = false; // fire the "used" analytics event once per open session
 
   function setStatus(text) {
     status.textContent = text || "";
+  }
+
+  // Privacy-safe analytics: forward to app-init's guarded tracker (a no-op when
+  // metrics are off / Do-Not-Track / umami absent). NEVER pass the query text here.
+  function track(name, data) {
+    if (typeof window.trackEvent === "function") window.trackEvent(name, data);
   }
 
   // base64(signed int8 bytes) -> dequantised Float32Array (mirror of build.py
@@ -302,6 +316,13 @@
       hits.push({ sec: s.sec, snippet: s.snippet, score: s.score, el: el });
     }
     renderHits();
+    // "The semantic search was used": fire once per opened session, after a real
+    // query has been encoded + ranked (fires even for 0 hits). Coarse count only,
+    // no query text. Reset on box-close so a later fresh open counts again.
+    if (!usageTracked) {
+      usageTracked = true;
+      track("recherche-rcp", { resultats: hits.length });
+    }
     if (!hits.length) {
       setStatus("Aucun passage pertinent.");
       return;
@@ -419,8 +440,16 @@
     }
   }
 
-  prevBtn.addEventListener("click", () => setCurrent(current - 1, true));
-  nextBtn.addEventListener("click", () => setCurrent(current + 1, true));
+  prevBtn.addEventListener("click", () => {
+    if (!hits.length) return;
+    setCurrent(current - 1, true);
+    track("recherche-rcp-nav", { sens: "precedent" });
+  });
+  nextBtn.addEventListener("click", () => {
+    if (!hits.length) return;
+    setCurrent(current + 1, true);
+    track("recherche-rcp-nav", { sens: "suivant" });
+  });
 
   // --- input wiring ---------------------------------------------------------
   // Encoding is a round-trip, so search after a short typing pause, not per key.
@@ -444,5 +473,10 @@
       box.removeEventListener("toggle", warm);
       ensureReady().catch(() => {});
     }
+  });
+
+  // A fresh open is a new search session for the "used" event (see rank()).
+  box.addEventListener("toggle", () => {
+    if (!box.open) usageTracked = false;
   });
 })();

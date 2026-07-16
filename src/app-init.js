@@ -275,6 +275,11 @@
         "[data-track], button, a[href], #results li, .azbar a, .drug-list a"
       );
       if (!el) return;
+      // The in-RCP semantic search emits its OWN privacy-safe events from
+      // rcp-semsearch.js (usage + prev/next, never the query). Skip its controls
+      // here so a result snippet (page text) never becomes an event label and nav
+      // clicks are not double-counted.
+      if (el.closest(".semsearch")) return;
       const label = (
         el.getAttribute("data-track") ||
         el.getAttribute("aria-label") ||
