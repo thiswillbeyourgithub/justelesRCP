@@ -49,10 +49,8 @@ logged that contains a query's text.
 from __future__ import annotations
 
 import base64
-import gzip
 import importlib.util
 import json
-import os
 import re
 import signal
 import struct
@@ -138,28 +136,18 @@ class Embedder:
             return None  # zero-byte sentinel: scraped, no body
         return None
 
+    # Page resolution + vec-meta reading live in build.py (shared with embed-rcp.py's
+    # offline pre-bake, so the two never disagree); these are thin adapters.
     def _dist_page(self, cis: str, subdir: str) -> Path | None:
-        hits = sorted((build.DIST / subdir).glob(f"{cis}-*.html"))
-        return hits[0] if hits else None
+        return build.dist_page_for(cis, subdir)
 
     @staticmethod
     def _vec_path(page: Path) -> Path:
-        return page.parent / (page.stem + ".vec.json")
+        return build.vec_path_for(page)
 
     def _read_vec_meta(self, vec: Path) -> dict | None:
         """{src_hash, model} baked into an existing .vec.json (or its .gz), else None."""
-        for p in (vec, vec.with_name(vec.name + ".gz")):
-            if not p.exists():
-                continue
-            try:
-                data = p.read_bytes()
-                if p.suffix == ".gz":
-                    data = gzip.decompress(data)
-                d = json.loads(data)
-                return {"src_hash": d.get("src_hash"), "model": d.get("model")}
-            except Exception:
-                return None
-        return None
+        return build.read_vec_meta(vec)
 
     def _is_embedded(self, cis: str) -> bool:
         """The page has a .vec.json whose baked src_hash + model match its CURRENT
@@ -200,33 +188,15 @@ class Embedder:
 
     # -- the actual embedding ---------------------------------------------
     def _embed_page(self, cis: str) -> str:
+        """Embed ONE crawled page's sections into its .vec.json. Returns
+        "ok"|"fresh"|"no-page"|"absent". The segment->encode->hash-gate->write core is
+        build.embed_page_to_vec (shared with embed-rcp.py); here we only resolve the
+        overlay (crawled-only; baseline pages return "absent")."""
         ov = self._overlay_for(cis)
         if ov is None:
             return "absent"
         raw, subdir = ov
-        page = self._dist_page(cis, subdir)
-        if page is None:
-            return "no-page"  # overlay but no rendered page: nothing to attach a vec to
-        vec = self._vec_path(page)
-        src_hash = build.raw_hash(raw)
-        meta = self._read_vec_meta(vec)
-        if meta and meta["src_hash"] == src_hash and meta["model"] == self.model:
-            # Unchanged (e.g. a no-op refresh rewrote identical bytes): skip the encode
-            # and bump the vec mtime so the reconcile mtime-gate stops re-queuing it.
-            try:
-                os.utime(vec, None)
-            except OSError:
-                pass
-            return "fresh"
-        chunks = build.section_chunks(raw, cis)
-        # Even with no searchable sections, persist an empty payload carrying src_hash,
-        # so the hash gate marks it fresh and we don't re-embed it every sweep.
-        texts = [c[2] for c in chunks]
-        vecs = self.encoder.encode_passages(texts) if texts else []
-        payload = build.vec_payload(chunks, vecs, self.model,
-                                    self.encoder.query_prefix, src_hash)
-        build.write_vec_json(vec, payload)
-        return "ok"
+        return build.embed_page_to_vec(cis, raw, subdir, self.encoder, model=self.model)
 
     def _worker(self) -> None:
         while True:

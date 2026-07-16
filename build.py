@@ -1199,6 +1199,102 @@ def write_vec_json(dist_path: Path, payload: dict) -> None:
     compress(dist_path)
 
 
+# --- semantic-search page resolution + one-page embed (shared by the embed service
+#     AND embed-rcp.py, so the runtime and the offline pre-bake never disagree) -----
+_VEC_LANES = (("rcp", RCP_OVERLAY_DIR), ("eu", EU_OVERLAY_DIR))
+
+
+def dist_page_for(cis: str, subdir: str) -> Path | None:
+    """The built ``dist/<subdir>/<cis>-<slug>.html`` for this CIS, or None if the page
+    isn't rendered yet (nothing to attach a .vec.json to)."""
+    hits = sorted((DIST / subdir).glob(f"{cis}-*.html"))
+    return hits[0] if hits else None
+
+
+def vec_path_for(page: Path) -> Path:
+    """The ``.vec.json`` sidecar path next to a rendered page."""
+    return page.parent / (page.stem + ".vec.json")
+
+
+def read_vec_meta(vec: Path) -> dict | None:
+    """``{src_hash, model}`` baked into an existing ``.vec.json`` (or its ``.gz``),
+    else None. The self-describing staleness key: no separate manifest is kept."""
+    for p in (vec, vec.with_name(vec.name + ".gz")):
+        if not p.exists():
+            continue
+        try:
+            data = p.read_bytes()
+            if p.suffix == ".gz":
+                data = gzip.decompress(data)
+            d = json.loads(data)
+            return {"src_hash": d.get("src_hash"), "model": d.get("model")}
+        except Exception:
+            return None
+    return None
+
+
+def iter_overlay_raw():
+    """Yield ``(cis, raw, subdir)`` for every CRAWLED page: a non-empty overlay in
+    ``data/rcp`` (subdir ``"rcp"``) or ``data/eu`` (subdir ``"eu"``). Skips zero-byte
+    overlays ("scraped, no body") and NEVER touches the frozen 2022 baseline CSV, so
+    the semantic-search index only ever covers fresh, re-scraped text. Shared by the
+    embed service's sweep intent and embed-rcp.py's offline pre-bake so both embed the
+    exact same set."""
+    for subdir, odir in _VEC_LANES:
+        if not odir.is_dir():
+            continue
+        seen: set[str] = set()
+        for ov in sorted((*odir.glob("*.html"), *odir.glob("*.html.gz"))):
+            cis = ov.name.split(".", 1)[0]
+            if cis in seen or not re.fullmatch(r"\d{8}", cis):
+                continue
+            seen.add(cis)
+            path = _overlay_path(cis, odir)
+            if path is None:
+                continue
+            raw = _read_overlay(path)
+            if raw.strip():
+                yield cis, raw, subdir
+
+
+def embed_page_to_vec(cis: str, raw: str, subdir: str, encoder, *,
+                      model: str, force: bool = False) -> str:
+    """Segment a crawled page's raw HTML into sections, embed them with ``encoder``,
+    and write ``dist/<subdir>/<slug>.vec.json``. Returns ``"ok"`` (wrote fresh
+    vectors), ``"fresh"`` (content hash + model unchanged, skipped the encode) or
+    ``"no-page"`` (overlay exists but the page isn't rendered yet).
+
+    ``encoder`` is any object exposing ``encode_passages(list[str]) -> vecs`` and a
+    ``query_prefix`` attribute (onnx_embed.Encoder). Injecting it keeps build.py free
+    of the onnxruntime dependency while making this the SINGLE embed-one-page
+    implementation shared by embed-service.py (runtime) and embed-rcp.py (offline
+    pre-bake), so their vectors can never disagree. Staleness is the content hash
+    baked into the existing .vec.json (see read_vec_meta); a no-op re-crawl that
+    rewrote identical bytes hashes the same and is skipped (mtime bumped so a
+    mtime-gated sweep stops re-queuing it)."""
+    page = dist_page_for(cis, subdir)
+    if page is None:
+        return "no-page"
+    vec = vec_path_for(page)
+    src_hash = raw_hash(raw)
+    if not force:
+        meta = read_vec_meta(vec)
+        if meta and meta.get("src_hash") == src_hash and meta.get("model") == model:
+            try:
+                os.utime(vec, None)
+            except OSError:
+                pass
+            return "fresh"
+    chunks = section_chunks(raw, cis)
+    # Even with no searchable sections, persist an empty payload carrying src_hash so
+    # the hash gate marks it fresh and we don't re-embed it on every pass.
+    texts = [c[2] for c in chunks]
+    vecs = encoder.encode_passages(texts) if texts else []
+    payload = vec_payload(chunks, vecs, model, encoder.query_prefix, src_hash)
+    write_vec_json(vec, payload)
+    return "ok"
+
+
 # --- per-record rendering, run in a worker process pool ---------------------
 _NAMES: dict[str, str] = {}
 _TPL = ""
