@@ -225,10 +225,13 @@ class Embedder:
                 time.sleep(self.backlog_rate)
 
     # -- reconcile sweep ---------------------------------------------------
-    def _scan_and_enqueue(self) -> int:
-        """Enqueue every crawled page whose .vec.json is missing or older than its
-        overlay (cheap stat-only mtime gate; the hash is the authoritative gate in
-        _embed_page). Backstop for missed notifies + manual scrape-*.py runs."""
+    def _scan_and_enqueue(self, check_model: bool = False) -> int:
+        """Enqueue every crawled page whose .vec.json is missing or stale (cheap
+        stat-only mtime gate via build.vec_is_fresh; the src_hash+model hash is the
+        authoritative gate in _embed_page). Backstop for missed notifies + manual
+        scrape-*.py runs. ``check_model`` (the first pass, see _reconcile_loop) also
+        re-embeds mtime-fresh pages whose baked model differs from the current one, so
+        a model swap isn't hidden by the mtime gate forever."""
         queued = 0
         for subdir, odir in _LANES:
             if not odir.is_dir():
@@ -243,24 +246,26 @@ class Embedder:
                 if page is None:
                     continue
                 vec = self._vec_path(page)
-                try:
-                    if vec.exists() and vec.stat().st_mtime >= ov.stat().st_mtime:
-                        continue
-                except OSError:
-                    pass
+                if build.vec_is_fresh(vec, ov, self.model, check_model=check_model):
+                    continue
                 if self._enqueue(cis, "sweep", front=False) == "queued":
                     queued += 1
         return queued
 
     def _reconcile_loop(self) -> None:
+        # The FIRST pass also reads each mtime-fresh vec's baked model so a model swap
+        # (which leaves the vec newer than its unchanged overlay) is re-embedded; later
+        # passes are the cheap mtime-only gate.
+        check_model = True
         while True:
             try:
-                n = self._scan_and_enqueue()
+                n = self._scan_and_enqueue(check_model=check_model)
                 if n:
                     logger.info("reconcile: queued {} stale page(s) (queue={})",
                                 n, len(self._queue))
             except Exception as exc:
                 logger.warning("reconcile scan failed: {}", exc)
+            check_model = False
             time.sleep(self.reconcile_seconds)
 
     # -- request handlers (called from the HTTP threads) -------------------

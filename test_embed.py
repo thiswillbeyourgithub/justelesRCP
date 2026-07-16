@@ -23,6 +23,7 @@ on:
 
 import base64
 import math
+import os
 import struct
 import tempfile
 from pathlib import Path
@@ -251,6 +252,41 @@ def test_raw_hash_is_the_staleness_key():
     print("ok  test_raw_hash_is_the_staleness_key")
 
 
+def test_vec_is_fresh_gate():
+    # The reconcile sweep's cheap enqueue gate. Its subtle case: a MODEL swap leaves an
+    # already-embedded vec newer than its unchanged overlay, so the mtime-only gate must
+    # NOT report it fresh on the check_model pass (else new-model query vectors would
+    # rank against old-model passage vectors, silently wrong).
+    payload_old = build.vec_payload([("sec-0", "snip", "texte")],
+                                    [_l2_normalise([0.3] * 6)],
+                                    "old-model", "query: ", "cafe1234cafe1234")
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        overlay = d / "12345678.html"
+        overlay.write_text("<div id='textDocument'>x</div>")
+        vec = d / "12345678-doliprane.vec.json"
+
+        # 1. No vec yet -> not fresh (embed it).
+        assert not build.vec_is_fresh(vec, overlay, "old-model", check_model=False)
+
+        build.write_vec_json(vec, payload_old)
+        # 2. Vec OLDER than overlay -> not fresh (a re-crawl bumped the overlay).
+        os.utime(overlay, (overlay.stat().st_atime, vec.stat().st_mtime + 10))
+        assert not build.vec_is_fresh(vec, overlay, "old-model", check_model=False)
+
+        # 3. Vec NEWER than overlay, mtime-only pass -> fresh (the common skip).
+        os.utime(overlay, (overlay.stat().st_atime, vec.stat().st_mtime - 10))
+        assert build.vec_is_fresh(vec, overlay, "old-model", check_model=False)
+
+        # 4. Same, check_model pass, baked model MATCHES current -> still fresh.
+        assert build.vec_is_fresh(vec, overlay, "old-model", check_model=True)
+
+        # 5. Same, check_model pass, current model DIFFERS from the baked one -> stale,
+        #    so the startup pass re-embeds it despite the newer mtime (the #1 fix).
+        assert not build.vec_is_fresh(vec, overlay, "new-model", check_model=True)
+    print("ok  test_vec_is_fresh_gate")
+
+
 if __name__ == "__main__":
     test_quantize_roundtrip()
     test_section_chunks_align_with_toc()
@@ -261,4 +297,5 @@ if __name__ == "__main__":
     test_vec_payload_roundtrip()
     test_write_read_vec_meta_roundtrip()
     test_raw_hash_is_the_staleness_key()
+    test_vec_is_fresh_gate()
     print("\nAll tests passed.")

@@ -1233,6 +1233,33 @@ def read_vec_meta(vec: Path) -> dict | None:
     return None
 
 
+def vec_is_fresh(vec: Path, overlay: Path, model: str, *, check_model: bool) -> bool:
+    """Cheap "is this page's .vec.json up to date?" gate for the embed service's
+    reconcile sweep, so it can skip re-enqueuing pages that are already embedded.
+
+    The fast path is stat-only: the ``.vec.json`` exists and is at least as new as the
+    overlay (mtime). That is enough for the common case (a re-crawl rewrites the overlay
+    -> newer mtime -> the vec looks older -> re-embed). BUT a MODEL swap leaves every
+    already-embedded page's vec newer than its unchanged overlay, so the mtime gate
+    alone would hide the mismatch forever and the reader would get new-model query
+    vectors ranked against old-model passage vectors (silently wrong). So on the
+    ``check_model`` pass (run once at startup, when a model change is picked up), a vec
+    that looks mtime-fresh is ALSO required to carry the current model in its baked
+    metadata; otherwise it is treated as stale and re-embedded. The authoritative
+    src_hash+model gate still lives in ``embed_page_to_vec``; this only decides whether
+    to bother enqueuing."""
+    try:
+        if not (vec.exists() and vec.stat().st_mtime >= overlay.stat().st_mtime):
+            return False
+    except OSError:
+        return False
+    if check_model:
+        meta = read_vec_meta(vec)
+        if not meta or meta.get("model") != model:
+            return False
+    return True
+
+
 def iter_overlay_raw():
     """Yield ``(cis, raw, subdir)`` for every CRAWLED page: a non-empty overlay in
     ``data/rcp`` (subdir ``"rcp"``) or ``data/eu`` (subdir ``"eu"``). Skips zero-byte

@@ -511,7 +511,12 @@ Key facts that aren't obvious from a single file:
   manifest. A search on a never-crawled (baseline-only) page returns `crawling`: the
   service asks the refresh service (`REFRESH_TRIGGER_URL`) to crawl it first, then
   embeds it when the overlay lands (driven by the refresh service's `EMBED_NOTIFY_URL`
-  ping, with a periodic reconcile scan as backstop). It writes the served
+  ping, with a periodic reconcile scan as backstop). The reconcile scan's cheap enqueue
+  gate is `build.vec_is_fresh` (stat-only mtime), but its FIRST pass runs with
+  `check_model=True` so a MODEL swap (which leaves each already-embedded `.vec.json`
+  newer than its unchanged overlay, hiding the mismatch from a pure mtime gate) is
+  re-embedded across the whole catalog on restart; the authoritative `src_hash`+`model`
+  gate still lives in `embed_page_to_vec`. It writes the served
   `dist/rcp/<slug>.vec.json` / `dist/eu/<slug>.vec.json` (`{model, dim, query_prefix,
   src_hash, chunks:[{sec, snippet, q}]}`) DIRECTLY via `build.write_vec_json`, in a
   SEPARATE sidecar (NOT inline in the page, NOT in `_record_hash`/the template), so
@@ -531,7 +536,8 @@ Key facts that aren't obvious from a single file:
   `onnx_embed.RUNTIME_MODEL` (server) and the model `download-model.sh` fetches MUST
   stay the same weights (query and passage vectors must match). Keep the contract in
   sync across `section_chunks`/`quantize_int8`/`raw_hash`/`iter_overlay_raw`/
-  `dist_page_for`/`read_vec_meta`/`vec_payload`/`write_vec_json`/`embed_page_to_vec`
+  `dist_page_for`/`read_vec_meta`/`vec_is_fresh`/`vec_payload`/`write_vec_json`/
+  `embed_page_to_vec`
   (build.py), `onnx_embed.py`, `embed-service.py`, `embed-rcp.py`,
   `src/rcp-semsearch.js`, the `<script>` in `src/rcp.html`, `.semsearch*` in
   `style.css`, `download-model.sh`, the `/api/sem/*` route + strict CSP in
