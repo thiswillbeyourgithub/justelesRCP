@@ -18,11 +18,11 @@ for-profit medicine sites.
 - Client-side instant search over ~15,600 medicines, plus crawlable A-Z browse
   pages.
 - Semantic (embeddings) search within a given RCP page: type a natural-language
-  question ("can I take it while pregnant?") and the page takes you to the most
-  relevant sections. Everything is computed in the browser with a self-hosted
-  model (nothing is sent to a server, no CDN), so it is privacy-respecting; the
-  model (~120 MB) is downloaded only on first explicit use, then cached (see
-  below, optional).
+  question ("can I take it while pregnant?") and the page highlights the most
+  relevant passages, with previous/next navigation. The query is embedded by a
+  small self-hosted service (no ~120 MB model is downloaded to your browser
+  anymore); it only covers pages that have been refreshed from the official
+  source, never the frozen 2022 baseline. Optional, see below.
 - Cross-drug backlinks: each RCP page automatically links the drug and substance
   names it mentions (e.g. "oméprazole", "carbamazépine") to those drugs' own
   pages, with a "Médicaments liés" (related medicines) box at the foot. Only
@@ -136,8 +136,9 @@ coming from the automatic queue ("timer").
 Every RCP page has a "Rafraîchir maintenant" (refresh now) button, and a page whose
 copy we last captured more than a year ago refreshes itself on load. Both call a small companion
 service (`refresh-service.py`, `POST /api/refresh/<cis>`) that fetches the live ANSM
-page, writes the overlay and rebuilds that one page. It is **the only dynamic part**
-of the project: it runs in a separate, hardened container (read-only except three
+page, writes the overlay and rebuilds that one page. It is one of only two dynamic
+parts of the project (the other is the semantic-search embed service, below): it runs
+in a separate, hardened container (read-only except three
 narrow paths) so the web server itself can stay fully read-only, and per-lane rate
 limits plus a per-drug floor (many visitors on the same page trigger a single fetch)
 keep it gentle on the ANSM site. It is entirely **optional**: `docker compose ... up`
@@ -171,28 +172,40 @@ independent of the ANSM lane.
 
 Every RCP page (and every full `/eu/` page converted from the EMA) has a
 "Rechercher dans ce RCP" box: type a natural-language question ("can I take it
-while pregnant?", "effects on the liver") and the box ranks and highlights the
-closest sections, within that one drug. Tables (posology, etc.) are indexed row by
-row so each row stays retrievable. It all happens in
-the browser: a small self-hosted multilingual model (~120 MB,
-`intfloat/multilingual-e5-small`) turns the question into a vector and compares it
-to the section vectors, precomputed at build time. No request is sent to any
-server, no CDN is contacted (the strict CSP is preserved); the model is downloaded
-only on the first explicit search, then cached by the browser.
+while pregnant?", "effects on the liver") and the box ranks the closest passages
+within that one drug, highlights the matching paragraph and lets you step through
+the hits with previous/next. Tables (posology, etc.) are indexed row by row so each
+row stays retrievable.
 
-It is **entirely optional**: without the model files the box simply shows "pas
-encore disponible" and the rest of the site is unchanged. To enable it:
+The query is embedded **server-side** by a small, hardened, read-only companion
+service (`embed-service.py`) that keeps a multilingual model
+(`Xenova/multilingual-e5-small`, int8 ONNX, ~120 MB) warm. The browser downloads
+**no model anymore** (the old design pulled ~120 MB per visitor); it only sends the
+short query text to our own same-origin `/api/sem/embed` and ranks the returned
+vector against the page's section vectors locally. The trade-off is a little
+privacy: the query text now transits our server, but it is **never logged** (only
+counts and latency) and dropped right after encoding, on a read-only container. The
+strict CSP goes back to `default-src 'self'` with no WebAssembly relaxation.
+
+Semantic search only covers pages that have been **refreshed from the official
+source** (the ANSM re-scrape or the EMA PDF), never the frozen 2022 baseline. The
+embed service embeds each page as it is crawled; searching a page that has never
+been crawled triggers a one-off refresh first, then indexes it.
+
+It is **entirely optional**: leave the embed service out (`docker compose ... up web
+refresh`) and the box simply shows "indisponible", the rest of the site unchanged.
+To enable it:
 
 ```bash
-./download-model.sh               # transformers.js + the ONNX model into ./vendor and ./models (~120 MB, gitignored)
-uv run embed-rcp.py --limit 60    # compute the per-section vectors offline (data/emb/, incremental)
-uv run build.py                   # bake the vectors (.vec.json) and copy vendor/ + models/ into dist/
+./download-model.sh               # fetch the ONNX model + tokenizer into ./models (~120 MB, gitignored)
+docker compose -f docker/docker-compose.yml up -d --build   # starts the embed service (mounts ./models read-only)
+uv run embed-rcp.py --limit 60    # OPTIONAL: pre-bake vectors offline to warm the backlog (needs build.py first)
 ```
 
-Vector computation is incremental (like scraping): a drug is re-embedded only if
-its text or the model changed. On the server side, `docker/Caddyfile` allows
-`'wasm-unsafe-eval'` (needed to run the model's WebAssembly; it does NOT enable
-JavaScript `eval()`) and caches `/vendor` and `/models` immutably.
+Embedding is incremental via a content hash: a page is re-embedded only when its
+text or the model changed, so a no-op refresh re-embeds nothing. The offline
+`embed-rcp.py` and the live service share the exact same encoder and staleness
+check, so their vectors never disagree.
 
 ## Data source and licence
 

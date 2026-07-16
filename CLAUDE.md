@@ -8,9 +8,10 @@ justelesRCP is a fast, ad-free static site serving the **RCP** (résumés des
 caractéristiques du produit) of medicines sold in France, sourced from the ANSM
 BDPM public dataset. It exists to be a lightweight alternative to slow, for-profit
 sites like vidal.fr. The whole thing is precomputed to static files; the only
-runtime code is an optional companion refresh service (see the architecture note
-below) that re-scrapes a single drug on demand behind a rate limit. Leave it out
-and the site is 100% static.
+runtime code is two optional companion services (see the architecture note below): a
+refresh service that re-scrapes a single drug on demand behind a rate limit, and an
+embed service that powers per-drug semantic search (embeds the reader's query and the
+crawled pages, server-side). Leave them out and the site is 100% static.
 
 **Language convention:** the website (page text, UI strings) is in French; the
 code, comments, and developer docs are in English. `README.md` is the French
@@ -58,11 +59,11 @@ dist/browse/index.html       A-Z landing (letter grid with counts)
 dist/browse/<letter>.html    alphabetical drug list per letter ('#' -> num.html)
 dist/index.html a-propos.html style.css search.js
 dist/app-config.js app-init.js dev-banner.js toc.js app-version.js rcp-semsearch.js  (runtime client assets)
-dist/rcp/<cis>-<slug>.vec.json   OPTIONAL per-page section vectors for client-side
-                             semantic search (baked from data/emb by write_vec_sidecars);
-                             absent unless embed-rcp.py has run
-dist/vendor/** dist/models/**   OPTIONAL self-hosted transformers.js + ONNX encoder,
-                             mirrored from ./vendor + ./models (download-model.sh)
+dist/rcp/<cis>-<slug>.vec.json   OPTIONAL per-page section vectors for server-side
+dist/eu/<cis>-<slug>.vec.json    per-drug semantic search, written DIRECTLY by
+                             embed-service.py (runtime) or embed-rcp.py (offline
+                             pre-bake) for CRAWLED pages only; build.py only prunes
+                             orphans. Absent unless one of them has run
 dist/.build-manifest.json    incremental-build cache (per-CIS input hashes)
 + .gz and .br precompressed siblings for every text file (Caddy serves these)
 ```
@@ -175,7 +176,8 @@ Key facts that aren't obvious from a single file:
   nothing dynamic runs at serve time. `data/.scrape-manifest.json` holds per-CIS
   `last_fetch`/hash for the TTL. Keep the extraction envelope in sync with
   `clean_rcp`'s `div#textDocument` lookup if either changes.
-- **The on-demand refresh service is the only runtime component** (`refresh-service.py`,
+- **The on-demand refresh service is one of two runtime components** (the other is
+  the embed service, further below) (`refresh-service.py`,
   a `uv` PEP 723 script; opt-in, off by default). The site is otherwise fully
   static, but each RCP page has a "Rafraîchir maintenant" button and a >1-year
   auto-refresh (both in `src/app-init.js`) that `POST /api/refresh/<cis>`. Caddy
@@ -462,61 +464,79 @@ Key facts that aren't obvious from a single file:
   is a search only as a *fallback*; a fetched page links the exact PDF. **NOTHING
   is fetched from the EMA at build time** (the site stays 100% static); the PDF is
   fetched only by `scrape-ema.py` or the refresh service's EMA lane.
-- **Per-drug semantic search is client-side, offline, and optional** (`src/rcp-semsearch.js`
-  + `embed-rcp.py` + `download-model.sh`). Each RCP / full `/eu/` page has a
+- **Per-drug semantic search runs SERVER-SIDE, on crawled data only, optional**
+  (`onnx_embed.py` + `embed-service.py` + `src/rcp-semsearch.js`; `embed-rcp.py` +
+  `download-model.sh` are the offline pre-bake). Each RCP / full `/eu/` page has a
   "Rechercher dans ce RCP" box: the reader types a natural-language question and it
-  ranks/scroll-highlights the closest SECTIONS of that one drug. Same split as the
-  scrape flow: a heavy PEP723 script does the compute offline, `build.py` bakes the
-  result into `dist`, and a lazy runtime consumes it. **Segmentation is shared**:
+  ranks/scroll-highlights the closest SECTIONS of that one drug, with a prev/next
+  navigator. **The query is embedded by a warm server container, NOT the browser**:
+  the old design downloaded a ~120 Mo model per visitor (transformers.js + ONNX +
+  wasm under `/vendor` + `/models`), which was the feature's worst wart and forced a
+  `'wasm-unsafe-eval'` CSP relaxation. Now the browser downloads nothing; the trade
+  is that the query text transits our same-origin server (never logged, dropped right
+  after encoding, read-only `cap_drop: ALL` container). **Segmentation is shared**:
   `build.section_chunks(raw, cis)` runs the SAME `clean_rcp` path as the rendered
   page, so its chunks carry the same `sec-N` ids the ToC/anchors use (a hit scrolls
   to a heading that exists); it returns `(sec_id, snippet, chunk_text)` per ~500-char
-  window and is the single source of truth, imported by `embed-rcp.py`. It handles
-  BOTH page kinds: ANSM raw carries no ids so it assigns `sec-N` exactly as
-  `clean_rcp`/`_build_toc` does, while a converted `/eu/` overlay ALREADY carries
-  (QRD-numbered, non-sequential) `sec-N` ids from `ema_pdf` that `render_eu_page`
-  keeps verbatim, so it must NOT renumber them (it only calls `_build_toc` when the
-  headings have no id); a `<table>` is linearised row-by-row (`_linearize_table`:
-  each body row -> "header: cell; header: cell", kept intact and title-prefixed)
-  instead of `text_content()`-flattened into the section blob, so posology/table rows
-  stay retrievable; non-data/layout tables fall back to flat text. `embed-rcp.py`
-  (PEP723, sentence-transformers) iterates `build.iter_rcp_raw()` PLUS
-  `build.iter_eu_raw()` (full `/eu/` pages; `--no-eu` to skip), embeds each chunk
-  with `intfloat/multilingual-e5-small` (384-dim, e5 `query:`/`passage:` prefixes),
-  int8-quantises via `build.quantize_int8` (symmetric, `q=round(v*127)`, dequant
-  `q/127`; the ONE canonical formula, mirrored in JS `decodeVec`), and writes one
-  sidecar per drug `data/emb/<cis>.json[.gz]` under its own manifest
-  `data/.embed-manifest.json` (a CIS is only ever RCP OR /eu/, never both, so the
-  per-CIS sidecar + manifest never collide across lanes; incremental: re-embed only
-  when the raw HTML or model hash changed). `build.py` repackages those into the
-  served `dist/rcp/<slug>.vec.json` AND `dist/eu/<slug>.vec.json` via
-  `write_vec_sidecars(index)` + `write_vec_sidecars(stub_index, subdir="eu")`
-  (mtime-incremental, self-pruning) and `_mirror_tree()`s `vendor/` + `models/` into
-  `dist/`. Vectors
-  live in a SEPARATE `.vec.json` sidecar (NOT inline in the page and NOT in
-  `_record_hash`/the template), so page HTML is unchanged and the feature is
-  refresh-safe (the refresh service rewrites only `.html`; the `.vec.json` persists
-  until the next `embed-rcp.py` pass). The runtime `src/rcp-semsearch.js` gates on
-  `.rcp[data-cis]` (skips `.rcp-stub`), and ONLY when the reader first opens the box
-  fetches the `.vec.json` (404 -> graceful "pas encore disponible"), then lazily
-  `import()`s the vendored `/vendor/transformers.min.js` set fully offline
-  (`env.allowRemoteModels=false`, `localModelPath='/models/'`,
-  `backends.onnx.wasm.wasmPaths='/vendor/ort/'`, `numThreads=1`, `proxy=false`, so no
-  blob worker and no COOP/COEP), loads the `Xenova/multilingual-e5-small` ONNX
-  encoder (~120 Mo, browser-cached after first use), embeds `"query: "+q`, cosine-
-  ranks the dequantised section vectors and lists the best; a click jumps to and
-  flashes the `sec-N`. The model needs `script-src 'wasm-unsafe-eval'` (see the
-  hardening note). It is 100% same-origin (nothing from a CDN at serve time) and
-  fully optional: no `download-model.sh` / `embed-rcp.py` run => no `.vec.json`, no
-  `vendor`/`models`, and the box just degrades. `RUNTIME_MODEL` (rcp-semsearch.js),
-  `EMBED_MODEL`/`DEFAULT_MODEL` (embed-rcp.py) and the pinned versions in
-  `download-model.sh` MUST stay the same model (the baked passage vectors and the
-  runtime query vector have to come from the same weights). Keep the contract in
-  sync across `section_chunks`/`quantize_int8`/`write_vec_sidecars`/`_mirror_tree`
-  (build.py), `embed-rcp.py`, `src/rcp-semsearch.js`, the `<script>` in
-  `src/rcp.html`, `.semsearch*` in `style.css`, `download-model.sh`, and the CSP +
-  `/vendor`,`/models` caching in `docker/Caddyfile`. `test_embed.py` covers the two
-  pure pieces (int8 round-trip bound + `section_chunks` `sec-N` alignment).
+  window and is the single source of truth. It handles BOTH page kinds: ANSM raw
+  carries no ids so it assigns `sec-N` exactly as `clean_rcp`/`_build_toc` does, while
+  a converted `/eu/` overlay ALREADY carries (QRD-numbered, non-sequential) `sec-N`
+  ids from `ema_pdf` that `render_eu_page` keeps verbatim, so it must NOT renumber
+  them (it only calls `_build_toc` when the headings have no id); a `<table>` is
+  linearised row-by-row (`_linearize_table`: each body row -> "header: cell; header:
+  cell", kept intact and title-prefixed) instead of `text_content()`-flattened, so
+  posology/table rows stay retrievable; non-data/layout tables fall back to flat text.
+  **The warm encoder** (`onnx_embed.Encoder`) loads the int8
+  `Xenova/multilingual-e5-small` ONNX weights + tokenizer ONCE with
+  `onnxruntime` + `tokenizers` ONLY (NO torch: a ~300 Mo image, not ~2 Go), e5
+  `query:`/`passage:` prefixes, mean-pool + L2, and is shared by the query path and
+  the background page path (`session.run` is thread-safe). `build.quantize_int8`
+  (symmetric `q=round(v*127)`, dequant `q/127`) is the ONE canonical formula, mirrored
+  in JS `decodeVec`. **The embed service** (`embed-service.py`, behind Caddy's
+  same-origin `/api/sem/*`, mirrors `refresh-service.py`: `ThreadingHTTPServer`,
+  `_lock`, a priority queue, ONE background worker) embeds the query on request
+  (`POST /api/sem/embed` -> `{q: base64-int8, dim}`, on a request thread so it never
+  waits behind the worker; bounded LRU; `>= EMBED_MIN_QUERY_CHARS` / `<=
+  EMBED_MAX_QUERY_CHARS` else 400; query CONTENT never logged) and (re-)embeds each
+  **crawled** page in the background (`POST /api/sem/page/<cis>` embeds now, front of
+  queue; `GET /api/sem/page/<cis>` -> `{embedded, pending}`; `/api/sem/health` never
+  logged; `/api/sem/stats`). **Crawled-only + content-hash staleness**: it embeds ONLY
+  overlay pages (`build.iter_overlay_raw`, `data/rcp` + `data/eu`, NEVER the frozen
+  2022 baseline CSV) via the SINGLE `build.embed_page_to_vec` core (segment -> encode
+  -> gate -> write), and re-embeds a page ONLY when the `src_hash` baked into its
+  `.vec.json` (`build.raw_hash` of the overlay) or the model changed (`build.read_vec_meta`),
+  so a no-op refresh that rewrote identical bytes re-embeds nothing and there is NO
+  manifest. A search on a never-crawled (baseline-only) page returns `crawling`: the
+  service asks the refresh service (`REFRESH_TRIGGER_URL`) to crawl it first, then
+  embeds it when the overlay lands (driven by the refresh service's `EMBED_NOTIFY_URL`
+  ping, with a periodic reconcile scan as backstop). It writes the served
+  `dist/rcp/<slug>.vec.json` / `dist/eu/<slug>.vec.json` (`{model, dim, query_prefix,
+  src_hash, chunks:[{sec, snippet, q}]}`) DIRECTLY via `build.write_vec_json`, in a
+  SEPARATE sidecar (NOT inline in the page, NOT in `_record_hash`/the template), so
+  page HTML is unchanged and the feature is refresh-safe. `build.py` no longer bakes
+  or mirrors anything for it (no `data/emb`, no `vendor`/`models`); `main()` only
+  prunes orphan `.vec.json` when a slug is dropped. **The runtime**
+  `src/rcp-semsearch.js` gates on `.rcp[data-cis]` (skips `.rcp-stub`); on first open
+  it `POST`s `/api/sem/page/<cis>`, polls `GET` until `embedded`, then fetches the
+  `.vec.json`; typing (>= min chars, 250 ms debounce, `AbortController` cancels the
+  superseded embed) `POST`s the query, dequantises + cosine-ranks locally, highlights
+  the matched paragraph (`.semsearch-hit`/`.semsearch-current`) and steps through hits
+  with the nav bar. If the embed service is absent, `/api/sem/*` 502s and the box
+  degrades to "indisponible". **The offline pre-bake** `embed-rcp.py` (optional; warms
+  the backlog before a first deploy) reuses the SAME `onnx_embed.Encoder` and
+  `build.embed_page_to_vec` over `build.iter_overlay_raw()`, writing the SAME
+  `.vec.json` with the SAME `src_hash`, so offline and online vectors never disagree.
+  `onnx_embed.RUNTIME_MODEL` (server) and the model `download-model.sh` fetches MUST
+  stay the same weights (query and passage vectors must match). Keep the contract in
+  sync across `section_chunks`/`quantize_int8`/`raw_hash`/`iter_overlay_raw`/
+  `dist_page_for`/`read_vec_meta`/`vec_payload`/`write_vec_json`/`embed_page_to_vec`
+  (build.py), `onnx_embed.py`, `embed-service.py`, `embed-rcp.py`,
+  `src/rcp-semsearch.js`, the `<script>` in `src/rcp.html`, `.semsearch*` in
+  `style.css`, `download-model.sh`, the `/api/sem/*` route + strict CSP in
+  `docker/Caddyfile`, and the `embed` service in `docker/docker-compose.yml` +
+  `docker/embed.Dockerfile`. `test_embed.py` covers the pure pieces (int8 round-trip
+  bound, `section_chunks` `sec-N` alignment, `vec_payload`/`read_vec_meta` round-trip,
+  `raw_hash` staleness key).
 - **Precompression (.gz/.br) is baked at build time** so Caddy spends zero CPU
   compressing. `compress()` writes both siblings; the Caddyfile uses
   `precompressed br gzip`.
@@ -534,9 +554,10 @@ Key facts that aren't obvious from a single file:
 
 ```bash
 ./download-data.sh        # fetch data/CIS_RCP.csv + data/CIS_bdpm.txt (see TODOs in it)
-./download-model.sh       # OPTIONAL: vendor transformers.js + the ONNX encoder into ./vendor + ./models
-                          #  (~120 Mo, gitignored) for client-side per-drug semantic search. Skip it and
-                          #  the "Rechercher dans ce RCP" box just degrades to "pas encore disponible".
+./download-model.sh       # OPTIONAL: fetch the ONNX encoder + tokenizer into ./models (~120 Mo,
+                          #  gitignored) for SERVER-SIDE per-drug semantic search (mounted read-only
+                          #  into the embed container; no longer served to browsers). Skip it and the
+                          #  "Rechercher dans ce RCP" box just degrades to "indisponible".
 uv run scrape-rcp.py --limit 60   # OPTIONAL manual/one-time bulk scrape into data/rcp/ overlay
                                   # (the refresh service's perpetual crawler now does routine
                                   #  freshening; use this for a first --all seed or an ad-hoc batch)
@@ -551,29 +572,41 @@ uv run scrape-ema.py --limit 60   # OPTIONAL bulk scrape of EMA product-informat
                                   # Falls back to the Internet Archive if a live EMA PDF fails (never
                                   # exposes the archive URL; stamps via_archive). --retry-archived
                                   # re-fetches just the archive-sourced CIS against the live EMA.
-uv run embed-rcp.py --limit 60    # OPTIONAL offline embeddings for client-side per-drug semantic
-                                  # search: segments each RCP + full /eu/ page (shared
-                                  # build.section_chunks; --no-eu for RCP only), embeds +
-                                  # int8-quantises into data/emb/<cis>.json[.gz]; own manifest
-                                  # data/.embed-manifest.json (incremental by raw-hash + model). Needs
-                                  # ./download-model.sh's model. build.py bakes these into .vec.json.
+uv run embed-rcp.py --limit 60    # OPTIONAL offline pre-bake of the semantic-search vectors (warms
+                                  # the backlog before a first deploy). Reuses the SAME warm encoder
+                                  # (onnx_embed) + one-page core (build.embed_page_to_vec) the embed
+                                  # service uses, over build.iter_overlay_raw (CRAWLED overlays only,
+                                  # --no-eu for RCP only), writing dist/<rcp|eu>/<slug>.vec.json
+                                  # DIRECTLY with the same src_hash. No manifest (content-hash gated).
+                                  # Needs ./download-model.sh's model + a prior `uv run build.py`.
 uv run build.py           # build ./dist from ./data (overlay wins over the 2022 CSV; a data/eu
-                          #  overlay makes /eu/<cis> a full converted page instead of a stub; bakes
-                          #  <slug>.vec.json + mirrors vendor/ + models/ when present)
+                          #  overlay makes /eu/<cis> a full converted page instead of a stub). Does NOT
+                          #  bake vectors anymore: the embed service / embed-rcp.py write .vec.json
+                          #  directly; build.py only prunes orphan .vec.json when a slug is dropped.
 uv run refresh-service.py # optional: run the refresh API on :8460 (behind Caddy /api/*)
                           # runs TWO perpetual frequency-ordered crawlers (ANSM + EMA /eu/) +
-                          #  on-demand button/auto refreshes for both
+                          #  on-demand button/auto refreshes for both; pings the embed service
+                          #  (EMBED_NOTIFY_URL) after each fresh overlay so it re-embeds the page
                           # knobs (env): REFRESH_RATE_SECONDS (default 120), REFRESH_CRAWL (1=on) +
                           # REFRESH_CRAWL_TTL_DAYS (365); EMA lane REFRESH_EMA_CRAWL (1=on) +
                           # REFRESH_EMA_RATE_SECONDS (300) + REFRESH_EMA_CRAWL_TTL_DAYS (180);
                           # REFRESH_LOG_LEVEL (INFO, health never logged);
                           # GET /api/stats returns crawl counters + crawl (ANSM) + crawl_eu gauges
-cp docker/env.example docker/.env                      # optional: umami analytics / DEV banner / refresh knobs
-docker compose -f docker/docker-compose.yml up -d      # serve ./dist on :8459 + refresh service (read-only, hardened)
-docker compose -f docker/docker-compose.yml up --build # after changing Caddyfile/compose/refresh.Dockerfile
-                                                       # OR the scripts baked into the refresh image (build.py /
-                                                       # scrape-rcp.py / scrape-ema.py / ema_pdf.py /
-                                                       # refresh-service.py / bdpm.py / src/rcp.html):
+uv run embed-service.py   # optional: warm SERVER-SIDE embedder on :8461 (behind Caddy /api/sem/*)
+                          # keeps the ONNX encoder warm; embeds the reader's query on request
+                          #  (no browser model) + (re-)embeds each CRAWLED page's sections in the
+                          #  background, writing dist/<rcp|eu>/<slug>.vec.json (never the 2022 baseline)
+                          # knobs (env): EMBED_ENABLE (backlog sweep 1=on), EMBED_INTRA_THREADS (4),
+                          # EMBED_BACKLOG_RATE_SECONDS (2), EMBED_RECONCILE_SECONDS (60), EMBED_QUEUE_MAX
+                          #  (500), EMBED_MIN/MAX_QUERY_CHARS (10/400), EMBED_QUERY_CACHE (256),
+                          #  EMBED_MODEL_DIR, REFRESH_TRIGGER_URL (baseline auto-crawl), EMBED_LOG_LEVEL;
+                          # GET /api/sem/stats; query CONTENT is never logged (privacy)
+cp docker/env.example docker/.env                      # optional: umami analytics / DEV banner / refresh + embed knobs
+docker compose -f docker/docker-compose.yml up -d      # serve ./dist on :8459 + refresh + embed services (read-only, hardened)
+docker compose -f docker/docker-compose.yml up --build # after changing Caddyfile/compose/refresh.Dockerfile/embed.Dockerfile
+                                                       # OR the scripts baked into the refresh/embed images (build.py /
+                                                       # scrape-rcp.py / scrape-ema.py / ema_pdf.py / onnx_embed.py /
+                                                       # refresh-service.py / embed-service.py / bdpm.py / src/rcp.html):
                                                        # a plain `up` reuses the old image and ships stale code
 ```
 
@@ -603,17 +636,13 @@ Restart is not needed (Caddy reads the mounted dir live), but a
   external fonts, scripts, or CDNs by design. The ONLY escape hatch is the umami
   origin: `entrypoint.sh` derives `ANALYTICS_ORIGIN` from `ANALYTICS_URL` and the
   Caddyfile adds it to `script-src`/`connect-src` (empty when analytics is off).
-  Keep it self-contained otherwise so the CSP holds. `script-src` ALSO carries a
-  hard-coded `'wasm-unsafe-eval'` (not templated) so the client-side per-drug
-  semantic-search encoder (transformers.js + onnxruntime-web, all self-hosted under
-  `/vendor` + `/models`) can instantiate its WebAssembly. This keyword permits ONLY
-  `WebAssembly.compile`/`instantiate` from bytes; it does NOT enable JS `eval()` /
-  `new Function()`, and everything else stays same-origin (the model and wasm are
-  served from `/models` + `/vendor`, not a CDN), so the strict posture holds. It is
-  supported on Chrome 97+/Firefox 102+/Safari 16+. The Caddyfile also serves
-  `/vendor` + `/models` with `Cache-Control: immutable` (via an `@immutable` path
-  matcher) while everything else stays `no-cache`; they are version-pinned by
-  `download-model.sh`, so a model bump is a fresh path/build, not a mutated URL.
+  Keep it self-contained otherwise so the CSP holds. Since per-drug semantic search
+  moved server-side, the browser no longer instantiates any WebAssembly, so the old
+  `'wasm-unsafe-eval'` relaxation is GONE and `script-src` is back to `'self'` (+ the
+  optional umami origin); the query POST to `/api/sem/embed` is same-origin, covered
+  by `connect-src 'self'`. The `/vendor` + `/models` immutable-cache matchers are also
+  gone (the ~120 Mo model is no longer served to browsers, only mounted into the embed
+  container), so ALL responses are plain `Cache-Control: no-cache`.
 - **`docker/.env` is gitignored** (real analytics ids); `docker/env.example` is
   the committed template. Compose loads it via `env_file`; there is deliberately
   no `environment:` block (it would shadow `env_file` with empty defaults).
@@ -655,14 +684,30 @@ Restart is not needed (Caddy reads the mounted dir live), but a
   `scrape.save_manifest` writes it in place when its atomic temp+rename cannot work
   (a `.tmp` sibling is EROFS / renaming onto a bind-mount point is EBUSY); keep that
   fallback. Runtime knobs come from `docker/.env` (`env_file`) as `REFRESH_*` / `RCP_OVERLAY_GZIP`.
-  The refresh image's build context is the repo ROOT (compose `context: ..`), so a
-  root `.dockerignore` is REQUIRED to exclude `dist/` (~720M), `data/` (~260M) and
-  the semantic-search `vendor/` + `models/` (~130M, the Dockerfile COPYs neither);
-  without it every `up --build` ships ~1GB+ to the daemon and can fail the build on a
-  small VPS ("no space left on device"), leaving no containers. The Dockerfile bakes
-  `build.py` / `scrape-rcp.py` / `scrape-ema.py` / `ema_pdf.py` / `refresh-service.py`
-  / `bdpm.py` / `src/rcp.html`, and pip-installs `pymupdf` (fitz) alongside the other
-  deps because `ema_pdf.py` needs it for the EMA PDF conversion.
+  The refresh AND embed images' build context is the repo ROOT (compose `context:
+  ..`), so a root `.dockerignore` is REQUIRED to exclude `dist/` (~720M), `data/`
+  (~260M) and the semantic-search `models/` (~120M, mounted read-only at runtime, NOT
+  COPYd); without it every `up --build` ships ~1GB+ to the daemon and can fail the
+  build on a small VPS ("no space left on device"), leaving no containers. The refresh
+  Dockerfile bakes `build.py` / `scrape-rcp.py` / `scrape-ema.py` / `ema_pdf.py` /
+  `refresh-service.py` / `bdpm.py` / `src/rcp.html`, and pip-installs `pymupdf` (fitz)
+  alongside the other deps because `ema_pdf.py` needs it for the EMA PDF conversion.
+- **The embed service is a THIRD, separately-hardened container** (compose `embed`,
+  `docker/embed.Dockerfile`), same posture as `refresh` (`read_only: true`,
+  `cap_drop: ALL`, `no-new-privileges`, tmpfs `/tmp`, no `ports:`, reached only via
+  Caddy's `/api/sem/*` proxy) and run as `${EMBED_UID:-1000}:${EMBED_GID:-1000}` so
+  the `.vec.json` it writes stay host-owned. Its ONLY writable mounts are `dist/rcp` +
+  `dist/eu` (the sidecars); everything else is read-only: `models` (the encoder, so it
+  can stay out of the image + `.dockerignore`-excluded build context) and the crawled
+  overlays `data/rcp` + `data/eu` (the only text it embeds; the 2022 baseline CSV is
+  not mounted at all). NO manifest mount: staleness is the content hash baked in each
+  `.vec.json`. The Dockerfile bakes `build.py` / `bdpm.py` / `onnx_embed.py` /
+  `embed-service.py` / `src/rcp.html` and pip-installs `onnxruntime` + `tokenizers`
+  (NOT torch, so ~300 Mo not ~2 Go). It is fully optional: `up web refresh` omits it
+  and the search box degrades to "indisponible". PRIVACY: it embeds the reader's query
+  same-origin but logs NO query content (counts/latency only) and drops it right after
+  encoding; the operator *could* in principle observe queries where the old browser
+  design made that impossible, a deliberate trade for dropping the 120 Mo download.
 
 ## Gotchas
 

@@ -20,10 +20,11 @@ ANSM / BDPM. Conçu comme une alternative légère aux sites de médicaments len
   navigation A-Z indexables par les moteurs de recherche.
 - Recherche sémantique par *embeddings* à l'intérieur d'une page RCP donnée :
   tapez une question en langage naturel (« puis-je le prendre enceinte ? ») et la
-  page vous amène aux rubriques les plus pertinentes. Tout est calculé dans le
-  navigateur avec un modèle auto-hébergé (rien n'est envoyé à un serveur, aucun
-  CDN), donc respectueux de la vie privée ; le modèle (~120 Mo) n'est téléchargé
-  qu'au premier usage explicite, puis mis en cache (voir plus bas, optionnel).
+  page surligne les passages les plus pertinents, avec une navigation
+  précédent/suivant. La requête est vectorisée par un petit service auto-hébergé
+  (plus aucun modèle de ~120 Mo à télécharger dans le navigateur) ; elle ne couvre
+  que les pages rafraîchies depuis la source officielle, jamais la version figée de
+  2022. Optionnel, voir plus bas.
 - Liens croisés entre médicaments : chaque page RCP relie automatiquement les
   noms de médicaments et de substances qu'elle cite (par ex. « oméprazole »,
   « carbamazépine ») vers leurs propres pages, avec un encart « Médicaments
@@ -149,7 +150,8 @@ notre copie a été récupérée il y a plus d'un an se rafraîchit automatiquem
 chargement. Les deux
 appellent un petit service compagnon (`refresh-service.py`, `POST
 /api/refresh/<cis>`) qui récupère la page ANSM en direct, écrit la surcharge et
-régénère cette seule page. C'est **la seule partie dynamique** du projet : elle
+régénère cette seule page. C'est l'une des deux seules parties dynamiques du projet
+(l'autre est le service d'embeddings de la recherche sémantique, plus bas) : elle
 tourne dans un conteneur séparé et durci (en lecture seule sauf trois chemins
 précis) pour que le serveur web, lui, reste entièrement en lecture seule, et des
 limiteurs de débit par voie plus un plancher par médicament (plusieurs visiteurs sur
@@ -188,30 +190,43 @@ propre manifeste, indépendants de la voie ANSM.
 Chaque page RCP (ainsi que chaque page `/eu/` au RCP complet converti depuis
 l'EMA) propose un encart « Rechercher dans ce RCP » : posez une question en langage
 naturel (« puis-je le prendre pendant la grossesse ? », « effets sur le foie ») et
-l'encart classe et met en avant les rubriques les plus proches, à l'intérieur de ce
-seul médicament. Les tableaux (posologie, etc.) sont indexés ligne par ligne pour
-que chaque ligne reste retrouvable. Tout se passe dans le navigateur : un petit
-modèle multilingue auto-hébergé (~120 Mo, `intfloat/multilingual-e5-small`)
-transforme la question en vecteur et le compare aux vecteurs des rubriques,
-précalculés à la construction. Aucune requête n'est envoyée à un serveur, aucun CDN
-n'est contacté (la CSP stricte est préservée) ; le modèle n'est téléchargé qu'au
-premier usage explicite de la recherche, puis mis en cache par le navigateur.
+l'encart classe les passages les plus proches de ce seul médicament, surligne le
+paragraphe correspondant et permet de parcourir les résultats avec précédent/suivant.
+Les tableaux (posologie, etc.) sont indexés ligne par ligne pour que chaque ligne
+reste retrouvable.
 
-C'est **entièrement facultatif** : sans les fichiers du modèle, l'encart affiche
-simplement « pas encore disponible » et le reste du site est inchangé. Pour
-l'activer :
+La requête est vectorisée **côté serveur** par un petit service compagnon durci et en
+lecture seule (`embed-service.py`) qui garde un modèle multilingue
+(`Xenova/multilingual-e5-small`, ONNX int8, ~120 Mo) au chaud. Le navigateur ne
+télécharge **plus aucun modèle** (l'ancienne version en tirait ~120 Mo par visiteur) ;
+il n'envoie que le court texte de la requête à notre propre point d'accès
+`/api/sem/embed` (même origine) et classe le vecteur renvoyé face aux vecteurs des
+rubriques, localement. Le compromis est une légère baisse de confidentialité : le
+texte de la requête transite désormais par notre serveur, mais il n'est **jamais
+journalisé** (seulement des compteurs et des latences) et abandonné aussitôt après
+vectorisation, sur un conteneur en lecture seule. La CSP stricte redevient
+`default-src 'self'` sans aucune ouverture WebAssembly.
+
+La recherche sémantique ne couvre que les pages **rafraîchies depuis la source
+officielle** (le re-scraping ANSM ou le PDF EMA), jamais la version figée de 2022. Le
+service vectorise chaque page au moment où elle est crawlée ; chercher dans une page
+jamais crawlée déclenche d'abord un rafraîchissement, puis l'indexe.
+
+C'est **entièrement facultatif** : laissez le service d'embeddings de côté
+(`docker compose ... up web refresh`) et l'encart affiche simplement « indisponible »,
+le reste du site étant inchangé. Pour l'activer :
 
 ```bash
-./download-model.sh               # transformers.js + le modèle ONNX dans ./vendor et ./models (~120 Mo, gitignored)
-uv run embed-rcp.py --limit 60    # calcule hors-ligne les vecteurs par rubrique (data/emb/, incrémental)
-uv run build.py                   # intègre les vecteurs (.vec.json) et copie vendor/ + models/ dans dist/
+./download-model.sh               # récupère le modèle ONNX + le tokenizer dans ./models (~120 Mo, gitignored)
+docker compose -f docker/docker-compose.yml up -d --build   # démarre le service d'embeddings (monte ./models en lecture seule)
+uv run embed-rcp.py --limit 60    # OPTIONNEL : pré-calcule les vecteurs hors-ligne pour amorcer (après build.py)
 ```
 
-Le calcul des vecteurs est incrémental (comme le scraping) : un médicament n'est
-ré-embarqué que si son texte ou le modèle a changé. Côté serveur, `docker/Caddyfile`
-autorise `'wasm-unsafe-eval'` (nécessaire pour exécuter le WebAssembly du modèle ;
-cela n'active pas `eval()` JavaScript) et met en cache `/vendor` et `/models` de
-façon immuable.
+La vectorisation est incrémentale via un hachage de contenu : une page n'est
+ré-embarquée que si son texte ou le modèle a changé, donc un rafraîchissement à
+l'identique ne ré-embarque rien. L'outil hors-ligne `embed-rcp.py` et le service en
+direct partagent exactement le même encodeur et le même test de fraîcheur, donc leurs
+vecteurs ne divergent jamais.
 
 ## Source des données et licence
 
