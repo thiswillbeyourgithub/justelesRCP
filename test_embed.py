@@ -85,8 +85,65 @@ def test_empty_and_untitled():
     print("ok  test_empty_and_untitled")
 
 
+SAMPLE_TABLE = """<html><body><div id="textDocument">
+  <p class="AmmAnnexeTitre1">1. DENOMINATION DU MEDICAMENT</p>
+  <p>DOLIPRANE 1000 mg, comprime.</p>
+  <p class="AmmAnnexeTitre1">4.2 Posologie et mode d'administration</p>
+  <p>La posologie depend du poids.</p>
+  <table>
+    <tr><th>Population</th><th>Dose</th><th>Frequence</th></tr>
+    <tr><td>Adulte</td><td>500 mg</td><td>3 fois par jour</td></tr>
+    <tr><td>Enfant</td><td>250 mg</td><td>2 fois par jour</td></tr>
+  </table>
+</div></body></html>"""
+
+
+def test_table_rows_stay_intact():
+    chunks = build.section_chunks(SAMPLE_TABLE)
+    assert chunks, "expected chunks"
+    texts = [c.lower() for _, _, c in chunks]
+
+    # The posologie section id (sec-1: denomination is sec-0).
+    poso = {sid for sid, _, c in chunks if "posologie" in c.lower()}
+    assert poso == {"sec-1"}, poso
+
+    # Each table row is ONE chunk carrying its column headers, so the population
+    # and its full dose/frequency stay together (not flattened + split mid-row).
+    adulte = [t for t in texts if "adulte" in t]
+    assert len(adulte) == 1, adulte
+    row = adulte[0]
+    assert "500 mg" in row and "3 fois par jour" in row, row
+    assert "population:" in row and "dose:" in row and "frequence:" in row, row
+    # ...and rows do NOT bleed into each other.
+    assert "enfant" not in row, row
+    assert all(not ("adulte" in t and "enfant" in t) for t in texts)
+
+    # Every table-row chunk is anchored to the real posologie section.
+    for sid, _, c in chunks:
+        if "adulte" in c.lower() or "enfant" in c.lower():
+            assert sid == "sec-1", (sid, c)
+
+    # The narrative paragraph of the same section is still its own chunk.
+    assert any("la posologie depend du poids" in t for t in texts)
+    print("ok  test_table_rows_stay_intact")
+
+
+def test_layout_table_falls_back_flat():
+    # A single-column / header-less "table" (layout markup) must NOT be linearised;
+    # it falls back to flat text and must not raise.
+    sample = """<div id="textDocument">
+      <p class="AmmAnnexeTitre1">6. DONNEES</p>
+      <table><tr><td>juste une cellule de mise en page</td></tr></table>
+    </div>"""
+    chunks = build.section_chunks(sample)
+    assert any("mise en page" in c.lower() for _, _, c in chunks), chunks
+    print("ok  test_layout_table_falls_back_flat")
+
+
 if __name__ == "__main__":
     test_quantize_roundtrip()
     test_section_chunks_align_with_toc()
     test_empty_and_untitled()
+    test_table_rows_stay_intact()
+    test_layout_table_falls_back_flat()
     print("\nAll tests passed.")

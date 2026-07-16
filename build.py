@@ -28,6 +28,7 @@ Run:  uv run build.py         (reads ./data, writes ./dist)
 
 from __future__ import annotations
 
+import copy
 import csv
 import gzip
 import hashlib
@@ -891,6 +892,47 @@ def _char_windows(text: str, limit: int) -> list[str]:
     return windows
 
 
+_TABLE_MAX_ROWS = 60  # cap a runaway table so one drug can't blow the chunk budget
+
+
+def _linearize_table(tbl) -> list[str]:
+    """Turn a data table into one self-contained line per body row, each cell
+    prefixed with its column header ("Population: Adulte; Dose: 500 mg"), so a row
+    stays meaningful (and retrievable) instead of being flattened into the section
+    blob and split mid-row by _char_windows. Naive text_content() on a posology
+    table loses the row/column association entirely.
+
+    Returns [] when the element is NOT a header-led data table (fewer than 2 rows,
+    single column, or empty/layout header), so the caller falls back to flat text.
+    Pure lxml; the first <tr> is taken as the header row (thead or not)."""
+    rows = tbl.xpath(".//tr")
+    if len(rows) < 2:
+        return []
+
+    def _cells(tr):
+        return [_norm_ws(c.text_content()) for c in tr.xpath("./th | ./td")]
+
+    header = _cells(rows[0])
+    if len(header) < 2 or not any(header):
+        return []  # not a header-led data table -> caller keeps it flat
+    lines: list[str] = []
+    for tr in rows[1:]:
+        vals = _cells(tr)
+        if not any(vals):
+            continue
+        pairs = []
+        for i, v in enumerate(vals):
+            if not v:
+                continue
+            head = header[i] if i < len(header) else ""
+            pairs.append(f"{head}: {v}" if head else v)
+        if pairs:
+            lines.append("; ".join(pairs))
+        if len(lines) >= _TABLE_MAX_ROWS:
+            break
+    return lines
+
+
 def section_chunks(raw: str, cis: str = "") -> list[tuple[str, str, str]]:
     """Segment one RCP into per-section embedding chunks aligned with ``sec-N``.
 
@@ -912,29 +954,68 @@ def section_chunks(raw: str, cis: str = "") -> list[tuple[str, str, str]]:
     if not toc:
         return []
     chunks: list[tuple[str, str, str]] = []
+
+    def _add(sec_id: str, title: str, body: str) -> bool:
+        """Append one (sec_id, snippet, chunk_text); return False once the per-page
+        cap is hit (caller stops). Tiny trailing fragments are dropped, but a
+        title-only chunk for an otherwise-empty section is kept (stays searchable)."""
+        chunk_text = f"{title} : {body}".strip(" :") if body else title
+        if not chunk_text:
+            return True
+        if body and len(chunk_text) < _SEC_MIN_CHARS:
+            return True
+        snippet = _norm_ws(body or title)[:_SEC_SNIPPET_CHARS]
+        chunks.append((sec_id, snippet, chunk_text))
+        return len(chunks) < _SEC_MAX_CHUNKS
+
     for h_el in inner.xpath(".//*[contains(@class, 'AmmAnnexeTitre1')]"):
         sec_id = h_el.get("id")
         if not sec_id:  # empty-title heading skipped by _build_toc
             continue
         title = _norm_ws(h_el.text_content())
-        blocks: list[str] = []
+        narrative: list[str] = []
+        table_rows: list[str] = []  # each a self-contained linearised table row
         for sib in h_el.itersiblings():
             if "AmmAnnexeTitre1" in (sib.get("class") or ""):
                 break  # next section
-            blocks.append(sib.text_content())
-        body_all = _norm_ws(" ".join(blocks))
-        for body in _char_windows(body_all, _SEC_CHUNK_CHARS) or [""]:
-            chunk_text = f"{title} : {body}".strip(" :") if body else title
-            if not chunk_text:
+            if sib.tag == "table":
+                rows = _linearize_table(sib)
+                if rows:
+                    table_rows.extend(rows)
+                else:
+                    narrative.append(sib.text_content())
                 continue
-            # keep even short chunks if a section is otherwise empty, so every
-            # section stays searchable; drop tiny trailing fragments otherwise.
-            if body and len(chunk_text) < _SEC_MIN_CHARS:
+            nested = list(sib.iter("table"))
+            if not nested:
+                narrative.append(sib.text_content())
                 continue
-            snippet = _norm_ws(body or title)[:_SEC_SNIPPET_CHARS]
-            chunks.append((sec_id, snippet, chunk_text))
-            if len(chunks) >= _SEC_MAX_CHUNKS:
+            # A block wrapping table(s): linearise data tables row-by-row, keep any
+            # non-data table flat, and take the block's narrative WITHOUT the tables
+            # (a deepcopy with them stripped) so table text is never counted twice.
+            for tbl in nested:
+                rows = _linearize_table(tbl)
+                if rows:
+                    table_rows.extend(rows)
+                else:
+                    narrative.append(tbl.text_content())
+            clone = copy.deepcopy(sib)
+            for t in list(clone.iter("table")):
+                if t.getparent() is not None:
+                    t.getparent().remove(t)
+            narrative.append(clone.text_content())
+        body_all = _norm_ws(" ".join(narrative))
+        windows = _char_windows(body_all, _SEC_CHUNK_CHARS)
+        if not windows and not table_rows:
+            windows = [""]  # title-only, so an empty section stays searchable
+        for body in windows:
+            if not _add(sec_id, title, body):
                 return chunks
+        # Table rows are kept intact (never merged into the narrative windows); only
+        # a pathological giant row is itself word-windowed as a safety valve.
+        for row in table_rows:
+            for piece in _char_windows(row, _SEC_CHUNK_CHARS) or [row]:
+                if not _add(sec_id, title, piece):
+                    return chunks
     return chunks
 
 
