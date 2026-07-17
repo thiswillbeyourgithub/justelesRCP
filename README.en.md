@@ -172,7 +172,7 @@ independent of the ANSM lane.
 ## Per-drug semantic search (optional)
 
 Every RCP page (and every full `/eu/` page converted from the EMA) has a
-"Rechercher dans ce RCP" box: type a natural-language question ("can I take it
+"Recherche sémantique dans ce RCP" box: type a natural-language question ("can I take it
 while pregnant?", "effects on the liver") and the box ranks the closest passages
 within that one drug, highlights the matching paragraph and lets you step through
 the hits with previous/next. Tables (posology, etc.) are indexed row by row so each

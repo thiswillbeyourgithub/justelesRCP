@@ -504,7 +504,11 @@ Key facts that aren't obvious from a single file:
 - **Per-drug semantic search runs SERVER-SIDE, on crawled data only, optional**
   (`onnx_embed.py` + `embed-service.py` + `src/rcp-semsearch.js`; `embed-rcp.py` +
   `download-model.sh` are the offline pre-bake). Each RCP / full `/eu/` page has a
-  "Rechercher dans ce RCP" box: the reader types a natural-language question and it
+  "Recherche sémantique dans ce RCP" box (the summary is worded to signal it is a
+  MEANING-based search, and a "?" badge `.semsearch-help` in the summary toggles a
+  one-line `.semsearch-help-text` explaining to phrase a question, not keywords; its
+  click `preventDefault`s so it toggles the help, not the `<details>`): the reader
+  types a natural-language question and it
   ranks/scroll-highlights the closest SECTIONS of that one drug, with a prev/next
   navigator. **The query is embedded by a warm server container, NOT the browser**:
   the old design downloaded a ~120 Mo model per visitor (transformers.js + ONNX +
@@ -640,7 +644,7 @@ Key facts that aren't obvious from a single file:
 ./download-model.sh       # OPTIONAL: fetch the ONNX encoder + tokenizer into ./models (~120 Mo,
                           #  gitignored) for SERVER-SIDE per-drug semantic search (mounted read-only
                           #  into the embed container; no longer served to browsers). Skip it and the
-                          #  "Rechercher dans ce RCP" box just degrades to "indisponible".
+                          #  "Recherche sémantique dans ce RCP" box just degrades to "indisponible".
 uv run scrape-rcp.py --limit 60   # OPTIONAL manual/one-time bulk scrape into data/rcp/ overlay
                                   # (the refresh service's perpetual crawler now does routine
                                   #  freshening; use this for a first --all seed or an ad-hoc batch)

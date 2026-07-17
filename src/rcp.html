@@ -14,8 +14,8 @@
 <script src="/dev-banner.js" defer></script>
 <!-- Sommaire (ToC) behavior: recollapse after tapping a section link on phones. -->
 <script src="/toc.js" defer></script>
-<!-- Per-drug semantic search: adds a "Rechercher dans ce RCP" box; the ~120 Mo
-     encoder + per-page vectors load lazily only when the reader opens it, else no-op. -->
+<!-- Per-drug semantic search: adds a "Recherche sémantique dans ce RCP" box. The query
+     is embedded server-side (no browser model); per-page vectors load lazily on open. -->
 <script src="/rcp-semsearch.js" defer></script>
 <!-- Per-page head extras (empty for RCP pages; a noindex meta for /eu/ stubs). -->
 {{HEADEXTRA}}

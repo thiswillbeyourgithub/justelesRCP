@@ -212,6 +212,23 @@ a:hover { text-decoration: underline; }
 }
 .semsearch > summary::-webkit-details-marker { display: none; }
 .semsearch > summary::before { content: "\1F50E\00a0"; opacity: .7; }
+/* "?" help badge in the summary (a small round pill). Clicking it toggles
+   .semsearch-help-text via the JS, NOT the <details> (preventDefault there). */
+.semsearch-help {
+  font: inherit; font-size: .75rem; line-height: 1.4; cursor: pointer;
+  margin-left: .4rem; padding: 0 .45rem;
+  border: 1px solid var(--line); border-radius: 999px;
+  background: var(--bg); color: var(--muted);
+}
+.semsearch-help:hover { border-color: var(--accent); color: var(--accent); }
+/* One-line explanation revealed by the "?" (a <span> in the summary, hidden by
+   default; display:block so it drops onto its own line under the title). */
+.semsearch-help-text {
+  display: block; margin: .4rem 0 .2rem; padding: .5rem .6rem;
+  font-size: .8rem; font-weight: 400; color: var(--muted);
+  background: var(--bg); border: 1px solid var(--line); border-radius: .4rem;
+}
+.semsearch-help-text[hidden] { display: none; }
 .semsearch-panel { padding: .3rem .3rem .2rem; }
 .semsearch-input {
   width: 100%; box-sizing: border-box; font: inherit;

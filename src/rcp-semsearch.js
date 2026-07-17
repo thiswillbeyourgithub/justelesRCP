@@ -1,4 +1,4 @@
-// Per-drug semantic search: a collapsible "Rechercher dans ce RCP" box that lets
+// Per-drug semantic search: a collapsible "Recherche sémantique dans ce RCP" box that lets
 // the reader ask a natural-language question ("puis-je le prendre enceinte ?") and
 // jumps to the most relevant passages of THIS drug's text, highlighting them with
 // a prev/next navigator.
@@ -81,15 +81,47 @@
   const box = document.createElement("details");
   box.className = "semsearch";
   const summary = document.createElement("summary");
-  summary.textContent = "Rechercher dans ce RCP";
+  const summaryText = document.createElement("span");
+  summaryText.textContent = "Recherche sémantique dans ce RCP";
+  // A "?" that makes clear this is a MEANING-based search, not a keyword field. It
+  // hover-tooltips (title) AND toggles a visible one-liner on tap (works on touch,
+  // where native tooltips never show). preventDefault + stopPropagation so clicking
+  // it does NOT open/close the <details> it sits inside.
+  const help = document.createElement("button");
+  help.type = "button";
+  help.className = "semsearch-help";
+  help.textContent = "?";
+  help.setAttribute("aria-label", "À propos de la recherche sémantique");
+  const HELP_TEXT =
+    "Ce n'est pas une recherche par mot-clé : posez une question ou décrivez ce " +
+    "que vous cherchez (ex. « puis-je le prendre enceinte ? »). Les passages les " +
+    "plus proches par le sens sont classés.";
+  help.title = HELP_TEXT;
+  // The help lives INSIDE the <summary> (a <span>, valid there; a <p> is not) so it
+  // shows whether the box is collapsed or open: everything else in a <details> is
+  // hidden while collapsed, which is the box's default state. Its own click is
+  // swallowed so reading it doesn't toggle the box.
+  const helpText = document.createElement("span");
+  helpText.className = "semsearch-help-text";
+  helpText.hidden = true;
+  helpText.textContent = HELP_TEXT;
+  helpText.addEventListener("click", function (ev) {
+    ev.stopPropagation();
+  });
+  summary.append(summaryText, help, helpText);
   const panel = document.createElement("div");
   panel.className = "semsearch-panel";
+  help.addEventListener("click", function (ev) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    helpText.hidden = !helpText.hidden;
+  });
   const input = document.createElement("input");
   input.type = "search";
   input.className = "semsearch-input";
   input.placeholder = "ex. : « contraception et reproduction », « prise des repas »";
   input.setAttribute("enterkeyhint", "search");
-  input.setAttribute("aria-label", "Rechercher dans ce RCP");
+  input.setAttribute("aria-label", "Recherche sémantique dans ce RCP");
   input.setAttribute("minlength", String(MIN_CHARS));
   input.setAttribute("maxlength", String(MAX_CHARS));
   const status = document.createElement("p");
