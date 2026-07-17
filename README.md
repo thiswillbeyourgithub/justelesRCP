@@ -40,8 +40,9 @@ lents et à but lucratif.
 
 ## Comment ça marche
 
-Le point de départ est le dernier export en masse des RCP de l'ANSM, **figé au
-2 mai 2022** : c'est le seul export HTML complet qui existe (le téléchargement
+Le point de départ est le
+[dernier export en masse des RCP de l'ANSM](https://www.data.gouv.fr/datasets/base-de-donnees-publique-des-medicaments-defi-idoc-sante),
+**figé au 2 mai 2022** : c'est le seul export HTML complet qui existe (le téléchargement
 officiel quotidien de la BDPM ne contient que des métadonnées, pas le texte des
 RCP). Ce socle ne couvre que l'ANSM, pas les médicaments à autorisation
 européenne.

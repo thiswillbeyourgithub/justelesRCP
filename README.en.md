@@ -38,8 +38,9 @@ slow, for-profit medicine sites.
 
 ## How it works
 
-The starting point is the latest bulk export of ANSM RCPs, **frozen at 2 May
-2022**: it is the only complete HTML export that exists (the daily official BDPM
+The starting point is the
+[latest bulk export of ANSM RCPs](https://www.data.gouv.fr/datasets/base-de-donnees-publique-des-medicaments-defi-idoc-sante),
+**frozen at 2 May 2022**: it is the only complete HTML export that exists (the daily official BDPM
 download ships metadata only, not the RCP text). That baseline covers only the
 ANSM, not centrally-authorized (EMA) medicines.
 
