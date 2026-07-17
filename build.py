@@ -52,7 +52,7 @@ from lxml import html as lxml_html
 
 import bdpm  # shared, pure-stdlib BDPM tokenising + frequency scoring
 
-__version__ = "0.32.2"  # single source of truth; bump patch/minor per change
+__version__ = "0.32.3"  # single source of truth; bump patch/minor per change
 
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
@@ -1307,7 +1307,11 @@ def write_browse(index: list[dict[str, str]]) -> int:
         page = (
             tpl.replace("{{TITLE}}", _esc(title))
             .replace("{{DESC}}", _esc(desc))
-            .replace("{{HEAD}}", _canonical_link(path))
+            .replace(
+                "{{HEAD}}",
+                _canonical_link(path)
+                + _social_meta(title, desc, path, page_type="website"),
+            )
             .replace("{{HEADING}}", _esc(heading))
             .replace("{{NAV}}", nav(active))
             .replace("{{BODY}}", body)
@@ -1378,11 +1382,49 @@ def _canonical_link(path: str) -> str:
     return f'<link rel="canonical" href="{_esc(_abs_url(path))}">'
 
 
+def _social_meta(title: str, description: str, path: str,
+                 page_type: str = "article") -> str:
+    """Open Graph + Twitter Card tags so a shared link unfurls with a title/description
+    (better click-through). og:url is the canonical absolute URL. No og:image: the site
+    ships no logo asset (add one + og:image here if a brand image is introduced)."""
+    url = _esc(_abs_url(path))
+    t, d = _esc(title), _esc(description)
+    return (
+        f'<meta property="og:type" content="{page_type}">'
+        '<meta property="og:site_name" content="justelesRCP">'
+        '<meta property="og:locale" content="fr_FR">'
+        f'<meta property="og:title" content="{t}">'
+        f'<meta property="og:description" content="{d}">'
+        f'<meta property="og:url" content="{url}">'
+        '<meta name="twitter:card" content="summary">'
+        f'<meta name="twitter:title" content="{t}">'
+        f'<meta name="twitter:description" content="{d}">'
+    )
+
+
+# Per-static-page (title, description, og:type) for the hand-written pages, so their
+# {{HEAD}} social tags stay in sync with the hardcoded <title>/<meta description>.
+_STATIC_META = {
+    "index.html": (
+        "justelesRCP - Résumés des caractéristiques du produit",
+        "Recherche instantanée des RCP des médicaments en France. Rapide, gratuit, "
+        "sans pub. Source ANSM / BDPM.",
+        "website",
+    ),
+    "a-propos.html": (
+        "À propos | justelesRCP",
+        "À propos de justelesRCP : un accès rapide et sans publicité aux RCP des "
+        "médicaments (source ANSM / BDPM).",
+        "website",
+    ),
+}
+
+
 def _static_page_head(asset: str, path: str) -> str:
     """The injected <head> block ({{HEAD}}) for a hand-written static page (home,
-    /a-propos): its canonical link. Open Graph + JSON-LD are layered on top of this
-    in later steps, keyed off ``asset``."""
-    return _canonical_link(path)
+    /a-propos): canonical + Open Graph/Twitter. JSON-LD is layered on in a later step."""
+    title, desc, page_type = _STATIC_META[asset]
+    return _canonical_link(path) + _social_meta(title, desc, path, page_type)
 
 
 def _rcp_description(name: str, cis: str) -> str:
@@ -1838,10 +1880,16 @@ def render_record(item: tuple[str, str, str]) -> dict[str, str] | None:
         return None
     name = _NAMES.get(cis) or denom or f"RCP {cis}"
     slug = f"{cis}-{slugify(name)}"
+    path = f"/rcp/{slug}"
+    description = _rcp_description(name, cis)
+    head_extra = (
+        _canonical_link(path)
+        + _social_meta(f"{name} - RCP", description, path)
+    )
     page = (
         _TPL.replace("{{TITLE}}", _esc(name))
-        .replace("{{DESCRIPTION}}", _esc(_rcp_description(name, cis)))
-        .replace("{{HEADEXTRA}}", _canonical_link(f"/rcp/{slug}"))
+        .replace("{{DESCRIPTION}}", _esc(description))
+        .replace("{{HEADEXTRA}}", head_extra)
         .replace("{{CIS}}", _esc(cis))
         .replace("{{TOC}}", _toc_html(toc))
         .replace(
@@ -2174,13 +2222,16 @@ def render_eu_page(cis: str, overlay_html: str, meta: tuple[str, str, str] | Non
             _source_button(_ema_search_url(name), "Recherche EMA →"),
         ) \
         + _ref_links_html(cis, name, include_ema=False)
+    path = f"/eu/{slug}"
+    description = _eu_description(name, full=True)
+    # A full /eu/ page carries the real converted EMA SmPC/notice, so it IS indexable
+    # (unlike the bare stub below, which only points out and stays noindex). These are
+    # high-intent pages for EMA-only drugs (ABILIFY etc.).
+    head_extra = _canonical_link(path) + _social_meta(f"{name} - RCP", description, path)
     page = (
         page_tpl.replace("{{TITLE}}", _esc(name))
-        .replace("{{DESCRIPTION}}", _esc(_eu_description(name, full=True)))
-        # A full /eu/ page carries the real converted EMA SmPC/notice, so it IS
-        # indexable (unlike the bare stub below, which only points out and stays
-        # noindex). These are high-intent pages for EMA-only drugs (ABILIFY etc.).
-        .replace("{{HEADEXTRA}}", _canonical_link(f"/eu/{slug}"))
+        .replace("{{DESCRIPTION}}", _esc(description))
+        .replace("{{HEADEXTRA}}", head_extra)
         .replace("{{CIS}}", _esc(cis))
         .replace("{{TOC}}", _toc_html(_eu_toc(overlay_html)))
         .replace("{{ASOF}}", asof)
@@ -2303,10 +2354,15 @@ def build_stubs(
                 page_tpl.replace("{{TITLE}}", _esc(name))
                 .replace("{{DESCRIPTION}}", _esc(_eu_description(name, full=False)))
                 # A bare stub is thin (just a pointer out), so it stays noindex; it
-                # still carries a self-canonical so any inbound link resolves to one URL.
+                # still carries a self-canonical (so any inbound link resolves to one
+                # URL) + social tags (so a shared stub link still unfurls).
                 .replace(
                     "{{HEADEXTRA}}",
                     _canonical_link(f"/eu/{slug}")
+                    + _social_meta(
+                        f"{name} - RCP", _eu_description(name, full=False),
+                        f"/eu/{slug}",
+                    )
                     + '<meta name="robots" content="noindex">',
                 )
                 .replace("{{CIS}}", _esc(cis))

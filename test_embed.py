@@ -631,6 +631,11 @@ def test_rcp_page_has_canonical_and_no_leftover_slots():
     # Per-drug description: intent keywords + the active substance (from _SUBSTANCES).
     assert '<meta name="description" content="RCP de DOLIPRANE' in html
     assert "Substance active : paracetamol." in html
+    # Open Graph / Twitter unfurl tags, with the canonical absolute og:url.
+    assert '<meta property="og:type" content="article">' in html
+    assert '<meta property="og:site_name" content="justelesRCP">' in html
+    assert f'<meta property="og:url" content="{build.SITE_URL}/rcp/{row["slug"]}">' in html
+    assert '<meta name="twitter:card" content="summary">' in html
     print("ok  test_rcp_page_has_canonical_and_no_leftover_slots")
 
 
