@@ -152,9 +152,16 @@
     const msg = document.createElement("span");
     msg.className = "msg";
     box.append(btn, msg);
-    const anchor = asofEl || main.querySelector(".cis");
-    if (anchor && anchor.parentNode) anchor.after(box);
-    else main.prepend(box);
+    // Prefer to sit INSIDE the freshness "carton" (.rcp-asof), so the refresh
+    // control reads as belonging to those capture dates. A stub has no such card
+    // (no asofEl): fall back to just after the CIS line, else prepend to main.
+    if (asofEl) {
+      asofEl.append(box);
+    } else {
+      const anchor = main.querySelector(".cis");
+      if (anchor && anchor.parentNode) anchor.after(box);
+      else main.prepend(box);
+    }
 
     let polling = false;
     function setMsg(text) {

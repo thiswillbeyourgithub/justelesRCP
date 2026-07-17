@@ -356,7 +356,10 @@ Key facts that aren't obvious from a single file:
   value is also folded into that hash, so a re-scrape that changes either
   re-renders the page. Keep the contract in sync across `_asof_html`/`_ansm_date`,
   the `{{ASOF}}` slot in `src/rcp.html`, `.rcp-asof`/`.rcp-checked`/`.rcp-warn` in
-  `style.css`, and the enhancer in `src/app-init.js`. Directly under the banner,
+  `style.css`, and the enhancer in `src/app-init.js`. The "Rafraîchir maintenant"
+  refresh control (`.rcp-refresh`, built by `app-init.js`) is `append`ed INSIDE this
+  `.rcp-asof` card so it reads as belonging to the capture dates; a stub (no card,
+  no `data-rcp-asof`) keeps it just under the `.cis` line instead. Directly under the banner,
   `_official_source_html(url, label)` (injected into the same `{{ASOF}}` slot)
   renders a `.rcp-source` button to the authoritative page (ANSM `ANSM_PAGE_URL`
   on `/rcp/`, the EMA on `/eu/` stubs) so a reader who doubts our copy or spots a

@@ -207,11 +207,13 @@ a:hover { text-decoration: underline; }
 }
 .ref-pill:hover { border-color: var(--accent); color: var(--accent); text-decoration: none; }
 /* On-demand refresh control (built by app-init.js when the companion service is
-   reachable). Understated so it sits quietly under the freshness banner. */
-.rcp-refresh { margin: -0.8rem 0 1.5rem; font-size: .85rem; }
+   reachable). Lives INSIDE the .rcp-asof freshness card (a stub, which has no
+   card, keeps it just under the CIS line). background:var(--bg) so the button
+   reads as a control against the card's --card fill. */
+.rcp-refresh { margin: .5rem 0 0; font-size: .85rem; }
 .rcp-refresh button {
   font: inherit; cursor: pointer; color: var(--accent);
-  background: transparent; border: 1px solid var(--line);
+  background: var(--bg); border: 1px solid var(--line);
   border-radius: .4rem; padding: .3rem .7rem;
 }
 .rcp-refresh button:hover { border-color: var(--accent); }
