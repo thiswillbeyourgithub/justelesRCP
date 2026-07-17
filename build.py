@@ -51,7 +51,7 @@ from lxml import html as lxml_html
 
 import bdpm  # shared, pure-stdlib BDPM tokenising + frequency scoring
 
-__version__ = "0.30.0"  # single source of truth; bump patch/minor per change
+__version__ = "0.30.1"  # single source of truth; bump patch/minor per change
 
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
@@ -970,8 +970,9 @@ _SEC_MAX_CHUNKS = 10000
 # chrome stripped + filler paragraphs ("Sans objet", <= 2 words / <= 5 chars) dropped;
 # "3" = also drop the "[à compléter ultérieurement par le titulaire]" QRD placeholder;
 # "4" = sentence-grouped chunks (whole sentences up to _SEC_CHUNK_CHARS, word/letter
-# fallbacks) instead of blind word-windows, and the per-page cap raised to a failsafe.
-_CHUNK_FORMAT_VERSION = "4"
+# fallbacks) instead of blind word-windows, and the per-page cap raised to a failsafe;
+# "5" = drop chunk_text repeated verbatim within a page (EMA per-presentation notices).
+_CHUNK_FORMAT_VERSION = "5"
 
 
 def quantize_int8(values) -> list[int]:
@@ -1170,14 +1171,24 @@ def section_chunks(raw: str, cis: str = "") -> list[tuple[str, str, str]]:
     if not any(h.get("id") for h in headings):
         _build_toc(inner, depth=1)  # assigns id="sec-N"; empty-title headings get none
     chunks: list[tuple[str, str, str]] = []
+    seen: set[str] = set()  # chunk_text already emitted on THIS page (see _add)
 
     def _add(sec_id: str, body: str) -> bool:
         """Append one (sec_id, snippet, chunk_text=body); return False once the
         per-page cap is hit (caller stops). The heading is NOT embedded, so an empty
-        or too-short body is dropped rather than kept as a title-only chunk."""
+        or too-short body is dropped rather than kept as a title-only chunk.
+
+        Identical chunk_text already emitted on this page is skipped: an EMA notice
+        that repeats a section verbatim per presentation (or ANSM boilerplate) would
+        otherwise embed the SAME text twice (wasted encode) and surface the same
+        passage twice in the results. Keeping the first occurrence's sec-N is fine
+        since the text (hence the vector and the on-page passage) is identical."""
         chunk_text = _norm_ws(body)
         if len(chunk_text) < _SEC_MIN_CHARS:
             return True
+        if chunk_text in seen:
+            return True
+        seen.add(chunk_text)
         snippet = chunk_text[:_SEC_SNIPPET_CHARS]
         chunks.append((sec_id, snippet, chunk_text))
         return len(chunks) < _SEC_MAX_CHUNKS

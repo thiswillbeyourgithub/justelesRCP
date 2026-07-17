@@ -493,11 +493,15 @@ def test_long_section_tail_survives_raised_cap():
     # whose section 4 alone spent all 160 chunks). Build one huge section whose
     # distinctive passage sits well past where 160 chunks would have stopped, and assert
     # it is still emitted (cap raised to a pure failsafe) and kept intact in one chunk.
-    filler = ("Le medicament est absorbe apres administration orale puis distribue "
-              "dans l'organisme de facon tout a fait habituelle. ")
+    # Distinct sentences (numbered) so within-page dedup does NOT collapse them: this
+    # test isolates the raised cap, not the dedup path (covered separately below).
+    filler = " ".join(
+        f"Phrase numero {i} decrivant un aspect pharmacologique precis du produit teste."
+        for i in range(4000)
+    )
     target = ("Un repas riche en graisses induit une augmentation significative de la "
               "Cmax et de l'ASC de la substance a liberation prolongee.")
-    body = filler * 900 + target  # ~130k chars -> far more than 160 * _SEC_CHUNK_CHARS
+    body = filler + " " + target  # ~320k chars -> far more than 160 * _SEC_CHUNK_CHARS
     sample = ('<div id="textDocument">'
               '<p class="AmmAnnexeTitre1">5.2 Proprietes pharmacocinetiques</p>'
               f"<p>{body}</p></div>")
@@ -512,6 +516,27 @@ def test_long_section_tail_survives_raised_cap():
     assert any("repas riche en graisses induit une augmentation" in c
                for _, _, c in chunks), "passage was split across chunks"
     print("ok  test_long_section_tail_survives_raised_cap")
+
+
+def test_duplicate_chunks_within_page_dropped():
+    # An EMA notice repeated verbatim per presentation (or ANSM boilerplate) must embed
+    # the identical text ONCE, not once per copy: avoids wasted encodes and duplicate
+    # search results. Two top-level sections carry the SAME body; only one chunk survives.
+    body = ("Ce medicament contient une substance active bien connue et son profil de "
+            "tolerance a ete etabli au cours des essais cliniques menes chez l'adulte.")
+    sample = ('<div id="textDocument">'
+              '<p class="AmmAnnexeTitre1">1. Denomination</p>'
+              f"<p>{body}</p>"
+              '<p class="AmmAnnexeTitre1">2. Composition</p>'
+              f"<p>{body}</p>"
+              '<p class="AmmAnnexeTitre1">3. Forme</p>'
+              "<p>Une forme pharmaceutique distincte et clairement differente des autres."
+              "</p></div>")
+    chunks = build.section_chunks(sample)
+    texts = [c for _, _, c in chunks]
+    assert len(texts) == len(set(texts)), texts  # no duplicate chunk_text on the page
+    assert sum(1 for t in texts if t.startswith("Ce medicament contient")) == 1, texts
+    print("ok  test_duplicate_chunks_within_page_dropped")
 
 
 if __name__ == "__main__":
@@ -533,4 +558,5 @@ if __name__ == "__main__":
     test_overlay_iterators_agree()
     test_sentence_chunks_group_and_fallbacks()
     test_long_section_tail_survives_raised_cap()
+    test_duplicate_chunks_within_page_dropped()
     print("\nAll tests passed.")
