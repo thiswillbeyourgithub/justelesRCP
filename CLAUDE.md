@@ -520,8 +520,15 @@ Key facts that aren't obvious from a single file:
   `cap_drop: ALL` container). **Segmentation is shared**:
   `build.section_chunks(raw, cis)` runs the SAME `clean_rcp` path as the rendered
   page, so its chunks carry the same `sec-N` ids the ToC/anchors use (a hit scrolls
-  to a heading that exists); it returns `(sec_id, snippet, chunk_text)` per ~500-char
-  window and is the single source of truth. It handles BOTH page kinds: ANSM raw
+  to a heading that exists); it returns `(sec_id, snippet, chunk_text)` per chunk
+  (`_sentence_chunks` groups WHOLE sentences up to `_SEC_CHUNK_CHARS` ~500 chars, so a
+  chunk ends on a sentence boundary, not mid-sentence; an oversized sentence falls back
+  to word-windows and a single oversized token to a between-letters split, so every
+  chunk stays `<= ~_SEC_CHUNK_CHARS`) and is the single source of truth. The per-page
+  `_SEC_MAX_CHUNKS` is a pure failsafe (10000, ~5 Mo of one page's text), NOT a normal
+  limit: the old 160 cap silently DROPPED the tail of long drugs (quetiapine LP spent
+  it all in early sections, so its fatty-meal pharmacokinetics passage was never
+  embedded and unfindable). It handles BOTH page kinds: ANSM raw
   carries no ids so it assigns `sec-N` exactly as `clean_rcp`/`_build_toc` does, while
   a converted `/eu/` overlay ALREADY carries (QRD-numbered, non-sequential) `sec-N`
   ids from `ema_pdf` that `render_eu_page` keeps verbatim, so it must NOT renumber
