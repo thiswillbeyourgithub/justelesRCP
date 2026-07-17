@@ -765,7 +765,14 @@ Restart is not needed (Caddy reads the mounted dir live), but a
   can stay out of the image + `.dockerignore`-excluded build context) and the crawled
   overlays `data/rcp` + `data/eu` (the only text it embeds; the 2022 baseline CSV is
   not mounted at all). NO manifest mount: staleness is the content hash baked in each
-  `.vec.json`. The Dockerfile bakes `build.py` / `bdpm.py` / `onnx_embed.py` /
+  `.vec.json`. Because the embed service (not `build.py`) writes those sidecars ON THE
+  VPS, they are runtime artifacts, NOT build outputs: a deploy must NOT mirror-delete
+  them (`deploy.sh`'s main rsync `--exclude='*.vec.json*'` both skips shipping an
+  empty/stale local copy AND, since rsync protects excluded paths from `--delete`, keeps
+  a normal deploy from wiping the live index). To regenerate them on purpose after a
+  segmentation change (see `_CHUNK_FORMAT_VERSION`), `deploy.sh --re-embed` deletes the
+  VPS sidecars so the reconcile sweep re-embeds every crawled page; do NOT re-add
+  `*.vec.json` to the rsync mirror. The Dockerfile bakes `build.py` / `bdpm.py` / `onnx_embed.py` /
   `embed-service.py` / `src/rcp.html` and pip-installs `onnxruntime` + `tokenizers`
   (NOT torch, so ~300 Mo not ~2 Go). It is fully optional: `up web refresh` omits it
   and the search box degrades to "indisponible". PRIVACY: it embeds the reader's query
