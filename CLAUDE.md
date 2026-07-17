@@ -516,7 +516,9 @@ Key facts that aren't obvious from a single file:
   `'wasm-unsafe-eval'` CSP relaxation. Now the browser downloads nothing; the trade
   is that the query text transits our same-origin server (never logged, dropped right
   after encoding: the warm encoder's query LRU is keyed by a BLAKE2 hash of the text,
-  not the text itself, so only a hash -> lossy vector is ever retained, read-only
+  not the text itself, so only a hash -> lossy vector is ever retained, and even that
+  is purged after `EMBED_QUERY_CACHE_TTL_SECONDS` (default 60s: lazily on access +
+  swept by the reconcile loop) so query-derived data does not linger, read-only
   `cap_drop: ALL` container). **Segmentation is shared**:
   `build.section_chunks(raw, cis)` runs the SAME `clean_rcp` path as the rendered
   page, so its chunks carry the same `sec-N` ids the ToC/anchors use (a hit scrolls
@@ -700,7 +702,8 @@ uv run embed-service.py   # optional: warm SERVER-SIDE embedder on :8461 (behind
                           # EMBED_BACKLOG_RATE_SECONDS (2), EMBED_RECONCILE_SECONDS (60), EMBED_QUEUE_MAX
                           #  (500), EMBED_MAX_CONCURRENT_QUERIES (8, bounds encode CPU; per-IP rate limit
                           #  belongs at the proxy), EMBED_MIN/MAX_QUERY_CHARS (5/400), EMBED_QUERY_CACHE
-                          #  (256), EMBED_MODEL_DIR, REFRESH_TRIGGER_URL (baseline auto-crawl), EMBED_LOG_LEVEL;
+                          #  (256) + EMBED_QUERY_CACHE_TTL_SECONDS (60, bounds query-data retention; 0=off),
+                          #  EMBED_MODEL_DIR, REFRESH_TRIGGER_URL (baseline auto-crawl), EMBED_LOG_LEVEL;
                           # GET /api/sem/stats; query CONTENT is never logged (privacy)
 cp docker/env.example docker/.env                      # optional: umami analytics / DEV banner / refresh + embed knobs
 docker compose -f docker/docker-compose.yml up -d      # serve ./dist on :8459 + refresh + embed services (read-only, hardened)

@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from collections import OrderedDict
 from pathlib import Path
 
@@ -74,6 +75,7 @@ class Encoder:
         model_name: str = RUNTIME_MODEL,
         intra_threads: int = 4,
         query_cache: int = 256,
+        query_ttl: float = 60.0,
     ) -> None:
         model_dir = Path(model_dir)
         onnx_path = model_dir / "onnx" / "model_quantized.onnx"
@@ -101,14 +103,19 @@ class Encoder:
                 self.dim = int(json.loads(cfg.read_text())["hidden_size"])
             except Exception:
                 pass
-        # Bounded LRU of query-HASH -> vector, so repeated/edited queries (common as
-        # the reader types) recompute nothing. Keyed by a hash of the query text, NOT
-        # the text itself, so no plaintext query is ever retained in the process (only
-        # a hash -> lossy vector), keeping the "query dropped right after encoding"
-        # privacy promise literally true. Encoder-only concern; passages aren't cached
-        # (each is embedded once and persisted to its .vec.json).
-        self._q_cache: "OrderedDict[bytes, np.ndarray]" = OrderedDict()
+        # Bounded, TIME-LIMITED LRU of query-HASH -> (vector, expiry), so repeated/edited
+        # queries (common as the reader types) recompute nothing. Keyed by a hash of the
+        # query text, NOT the text itself, so no plaintext query is ever retained in the
+        # process (only a hash -> lossy vector). The query_ttl (default 60s) bounds HOW
+        # LONG even that hash+vector lingers: a hash is a verification oracle (given a
+        # guessed query one can hash it and test membership), so expiring entries shortly
+        # after use keeps the "query dropped right after encoding" promise strong instead
+        # of letting entries sit until LRU eviction. Purged lazily on access AND swept by
+        # the caller's periodic loop so idle entries do not persist. Encoder-only concern;
+        # passages aren't cached (each is embedded once and persisted to its .vec.json).
+        self._q_cache: "OrderedDict[bytes, tuple[np.ndarray, float]]" = OrderedDict()
         self._q_cache_max = max(0, int(query_cache))
+        self._q_ttl = max(0.0, float(query_ttl))  # 0 => no expiry
 
     # -- core --------------------------------------------------------------
     def encode(
@@ -149,20 +156,41 @@ class Encoder:
         """Embed document chunks (adds the passage prefix)."""
         return self.encode(texts, prefix=self.passage_prefix)
 
+    def purge_expired_queries(self, now: float | None = None) -> int:
+        """Drop every cached query entry past its TTL and return how many were removed.
+        Called lazily by encode_query and by the service's periodic loop so idle
+        entries do not linger past query_ttl even when no new query arrives. No-op when
+        query_ttl is 0 (expiry disabled). Not thread-locked: the OrderedDict ops are
+        atomic under the GIL and a racing miss just re-encodes, which is harmless."""
+        if not self._q_ttl or not self._q_cache:
+            return 0
+        if now is None:
+            now = time.monotonic()
+        dead = [k for k, (_, exp) in self._q_cache.items() if now >= exp]
+        for k in dead:
+            self._q_cache.pop(k, None)
+        return len(dead)
+
     def encode_query(self, query: str) -> np.ndarray:
-        """Embed ONE query (adds the query prefix), memoised in the LRU. Returns a
-        1-D float32 vector of length ``dim``. The cache is keyed by a hash of the query
-        so the plaintext text stays a local that is dropped when this returns; only a
-        hash -> vector pair lives in the LRU (never the query itself)."""
+        """Embed ONE query (adds the query prefix), memoised in the TTL-bounded LRU.
+        Returns a 1-D float32 vector of length ``dim``. The cache is keyed by a hash of
+        the query so the plaintext text stays a local that is dropped when this returns;
+        only a hash -> vector pair lives in the LRU (never the query itself), and only
+        until it expires (query_ttl)."""
         text = query.strip()
         key = hashlib.blake2b(text.encode("utf-8"), digest_size=16).digest()
+        now = time.monotonic()
         cached = self._q_cache.get(key)
         if cached is not None:
-            self._q_cache.move_to_end(key)
-            return cached
+            vec, exp = cached
+            if not self._q_ttl or now < exp:
+                self._q_cache.move_to_end(key)
+                return vec
+            self._q_cache.pop(key, None)  # expired: forget this query's derived data
         vec = self.encode([text], prefix=self.query_prefix)[0]
         if self._q_cache_max:
-            self._q_cache[key] = vec
+            self.purge_expired_queries(now)  # cheap sweep (<= cache_max entries)
+            self._q_cache[key] = (vec, now + self._q_ttl if self._q_ttl else float("inf"))
             while len(self._q_cache) > self._q_cache_max:
                 self._q_cache.popitem(last=False)
         return vec

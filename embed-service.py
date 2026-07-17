@@ -267,6 +267,9 @@ class Embedder:
                                 n, len(self._queue))
             except Exception as exc:
                 logger.warning("reconcile scan failed: {}", exc)
+            # Bound how long cached query hashes+vectors linger even while idle: the
+            # lazy per-request purge only fires when a query arrives, so sweep here too.
+            self.encoder.purge_expired_queries()
             check_model = False
             time.sleep(self.reconcile_seconds)
 
@@ -485,8 +488,13 @@ EMBEDDER: Embedder | None = None  # set in main(), read by _Handler
               help="Reject queries longer than this (env EMBED_MAX_QUERY_CHARS).")
 @click.option("--query-cache", type=int, default=256, show_default=True,
               envvar="EMBED_QUERY_CACHE",
-              help="Bounded LRU of query-string -> vector (env EMBED_QUERY_CACHE), so "
+              help="Bounded LRU of query-hash -> vector (env EMBED_QUERY_CACHE), so "
                    "repeated/edited queries recompute nothing.")
+@click.option("--query-cache-ttl", type=float, default=60.0, show_default=True,
+              envvar="EMBED_QUERY_CACHE_TTL_SECONDS",
+              help="Seconds a query-hash -> vector entry may live before it is purged "
+                   "(env EMBED_QUERY_CACHE_TTL_SECONDS), bounding how long any "
+                   "query-derived data is retained. 0 disables expiry (LRU only).")
 @click.option("--backlog/--no-backlog", default=True, show_default=True,
               envvar="EMBED_ENABLE",
               help="Run the perpetual reconcile sweep that (re-)embeds every crawled "
@@ -524,7 +532,7 @@ EMBEDDER: Embedder | None = None  # set in main(), read by _Handler
               help="Minimum log level (env EMBED_LOG_LEVEL). /api/sem/health is never "
                    "logged; query text is never logged.")
 def main(host, port, model_dir, intra_threads, min_query_chars, max_query_chars,
-         query_cache, backlog, backlog_rate, reconcile_seconds, queue_max,
+         query_cache, query_cache_ttl, backlog, backlog_rate, reconcile_seconds, queue_max,
          max_concurrent_queries, refresh_url, timeout, log_level) -> None:
     """Run the semantic-search embedder (see module docstring)."""
     global EMBEDDER
@@ -536,6 +544,7 @@ def main(host, port, model_dir, intra_threads, min_query_chars, max_query_chars,
         encoder = onnx_embed.Encoder(
             model_dir=model_dir, model_name=onnx_embed.RUNTIME_MODEL,
             intra_threads=intra_threads, query_cache=query_cache,
+            query_ttl=query_cache_ttl,
         )
     except FileNotFoundError as exc:
         # A misconfig, not the "feature off" path (that is: don't run this container).
