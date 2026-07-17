@@ -51,7 +51,7 @@ from lxml import html as lxml_html
 
 import bdpm  # shared, pure-stdlib BDPM tokenising + frequency scoring
 
-__version__ = "0.29.0"  # single source of truth; bump patch/minor per change
+__version__ = "0.30.0"  # single source of truth; bump patch/minor per change
 
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
@@ -954,15 +954,24 @@ def clean_rcp(
 _SEC_CHUNK_CHARS = 500
 _SEC_SNIPPET_CHARS = 160
 _SEC_MIN_CHARS = 24
-_SEC_MAX_CHUNKS = 160
+# Pure failsafe against a pathological drug blowing the index, NOT a normal limit: at
+# ~_SEC_CHUNK_CHARS per chunk this is ~5 Mo of section text on ONE page, far past any
+# real RCP. It exists only so a broken/gigantic overlay can't emit unbounded chunks.
+# The real bug it replaced: the old 160 cap silently DROPPED the tail of long drugs
+# (e.g. quetiapine LP: section 4 alone spent 126 chunks, so pharmacokinetics/§5.2 and
+# everything after was never embedded and unfindable). Sections are now split on whole
+# sentences (see _sentence_chunks) rather than blind word-windows.
+_SEC_MAX_CHUNKS = 10000
 # Bump when section_chunks changes WHAT text it emits (segmentation, header handling,
 # cruft stripping). Such a change does not touch the raw overlay, so it would slip past
 # the .vec.json content-hash gate; folding it into raw_hash (below) busts every sidecar
 # so a re-bake / re-crawl re-embeds with the new segmentation. History: "1" = original
 # title-prefixed chunks; "2" = headers no longer embedded + DSFR back-to-top/tooltip
 # chrome stripped + filler paragraphs ("Sans objet", <= 2 words / <= 5 chars) dropped;
-# "3" = also drop the "[à compléter ultérieurement par le titulaire]" QRD placeholder.
-_CHUNK_FORMAT_VERSION = "3"
+# "3" = also drop the "[à compléter ultérieurement par le titulaire]" QRD placeholder;
+# "4" = sentence-grouped chunks (whole sentences up to _SEC_CHUNK_CHARS, word/letter
+# fallbacks) instead of blind word-windows, and the per-page cap raised to a failsafe.
+_CHUNK_FORMAT_VERSION = "4"
 
 
 def quantize_int8(values) -> list[int]:
@@ -1000,7 +1009,10 @@ def _norm_ws(text: str) -> str:
 
 
 def _char_windows(text: str, limit: int) -> list[str]:
-    """Split text into word-aligned windows no longer than ~limit chars."""
+    """Split text into word-aligned windows no longer than ~limit chars.
+
+    A single word longer than ``limit`` becomes one oversized window (words are not
+    cut here); _letter_windows is the last-resort splitter for that case."""
     windows: list[str] = []
     cur = ""
     for word in text.split():
@@ -1012,6 +1024,57 @@ def _char_windows(text: str, limit: int) -> list[str]:
     if cur:
         windows.append(cur)
     return windows
+
+
+def _letter_windows(word: str, limit: int) -> list[str]:
+    """Last-resort split of a single token longer than ``limit``, cut between letters.
+    Only reached for a pathological unbroken run (no whitespace) longer than a chunk;
+    real RCP prose never hits this, but it guarantees every chunk is <= ~limit chars."""
+    return [word[i : i + limit] for i in range(0, len(word), limit)] or [word]
+
+
+# Sentence boundary: whitespace right after sentence-ending punctuation. On text already
+# collapsed by _norm_ws (single spaces), this splits "... prolongée. Un effet ..." after
+# the period. Abbreviations ("env. 20") over-split, but that is harmless: the pieces are
+# regrouped up to _SEC_CHUNK_CHARS anyway, so an over-split only shifts a chunk boundary.
+_SENT_SPLIT = re.compile(r"(?<=[.!?…])\s+")
+
+
+def _sentence_chunks(text: str, limit: int) -> list[str]:
+    """Group whole sentences into chunks no longer than ~``limit`` chars.
+
+    A chunk ends on a sentence boundary instead of mid-sentence (blind word-windows
+    could cut "... 50 % de la | Cmax ..." across two vectors, hurting retrieval).
+    Fallbacks for pathological input, in order: a single sentence longer than ``limit``
+    is word-windowed (_char_windows); a single word still longer than ``limit`` is cut
+    between letters (_letter_windows). So every emitted chunk is <= ~``limit`` chars."""
+    text = _norm_ws(text)
+    if not text:
+        return []
+    chunks: list[str] = []
+    cur = ""
+    for sent in _SENT_SPLIT.split(text):
+        sent = sent.strip()
+        if not sent:
+            continue
+        if len(sent) > limit:
+            if cur:  # flush what we have, then split the oversized sentence itself
+                chunks.append(cur)
+                cur = ""
+            for piece in _char_windows(sent, limit):
+                if len(piece) > limit:  # a single word longer than limit
+                    chunks.extend(_letter_windows(piece, limit))
+                else:
+                    chunks.append(piece)
+            continue
+        if cur and len(cur) + 1 + len(sent) > limit:
+            chunks.append(cur)
+            cur = sent
+        else:
+            cur = f"{cur} {sent}".strip()
+    if cur:
+        chunks.append(cur)
+    return chunks
 
 
 def _is_filler_paragraph(text: str) -> bool:
@@ -1157,17 +1220,20 @@ def section_chunks(raw: str, cis: str = "") -> list[tuple[str, str, str]]:
             " ".join(p for p in narrative if not _is_filler_paragraph(p))
         )
         # Heading-only sections (and sections left empty once filler paragraphs are
-        # dropped) yield no window and no chunk (the heading is not embedded), so they
-        # simply drop out here.
-        for body in _char_windows(body_all, _SEC_CHUNK_CHARS):
+        # dropped) yield no chunk (the heading is not embedded), so they simply drop
+        # out here. Prose is grouped on whole sentences so a chunk ends on a sentence
+        # boundary, not mid-sentence like the old word-windows.
+        for body in _sentence_chunks(body_all, _SEC_CHUNK_CHARS):
             if not _add(sec_id, body):
                 return chunks
-        # Table rows are kept intact (never merged into the narrative windows); only
-        # a pathological giant row is itself word-windowed as a safety valve.
+        # Table rows are kept intact (never merged into the narrative chunks); only a
+        # pathological giant row is itself word/letter-windowed as a safety valve.
         for row in table_rows:
             for piece in _char_windows(row, _SEC_CHUNK_CHARS) or [row]:
-                if not _add(sec_id, piece):
-                    return chunks
+                for part in ([piece] if len(piece) <= _SEC_CHUNK_CHARS
+                             else _letter_windows(piece, _SEC_CHUNK_CHARS)):
+                    if not _add(sec_id, part):
+                        return chunks
     return chunks
 
 
