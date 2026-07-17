@@ -276,6 +276,11 @@ a:hover { text-decoration: underline; }
 /* Full on-page passage of the hit (chunks are small, shown whole). overflow-wrap so a
    long unbroken token can't force the sticky panel to scroll horizontally. */
 .semsearch-snippet { display: block; color: var(--muted); font-size: .82rem; margin-top: .15rem; overflow-wrap: anywhere; }
+/* Trailing note when the 25-result cap bit (a plain, non-clickable <li>). */
+.semsearch-capped {
+  color: var(--muted); font-size: .75rem; font-style: italic;
+  text-align: center; padding: .5rem .3rem;
+}
 .semsearch-current-item .semsearch-hit-link { background: var(--bg); }
 .semsearch-current-item .semsearch-hit-link strong::before { content: "\25B8"; }
 /* Persistent highlight on the matched paragraph(s) in the RCP body: every ranked hit

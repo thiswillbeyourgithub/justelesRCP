@@ -691,6 +691,17 @@
       results.append(li);
       prevSec = hit.sec;
     });
+    // When the cap bit, tell the reader at the very end of the list that more matches
+    // exist, so they can refine. A plain non-clickable <li>: setCurrent()/nav index off
+    // hits.length, so this trailing item is never selectable.
+    if (hits.length >= MAX_RESULTS) {
+      const capped = document.createElement("li");
+      capped.className = "semsearch-capped";
+      capped.textContent =
+        MAX_RESULTS +
+        " résultats affichés (maximum). Affinez votre requête pour d'autres résultats.";
+      results.append(capped);
+    }
     nav.hidden = hits.length === 0;
   }
 
