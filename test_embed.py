@@ -81,12 +81,73 @@ def test_section_chunks_align_with_toc():
     joined = {sid: " ".join(c for s, _, c in chunks if s == sid) for sid in chunk_ids}
     assert "paracetamol" in joined["sec-0"].lower()
     assert "grossesse" in joined["sec-1"].lower()
-    # chunk_text is title-prefixed (context for the encoder).
-    assert joined["sec-1"].lower().startswith("4.6 fertilite")
+    # The heading is NOT embedded: chunk_text is the body alone, never the title.
+    assert not joined["sec-1"].lower().startswith("4.6 fertilite")
+    assert "fertilite" not in joined["sec-1"].lower()
+    assert joined["sec-1"].lower().startswith("le paracetamol")
     # snippets are non-empty and bounded.
     for _, snippet, _ in chunks:
         assert 0 < len(snippet) <= build._SEC_SNIPPET_CHARS
     print("ok  test_section_chunks_align_with_toc")
+
+
+def test_heading_only_section_yields_no_chunk():
+    # A section that is a heading with no body must not emit a title-only chunk
+    # (the heading is navigation, not content). Only the two bodied sections survive.
+    sample = """<div id="textDocument">
+      <p class="AmmAnnexeTitre1">5.1 Proprietes pharmacodynamiques</p>
+      <p class="AmmAnnexeTitre1">5.2 Proprietes pharmacocinetiques</p>
+      <p>Le medicament est absorbe rapidement apres administration orale.</p>
+    </div>"""
+    chunks = build.section_chunks(sample)
+    ids = {sid for sid, _, _ in chunks}
+    # sec-0 (heading only) drops out; sec-1 (has a body) stays.
+    assert ids == {"sec-1"}, ids
+    text = " ".join(c for _, _, c in chunks).lower()
+    assert "pharmacodynamiques" not in text and "pharmacocinetiques" not in text, text
+    assert "absorbe rapidement" in text, text
+    print("ok  test_heading_only_section_yields_no_chunk")
+
+
+def test_dsfr_backtotop_chrome_stripped():
+    # Fresh ANSM scrapes carry DSFR back-to-top links + tooltip spans whose visible
+    # text is "Redirection vers le haut de page". They must not pollute the chunks.
+    sample = """<div id="textDocument">
+      <p class="AmmAnnexeTitre1">4.1 Indications therapeutiques</p>
+      <a class="fr-link lien-retour-hautdepage" aria-label="Redirection vers le haut de page" href="#top"></a>
+      <span class="fr-tooltip fr-placement" role="tooltip">Redirection vers le haut de page</span>
+      <p>Traitement symptomatique des douleurs d'intensite legere a moderee.</p>
+    </div>"""
+    text = " ".join(c for _, _, c in build.section_chunks(sample)).lower()
+    assert "redirection vers le haut" not in text, text
+    assert "traitement symptomatique" in text, text
+    print("ok  test_dsfr_backtotop_chrome_stripped")
+
+
+def test_filler_paragraphs_dropped():
+    # RCP boilerplate paragraphs ("Sans objet.", a one-word "Oui", a 2-word fragment)
+    # carry no searchable meaning and must not dilute the section vector; a real body
+    # paragraph in the same section survives. Table rows keep their own path.
+    assert build._is_filler_paragraph("Sans objet.")           # 2 words + the exact phrase
+    assert build._is_filler_paragraph("Oui")                   # 1 word / 3 chars
+    assert build._is_filler_paragraph("Voie orale")            # 2 words
+    assert build._is_filler_paragraph("   ")                   # empty after norm
+    assert not build._is_filler_paragraph("Traitement de la douleur legere.")
+
+    sample = """<div id="textDocument">
+      <p class="AmmAnnexeTitre1">4.3 Contre-indications</p>
+      <p>Sans objet.</p>
+      <p class="AmmAnnexeTitre1">4.4 Mises en garde</p>
+      <p>Ne pas depasser la dose recommandee chez les patients ages.</p>
+    </div>"""
+    chunks = build.section_chunks(sample)
+    ids = {sid for sid, _, _ in chunks}
+    # "Sans objet." leaves 4.3 empty -> no chunk; 4.4 keeps its real body.
+    assert ids == {"sec-1"}, ids
+    joined = " ".join(c for _, _, c in chunks).lower()
+    assert "sans objet" not in joined, joined
+    assert "ne pas depasser" in joined, joined
+    print("ok  test_filler_paragraphs_dropped")
 
 
 def test_empty_and_untitled():
@@ -398,6 +459,9 @@ def test_overlay_iterators_agree():
 if __name__ == "__main__":
     test_quantize_roundtrip()
     test_section_chunks_align_with_toc()
+    test_heading_only_section_yields_no_chunk()
+    test_dsfr_backtotop_chrome_stripped()
+    test_filler_paragraphs_dropped()
     test_empty_and_untitled()
     test_demojibake_restores_lost_apostrophes()
     test_nested_toc_keeps_sec_namespace_stable()

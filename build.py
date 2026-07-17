@@ -51,7 +51,7 @@ from lxml import html as lxml_html
 
 import bdpm  # shared, pure-stdlib BDPM tokenising + frequency scoring
 
-__version__ = "0.27.3"  # single source of truth; bump patch/minor per change
+__version__ = "0.28.0"  # single source of truth; bump patch/minor per change
 
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
@@ -769,8 +769,14 @@ def _xref_html(links: list[tuple[str, str]]) -> str:
 
 # ANSM cruft we strip so a single stylesheet can own the look.
 _STRIP_XPATH = (
-    "//img[contains(@src, 'BackToTop')]"  # "back to top" arrows
+    "//img[contains(@src, 'BackToTop')]"  # the 2022 dump's "back to top" arrows
     " | //a[.//img[contains(@src, 'BackToTop')]]"
+    # Fresh ANSM scrapes carry DSFR chrome the 2022 dump did not: "Redirection vers le
+    # haut de page" back-to-top links and their tooltip helper spans. We ship no DSFR
+    # CSS, so the tooltip text renders as visible garbage on the page AND pollutes the
+    # semantic-search chunks; drop both (they carry no RCP content).
+    " | //a[contains(@class, 'lien-retour-hautdepage')]"
+    " | //*[contains(@class, 'fr-tooltip')]"
     " | //script | //style"
 )
 
@@ -949,6 +955,13 @@ _SEC_CHUNK_CHARS = 500
 _SEC_SNIPPET_CHARS = 160
 _SEC_MIN_CHARS = 24
 _SEC_MAX_CHUNKS = 160
+# Bump when section_chunks changes WHAT text it emits (segmentation, header handling,
+# cruft stripping). Such a change does not touch the raw overlay, so it would slip past
+# the .vec.json content-hash gate; folding it into raw_hash (below) busts every sidecar
+# so a re-bake / re-crawl re-embeds with the new segmentation. History: "1" = original
+# title-prefixed chunks; "2" = headers no longer embedded + DSFR back-to-top/tooltip
+# chrome stripped + filler paragraphs ("Sans objet", <= 2 words / <= 5 chars) dropped.
+_CHUNK_FORMAT_VERSION = "2"
 
 
 def quantize_int8(values) -> list[int]:
@@ -972,8 +985,13 @@ def raw_hash(raw: str) -> str:
     """Short content hash of an overlay's raw HTML, baked into its .vec.json as the
     self-describing staleness key (a re-crawl that produced identical bytes hashes the
     same -> no re-embed). SHARED by embed-service.py + embed-rcp.py so their staleness
-    decisions never diverge; matches the 16-hex form embed-rcp.py used."""
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+    decisions never diverge; matches the 16-hex form embed-rcp.py used.
+
+    _CHUNK_FORMAT_VERSION is mixed in so a change to how section_chunks segments a page
+    (which leaves the raw overlay untouched) still changes the hash and busts every
+    .vec.json, forcing a re-embed on the next re-bake / re-crawl."""
+    keyed = f"{_CHUNK_FORMAT_VERSION}\x00{raw}"
+    return hashlib.sha256(keyed.encode("utf-8")).hexdigest()[:16]
 
 
 def _norm_ws(text: str) -> str:
@@ -993,6 +1011,20 @@ def _char_windows(text: str, limit: int) -> list[str]:
     if cur:
         windows.append(cur)
     return windows
+
+
+def _is_filler_paragraph(text: str) -> bool:
+    """True for a narrative paragraph too short/generic to carry searchable meaning:
+    RCP boilerplate like "Sans objet." (not applicable), a stray "Oui", a one-cell
+    leftover. Dropped BEFORE a section's body is assembled so it never dilutes a
+    chunk's vector. Rule: empty, exactly "Sans objet", <= 5 chars, or <= 2 words.
+    Table rows are exempt (they carry column context and take their own path)."""
+    t = _norm_ws(text)
+    if not t:
+        return True
+    if t.strip(" .;:").lower() == "sans objet":
+        return True
+    return len(t) <= 5 or len(t.split()) <= 2
 
 
 _TABLE_MAX_ROWS = 60  # cap a runaway table so one drug can't blow the chunk budget
@@ -1042,8 +1074,10 @@ def section_chunks(raw: str, cis: str = "") -> list[tuple[str, str, str]]:
     Returns ``[(sec_id, snippet, chunk_text), ...]`` where ``sec_id`` is the SAME
     id render_record puts on the section heading (so a search hit scrolls to a real
     ``#sec-N``), ``snippet`` is a short display excerpt, and ``chunk_text`` is the
-    section-title-prefixed text to embed (the model prefix, e.g. e5's "passage:",
-    is added by the caller). Pure stdlib+lxml, no ML dependency; imported by
+    section BODY text to embed (the model prefix, e.g. e5's "passage:", is added by
+    the caller). The heading itself is NOT embedded: a heading is navigation, not
+    content, and prefixing it dilutes every chunk's vector, so a section with no body
+    (heading only) yields no chunk. Pure stdlib+lxml, no ML dependency; imported by
     embed-rcp.py. Each section's body is gathered from the heading's following
     siblings up to the next top-level heading (the same walk _denomination uses)
     and split into ~_SEC_CHUNK_CHARS windows.
@@ -1067,16 +1101,14 @@ def section_chunks(raw: str, cis: str = "") -> list[tuple[str, str, str]]:
         _build_toc(inner, depth=1)  # assigns id="sec-N"; empty-title headings get none
     chunks: list[tuple[str, str, str]] = []
 
-    def _add(sec_id: str, title: str, body: str) -> bool:
-        """Append one (sec_id, snippet, chunk_text); return False once the per-page
-        cap is hit (caller stops). Tiny trailing fragments are dropped, but a
-        title-only chunk for an otherwise-empty section is kept (stays searchable)."""
-        chunk_text = f"{title} : {body}".strip(" :") if body else title
-        if not chunk_text:
+    def _add(sec_id: str, body: str) -> bool:
+        """Append one (sec_id, snippet, chunk_text=body); return False once the
+        per-page cap is hit (caller stops). The heading is NOT embedded, so an empty
+        or too-short body is dropped rather than kept as a title-only chunk."""
+        chunk_text = _norm_ws(body)
+        if len(chunk_text) < _SEC_MIN_CHARS:
             return True
-        if body and len(chunk_text) < _SEC_MIN_CHARS:
-            return True
-        snippet = _norm_ws(body or title)[:_SEC_SNIPPET_CHARS]
+        snippet = chunk_text[:_SEC_SNIPPET_CHARS]
         chunks.append((sec_id, snippet, chunk_text))
         return len(chunks) < _SEC_MAX_CHUNKS
 
@@ -1084,7 +1116,6 @@ def section_chunks(raw: str, cis: str = "") -> list[tuple[str, str, str]]:
         sec_id = h_el.get("id")
         if not sec_id:  # empty-title heading skipped by _build_toc
             continue
-        title = _norm_ws(h_el.text_content())
         narrative: list[str] = []
         table_rows: list[str] = []  # each a self-contained linearised table row
         for sib in h_el.itersiblings():
@@ -1115,18 +1146,20 @@ def section_chunks(raw: str, cis: str = "") -> list[tuple[str, str, str]]:
                 if t.getparent() is not None:
                     t.getparent().remove(t)
             narrative.append(clone.text_content())
-        body_all = _norm_ws(" ".join(narrative))
-        windows = _char_windows(body_all, _SEC_CHUNK_CHARS)
-        if not windows and not table_rows:
-            windows = [""]  # title-only, so an empty section stays searchable
-        for body in windows:
-            if not _add(sec_id, title, body):
+        body_all = _norm_ws(
+            " ".join(p for p in narrative if not _is_filler_paragraph(p))
+        )
+        # Heading-only sections (and sections left empty once filler paragraphs are
+        # dropped) yield no window and no chunk (the heading is not embedded), so they
+        # simply drop out here.
+        for body in _char_windows(body_all, _SEC_CHUNK_CHARS):
+            if not _add(sec_id, body):
                 return chunks
         # Table rows are kept intact (never merged into the narrative windows); only
         # a pathological giant row is itself word-windowed as a safety valve.
         for row in table_rows:
             for piece in _char_windows(row, _SEC_CHUNK_CHARS) or [row]:
-                if not _add(sec_id, title, piece):
+                if not _add(sec_id, piece):
                     return chunks
     return chunks
 

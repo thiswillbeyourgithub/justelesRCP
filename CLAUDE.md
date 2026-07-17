@@ -515,8 +515,16 @@ Key facts that aren't obvious from a single file:
   ids from `ema_pdf` that `render_eu_page` keeps verbatim, so it must NOT renumber
   them (it only calls `_build_toc` when the headings have no id); a `<table>` is
   linearised row-by-row (`_linearize_table`: each body row -> "header: cell; header:
-  cell", kept intact and title-prefixed) instead of `text_content()`-flattened, so
-  posology/table rows stay retrievable; non-data/layout tables fall back to flat text.
+  cell", kept intact) instead of `text_content()`-flattened, so posology/table rows
+  stay retrievable; non-data/layout tables fall back to flat text. The section HEADING
+  is NOT embedded (it is navigation, not content, and prefixing it dilutes every
+  vector), so `chunk_text` is the section body alone and a heading-only section yields
+  no chunk; DSFR back-to-top links + their "Redirection vers le haut de page" tooltip
+  spans (fresh-scrape chrome) are stripped in `_STRIP_XPATH` so they never reach a
+  chunk; and filler narrative paragraphs (`_is_filler_paragraph`: exactly "Sans objet",
+  `<= 5` chars, or `<= 2` words) are dropped before the section body is assembled (table
+  rows are exempt). `_CHUNK_FORMAT_VERSION` (folded into `raw_hash`/`src_hash`) busts
+  every `.vec.json` when this segmentation changes, since the raw overlay is untouched.
   **The warm encoder** (`onnx_embed.Encoder`) loads the int8
   `Xenova/multilingual-e5-small` ONNX weights + tokenizer ONCE with
   `onnxruntime` + `tokenizers` ONLY (NO torch: a ~300 Mo image, not ~2 Go), e5
@@ -654,7 +662,7 @@ uv run embed-service.py   # optional: warm SERVER-SIDE embedder on :8461 (behind
                           # knobs (env): EMBED_ENABLE (backlog sweep 1=on), EMBED_INTRA_THREADS (4),
                           # EMBED_BACKLOG_RATE_SECONDS (2), EMBED_RECONCILE_SECONDS (60), EMBED_QUEUE_MAX
                           #  (500), EMBED_MAX_CONCURRENT_QUERIES (8, bounds encode CPU; per-IP rate limit
-                          #  belongs at the proxy), EMBED_MIN/MAX_QUERY_CHARS (10/400), EMBED_QUERY_CACHE
+                          #  belongs at the proxy), EMBED_MIN/MAX_QUERY_CHARS (5/400), EMBED_QUERY_CACHE
                           #  (256), EMBED_MODEL_DIR, REFRESH_TRIGGER_URL (baseline auto-crawl), EMBED_LOG_LEVEL;
                           # GET /api/sem/stats; query CONTENT is never logged (privacy)
 cp docker/env.example docker/.env                      # optional: umami analytics / DEV banner / refresh + embed knobs
