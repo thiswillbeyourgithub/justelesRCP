@@ -191,8 +191,10 @@ propre manifeste, indépendants de la voie ANSM.
 Chaque page RCP (ainsi que chaque page `/eu/` au RCP complet converti depuis
 l'EMA) propose un encart « Recherche sémantique dans ce RCP » : posez une question en langage
 naturel (« puis-je le prendre pendant la grossesse ? », « effets sur le foie ») et
-l'encart classe les passages les plus proches de ce seul médicament, surligne le
-paragraphe correspondant et permet de parcourir les résultats avec précédent/suivant.
+l'encart classe les passages les plus proches de ce seul médicament, en affiche le
+texte complet (les passages d'une même rubrique sont regroupés sous un seul titre),
+surligne le paragraphe correspondant et permet de parcourir les résultats avec
+précédent/suivant.
 Les tableaux (posologie, etc.) sont indexés ligne par ligne pour que chaque ligne
 reste retrouvable. Le classement est **hybride** : à la proximité sémantique s'ajoute
 un bonus lexical quand vos propres mots (même approximativement : pluriels, fautes de

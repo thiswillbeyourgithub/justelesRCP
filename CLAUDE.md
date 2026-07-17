@@ -586,8 +586,14 @@ Key facts that aren't obvious from a single file:
   least 50% similarity"; a `continue`, not a `break`, since the list is sorted by the
   hybrid score), capped at `MAX_RESULTS` (25) distinct passages; a wholly-irrelevant query
   (nothing clears the floor) still yields "Aucun passage pertinent.". Each surviving hit
-  shows its blended relevance small + muted as a percentage (`.semsearch-score`, clamped to
-  100%, tooltip splits it back into cosine + keyword), then it LIGHTLY tints every
+  shows the FULL on-page passage it resolves to (read from that DOM paragraph via
+  `displayText`; a table-row/heading-resolved hit keeps the stored snippet) plus its
+  blended relevance small + muted as a percentage (`.semsearch-score`, clamped to 100%,
+  tooltip `Score hybride ...` naming BOTH the semantic proximity and the keyword match).
+  Consecutive hits from the SAME section print the heading once (`.semsearch-cont`
+  continuations get a dashed divider), and a trailing `.semsearch-capped` note shows when
+  the `MAX_RESULTS` cap bites; editing the query scrolls the results list back to the top.
+  Then it LIGHTLY tints every
   surviving ranked passage (`.semsearch-hit`) but does NOT auto-jump: `current` stays
   `-1` and the reader picks a passage (click a result, or step the nav bar / Enter),
   which promotes it to `.semsearch-current` and scrolls to it (`setCurrent(i, true)` is

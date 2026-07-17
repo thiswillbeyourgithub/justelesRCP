@@ -174,8 +174,9 @@ independent of the ANSM lane.
 Every RCP page (and every full `/eu/` page converted from the EMA) has a
 "Recherche sémantique dans ce RCP" box: type a natural-language question ("can I take it
 while pregnant?", "effects on the liver") and the box ranks the closest passages
-within that one drug, highlights the matching paragraph and lets you step through
-the hits with previous/next. Tables (posology, etc.) are indexed row by row so each
+within that one drug, shows each one's full text (hits from the same section are
+grouped under a single heading), highlights the matching paragraph and lets you step
+through the hits with previous/next. Tables (posology, etc.) are indexed row by row so each
 row stays retrievable. Ranking is **hybrid**: semantic closeness is combined with a
 lexical bonus whenever your own words (even approximately: plurals, typos) appear in a
 section, pushing up passages that answer you both by meaning and by wording.
