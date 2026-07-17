@@ -196,6 +196,57 @@ class Encoder:
         return vec
 
 
+class CachingEncoder:
+    """Wraps an ``Encoder`` and memoises ``encode_passages`` by content hash, so a
+    passage embedded once is REUSED for every other page that repeats it verbatim.
+
+    Generics share near-identical RCP text: ~63% of chunks across the catalog are
+    cross-drug duplicates, so on a BULK bake this skips ~2/3 of the encodes. The cached
+    value IS the wrapped encoder's own float32 output, so a cache HIT yields a
+    byte-identical vector to a fresh encode: offline (embed-rcp.py) and online
+    (embed-service.py) vectors still agree, and the .vec.json format is unchanged (this
+    is a compute optimisation only, no storage/transfer change).
+
+    Intended for the offline batch pre-bake, where the cache is transient and freed when
+    the process exits. Deliberately NOT used by the long-lived service: there the
+    duplicates are scattered in time, so a persistent cache would cost steady RAM for
+    little steady-state benefit. Everything except ``encode_passages`` (query encoding,
+    prefixes, ``model_name``, ``dim``, ...) delegates to the wrapped encoder."""
+
+    def __init__(self, encoder: "Encoder") -> None:
+        self._enc = encoder
+        self._cache: dict[bytes, np.ndarray] = {}
+        self.hits = 0
+        self.misses = 0
+
+    def __getattr__(self, name: str):  # delegate anything we don't override
+        return getattr(self._enc, name)
+
+    def encode_passages(self, texts: list[str]) -> np.ndarray:
+        """Same contract as Encoder.encode_passages ((N, dim) float32), but only the
+        not-yet-seen texts hit the model; repeats (within this call AND across earlier
+        calls) return the memoised row. Order is preserved (rows are reassembled by the
+        caller's original index)."""
+        if not texts:
+            return self._enc.encode_passages(texts)
+        keys = [hashlib.blake2b(t.encode("utf-8"), digest_size=16).digest() for t in texts]
+        todo_keys: list[bytes] = []
+        todo_texts: list[str] = []
+        queued: set[bytes] = set()
+        for k, t in zip(keys, texts):
+            if k not in self._cache and k not in queued:
+                queued.add(k)
+                todo_keys.append(k)
+                todo_texts.append(t)
+        if todo_texts:
+            fresh = self._enc.encode_passages(todo_texts)
+            for j, k in enumerate(todo_keys):
+                self._cache[k] = fresh[j]
+        self.misses += len(todo_texts)
+        self.hits += len(texts) - len(todo_texts)
+        return np.vstack([self._cache[k] for k in keys])
+
+
 if __name__ == "__main__":
     # Tiny self-test / latency probe (needs ./download-model.sh's model).
     import time

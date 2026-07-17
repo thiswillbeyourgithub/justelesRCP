@@ -71,7 +71,11 @@ onnx_embed = _load_module("onnx_embed.py", "onnx_embed")  # warm ONNX encoder (n
               help="onnxruntime intra-op threads for the passage encode.")
 @click.option("--force", is_flag=True,
               help="Re-embed even if the content hash and model are unchanged.")
-def main(limit, do_all, only, eu, model_dir, intra_threads, force):
+@click.option("--cross-drug-cache/--no-cross-drug-cache", default=True, show_default=True,
+              help="Reuse a passage's vector across drugs that repeat it verbatim "
+                   "(generics share ~63% of chunks), so a bulk bake skips ~2/3 of the "
+                   "encodes. Transient RAM, freed at exit; identical output either way.")
+def main(limit, do_all, only, eu, model_dir, intra_threads, force, cross_drug_cache):
     """Pre-bake dist/<rcp|eu>/<slug>.vec.json for crawled pages (warms the backlog)."""
     only_set = {c.strip() for c in only if c.strip()}
     if only_set:
@@ -80,6 +84,10 @@ def main(limit, do_all, only, eu, model_dir, intra_threads, force):
     logger.info("loading encoder from {}", model_dir)
     encoder = onnx_embed.Encoder(model_dir=model_dir, intra_threads=intra_threads)
     model = encoder.model_name  # same string the service bakes, so the gate agrees
+    # Cross-drug de-dup of encodes (compute only; the cached vector IS the encoder's own
+    # output, so the written .vec.json is byte-identical to a non-cached bake).
+    if cross_drug_cache:
+        encoder = onnx_embed.CachingEncoder(encoder)
 
     done = fresh = skipped = errors = no_page = 0
     for cis, raw, subdir in build.iter_overlay_raw():
@@ -111,6 +119,12 @@ def main(limit, do_all, only, eu, model_dir, intra_threads, force):
 
     logger.info("done: {} embedded, {} unchanged, {} not-built-yet, {} errors",
                 done, fresh, no_page, errors)
+    if cross_drug_cache:
+        seen = encoder.hits + encoder.misses
+        if seen:
+            logger.info("cross-drug cache: {} unique passages encoded, {} reused "
+                        "({:.0f}% of {} chunks skipped)", encoder.misses, encoder.hits,
+                        100 * encoder.hits / seen, seen)
     if no_page:
         logger.info("{} overlay(s) had no built page: run `uv run build.py` first",
                     no_page)
