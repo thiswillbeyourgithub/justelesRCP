@@ -638,6 +638,23 @@
     return collapseWs(hit.snippet);
   }
 
+  // The relevance badge: the blended hybrid score as a clamped percentage, small +
+  // muted. Its tooltip spells out that the ranking is HYBRID, naming both halves (the
+  // semantic embedding proximity AND the keyword match) so the number stays legible.
+  function buildScore(hit) {
+    const score = document.createElement("span");
+    score.className = "semsearch-score";
+    score.textContent = Math.round(Math.min(1, hit.score) * 100) + " %";
+    score.title =
+      "Score hybride : proximité sémantique " +
+      Math.round(hit.cosine * 100) +
+      " %" +
+      (hit.lexical > 0
+        ? ", correspondance de mots-clés " + Math.round(hit.lexical * 100) + " %"
+        : ", aucun mot-clé commun");
+    return score;
+  }
+
   function renderHits() {
     results.replaceChildren();
     for (const el of highlighted) el.classList.remove("semsearch-current");
@@ -654,18 +671,7 @@
       const name = document.createElement("span");
       name.className = "semsearch-hit-name";
       name.textContent = head ? head.textContent.trim() : hit.sec;
-      // Show the hybrid relevance as a percentage, small + muted: discoverable but not
-      // prominent. It blends the semantic cosine with the keyword bonus (clamped to
-      // 100 %); the tooltip splits it back into its two halves so the number stays clear.
-      const score = document.createElement("span");
-      score.className = "semsearch-score";
-      score.textContent = Math.round(Math.min(1, hit.score) * 100) + " %";
-      score.title =
-        "Pertinence : " +
-        Math.round(hit.cosine * 100) +
-        " % sémantique" +
-        (hit.lexical > 0 ? " + mots-clés" : "");
-      title.append(name, score);
+      title.append(name, buildScore(hit));
       const snip = document.createElement("span");
       snip.className = "semsearch-snippet";
       snip.textContent = displayText(hit);
