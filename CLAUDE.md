@@ -144,8 +144,10 @@ Key facts that aren't obvious from a single file:
   numbered `AmmAnnexeTitre2` subsections like "4.1 Indications", "4.2 Posologie")
   and returns a NESTED `(id, title, children)` tree; `render_record()` emits a
   `<details class="toc">` of jump links (plus the version slot) into `{{TOC}}` via
-  the shared, recursive `_toc_html`/`_toc_ol_html`. It is a sticky sidebar on wide
-  screens and a collapsible block on phones (see `.rcp-layout`/`.toc` in
+  the shared, recursive `_toc_html`/`_toc_ol_html`. It renders in the reading column
+  (inside `main`, after `{{ASOF}}`, above the search box) as a sticky collapsible
+  `<details>` block on ALL viewports: there is no longer a desktop left sidebar
+  (`.rcp-layout` is a single centered column now; see `.rcp-layout`/`.toc` in
   `style.css`, whose `.toc nav ol ol` indents the nested level). CRITICAL id
   contract: **only top-level headings get the 0-based `sec-N` ids**; deeper
   headings get a SEPARATE `sub-N` namespace, so the `sec-N` anchors that
@@ -585,11 +587,13 @@ Key facts that aren't obvious from a single file:
   surviving ranked passage (`.semsearch-hit`) but does NOT auto-jump: `current` stays
   `-1` and the reader picks a passage (click a result, or step the nav bar / Enter),
   which promotes it to `.semsearch-current` and scrolls to it (`setCurrent(i, true)` is
-  the ONLY scroll path; `rank()` never scrolls). The box is `position: sticky` (like the
-  ToC), so a reader can search a long RCP without scrolling back up; its offset stacks
-  under the sticky top bar + ToC (phone `top: 7.2rem`, desktop `3.6rem`; `.semsearch` in
-  `style.css`), and its results list scrolls internally (`max-height: 40vh`) so the stuck
-  panel never outgrows the screen. Both the search box and the ToC use the native
+  the ONLY scroll path; `rank()` never scrolls). It is injected right AFTER the ToC (so
+  the reading column reads pills -> Sommaire -> search) and is `position: sticky` (like
+  the ToC), so a reader can search a long RCP without scrolling back up; its offset
+  (`top: 7.2rem` on all viewports now the sidebar is gone) stacks under the sticky top
+  bar + collapsed Sommaire bar (`.semsearch` in `style.css`), and its results list scrolls
+  internally (`max-height: 40vh`) so the stuck panel never outgrows the screen. Both the
+  search box and the ToC use the native
   `<details>` disclosure triangle as their collapse affordance (`list-style-position:
   inside`), kept consistent on purpose. If the embed service is absent, `/api/sem/*` 502s
   and the box degrades to "indisponible". **The offline pre-bake** `embed-rcp.py` (optional; warms

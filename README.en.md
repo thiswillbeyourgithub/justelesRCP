@@ -43,7 +43,7 @@ for-profit medicine sites.
 `Code_CIS <TAB> RCP_html`), cleans and restyles each document, then writes:
 
 - `dist/rcp/<cis>-<slug>.html`: one cleaned page per medicine, with a heading
-  (drug / presentation name) at the top and a sidebar
+  (drug / presentation name) at the top and a collapsible
   table of contents ("Sommaire") to jump between sections and their
   subsections (4.1, 4.2, …)
 - `dist/eu/<cis>-<slug>.html`: for centrally-authorized medicines (whose RCP is

@@ -112,7 +112,13 @@
   results.className = "semsearch-results";
   panel.append(input, status, nav, results);
   box.append(summary, panel);
-  const anchor = document.querySelector("[data-rcp-asof]") || main.querySelector(".cis");
+  // Sit right AFTER the Sommaire (ToC), so the vertical order reads
+  // pills -> Sommaire -> search. Pages with no headings have no `.toc`: fall back
+  // to just after the freshness card, else after the CIS line, else prepend.
+  const anchor =
+    main.querySelector(".toc") ||
+    document.querySelector("[data-rcp-asof]") ||
+    main.querySelector(".cis");
   if (anchor && anchor.parentNode) anchor.after(box);
   else main.prepend(box);
 

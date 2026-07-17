@@ -26,12 +26,14 @@
   <nav class="topnav"><a href="/browse/">A-Z</a><a href="/">Rechercher</a><a href="/a-propos">À propos</a></nav>
 </header>
 <div class="rcp-layout">
-  {{TOC}}
   <main class="rcp" data-cis="{{CIS}}">
     <!-- Drug/presentation name header, shared by RCP, full /eu/ and /eu/ stub pages. -->
     <h1 class="rcp-title">{{TITLE}}</h1>
     <p class="cis">CIS {{CIS}}</p>
     {{ASOF}}
+    <!-- Sommaire (ToC): a collapsible in-flow block under the reference pills, on
+         all viewports (no more desktop sidebar). Search box injects right after it. -->
+    {{TOC}}
     {{CONTENT}}
     {{XREF}}
   </main>

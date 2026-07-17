@@ -16,7 +16,7 @@
 }
 * { box-sizing: border-box; }
 /* Smooth in-page jumps; scroll-padding keeps section titles clear of the
-   sticky top bar when navigating from the sidebar table of contents. */
+   sticky top bar when navigating from the table of contents. */
 html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; scroll-padding-top: 4rem; }
 @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
 body {
@@ -102,8 +102,9 @@ a:hover { text-decoration: underline; }
 .drug-list li { border-bottom: 1px solid var(--line); }
 .drug-list a { display: block; padding: .55rem .2rem; }
 
-/* --- RCP document + table-of-contents sidebar --- */
-/* Single column on phones; a sticky sidebar + centered content on wide screens. */
+/* --- RCP document + table of contents --- */
+/* Single centered reading column on all viewports; the ToC and the search box are
+   sticky collapsible blocks within it (no sidebar). */
 /* overflow-x: clip (NOT hidden) contains long unbreakable tokens WITHOUT
    creating a scroll container, which would break the sticky .toc inside. */
 .rcp-layout { max-width: 100%; padding: 0 1rem; overflow-x: clip; }
@@ -113,29 +114,17 @@ a:hover { text-decoration: underline; }
      widen the reading column past its cap. Tables scroll on their own (below). */
   min-width: 0; overflow-wrap: break-word;
 }
-@media (min-width: 60rem) {
-  .rcp-layout {
-    display: grid; gap: 2.5rem; justify-content: center; align-items: start;
-    /* Row 1: sidebar + reading column. Row 2: footer under the reading column,
-       so it shares the content's exact left/right edges (col 2 = minmax(0,maxw)). */
-    grid-template-columns: 15rem minmax(0, var(--maxw));
-  }
-  .rcp { grid-column: 2; grid-row: 1; padding: 1.5rem 0 4rem; }
-  .rcp-layout .toc { grid-column: 1; grid-row: 1; }
-  .rcp-layout .foot {
-    grid-column: 2; grid-row: 2;
-    /* Fill the reading column exactly (defeat the base max-width/margin auto and
-       the grid item's fit-content shrink) so edges line up with .rcp above. */
-    max-width: none; width: 100%; margin: 0; padding-left: 0; padding-right: 0;
-  }
-}
+/* Single centered reading column on all viewports: the Sommaire and the search box
+   are now in-flow blocks inside .rcp (no desktop sidebar grid). .foot centers to the
+   same --maxw via its own base rule below. */
 
-/* Table of contents. <details open>: a permanent sidebar on desktop, a
-   collapsible "Sommaire" block on phones (tap the summary to fold it away). */
+/* Table of contents: a collapsible "Sommaire" block in the reading column on all
+   viewports (tap the summary to fold it away). Sits under the reference pills, above
+   the search box. */
 .toc {
-  /* Sticky on phones too: sits just under the sticky top bar so, once
-     collapsed, it rides along and lets you jump sections without scrolling
-     back up. Internal scroll when the (open) list is taller than the screen. */
+  /* Sticky: sits just under the sticky top bar so, once collapsed, it rides along
+     and lets you jump sections without scrolling back up. Internal scroll when the
+     (open) list is taller than the screen. */
   position: sticky; top: 3.2rem; z-index: 5;
   max-height: calc(100vh - 3.6rem); overflow-y: auto;
   margin: 1rem 0 0; border: 1px solid var(--line); border-radius: .6rem;
@@ -158,22 +147,6 @@ a:hover { text-decoration: underline; }
 .toc .ver {
   margin: .8rem .3rem 0; padding-top: .6rem; border-top: 1px solid var(--line);
   color: var(--muted); font-size: .7rem; opacity: .7;
-}
-@media (min-width: 60rem) {
-  .toc {
-    position: sticky; top: 3.6rem; margin-top: 1.5rem;
-    max-height: calc(100vh - 4.5rem); overflow-y: auto;
-  }
-  /* On desktop the sidebar is a permanent, always-expanded panel. The <details>
-     ships without `open` (so phones start collapsed), so here we reveal its
-     contents regardless of open state: `display: revert` handles Firefox/Safari
-     and older Blink; `::details-content` handles Chrome 131+ (content-visibility). */
-  .toc:not([open]) > *:not(summary) { display: revert; }
-  .toc::details-content { content-visibility: visible; }
-  /* The toggle stays put but reads as a heading, not a control: no cursor, and
-     no disclosure triangle (the panel is permanently open here, so an arrow would
-     be misleading). ☰ stays. */
-  .toc > summary { cursor: default; list-style: none; }
 }
 
 /* Drug/presentation name header at the top of every page (RCP, full /eu/, stub);
@@ -225,18 +198,15 @@ a:hover { text-decoration: underline; }
    encoded server-side (embed-service.py), so nothing heavy loads in the browser. */
 .semsearch {
   /* Sticky like the Sommaire, so a reader can search / step through hits without
-     scrolling back to the top of a long RCP. On phones it rides just under the
-     sticky Sommaire bar (top:3.2rem, ~2.8rem tall collapsed); on desktop it sits at
-     the top of the reading column (same offset as the sidebar ToC). Its results
-     list scrolls internally (below), so the stuck panel never outgrows the screen.
-     z-index below the ToC (5) and the top bar (10). The phone top (7.2rem) clears
-     the collapsed Sommaire bar, which sticks at 3.2rem and is ~3.9rem tall, so the
-     two ride as a clean two-bar stack. */
+     scrolling back to the top of a long RCP. It rides just under the sticky Sommaire
+     bar (which sticks at top:3.2rem and is ~3.9rem tall collapsed), so 7.2rem clears
+     it and the two ride as a clean two-bar stack, on every viewport. Its results list
+     scrolls internally (below), so the stuck panel never outgrows the screen. z-index
+     below the ToC (5) and the top bar (10). */
   position: sticky; top: 7.2rem; z-index: 4;
   margin: 0 0 1.5rem; border: 1px solid var(--line); border-radius: .6rem;
   background: var(--card); padding: .2rem .7rem .5rem;
 }
-@media (min-width: 60rem) { .semsearch { top: 3.6rem; } }
 .semsearch > summary {
   cursor: pointer; font-weight: 600; padding: .5rem .3rem; list-style-position: inside;
 }
@@ -307,7 +277,7 @@ a:hover { text-decoration: underline; }
 .drug-xref-list ul { margin: .6rem 0 .3rem; padding-left: 1.2rem; }
 .drug-xref-list li { margin: .2rem 0; }
 .drug-xref-note { margin: .5rem 0 0; font-size: .8rem; color: var(--muted); }
-/* Section titles are sidebar jump targets: keep them clear of the sticky bar. */
+/* Section titles are ToC jump targets: keep them clear of the sticky bar. */
 .rcp .AmmAnnexeTitre1[id] { scroll-margin-top: 4rem; }
 .rcp p { margin: .5rem 0; }
 /* ANSM class hooks kept from the source document */
@@ -363,7 +333,7 @@ a:hover { text-decoration: underline; }
 .rcp .ema-annexe[id], .rcp .ema-annexe > summary[id] { scroll-margin-top: 4rem; }
 .rcp figure { margin: 1rem 0; text-align: center; }
 .rcp figure img { max-width: 100%; height: auto; }
-/* Nested sidebar ToC entries: on RCP pages the numbered subsections (4.1, 4.2...)
+/* Nested ToC entries: on RCP pages the numbered subsections (4.1, 4.2...)
    under their top-level section, and on full /eu/ pages the SmPC's sections under
    their annex group. The descendant selector indents any further-nested level too
    (if _TOC_DEPTH is bumped past 2). */

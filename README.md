@@ -47,7 +47,7 @@ ANSM / BDPM. Conçu comme une alternative légère aux sites de médicaments len
 
 - `dist/rcp/<cis>-<slug>.html` : une page nettoyée par médicament, avec un titre
   (nom du médicament / présentation) en haut de page et une table
-  des matières latérale (« Sommaire ») pour naviguer entre les rubriques
+  des matières repliable (« Sommaire ») pour naviguer entre les rubriques
   et leurs sous-rubriques (4.1, 4.2, …)
 - `dist/eu/<cis>-<slug>.html` : pour les médicaments à AMM européenne centralisée
   (dont le RCP est publié par l'EMA et non par l'ANSM, ex. Abilify). Quand le PDF
