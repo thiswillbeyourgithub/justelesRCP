@@ -176,7 +176,9 @@ Every RCP page (and every full `/eu/` page converted from the EMA) has a
 while pregnant?", "effects on the liver") and the box ranks the closest passages
 within that one drug, highlights the matching paragraph and lets you step through
 the hits with previous/next. Tables (posology, etc.) are indexed row by row so each
-row stays retrievable.
+row stays retrievable. Ranking is **hybrid**: semantic closeness is combined with a
+lexical bonus whenever your own words (even approximately: plurals, typos) appear in a
+section, pushing up passages that answer you both by meaning and by wording.
 
 The query is embedded **server-side** by a small, hardened, read-only companion
 service (`embed-service.py`) that keeps a multilingual model

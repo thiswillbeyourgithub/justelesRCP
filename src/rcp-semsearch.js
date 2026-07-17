@@ -23,7 +23,9 @@
 //      baseline). Fetched lazily on first open.
 //   2. Query vector: POST /api/sem/embed {q} -> {q: base64-int8, dim}. The client
 //      dequantises both sides with the same decodeVec and cosine-ranks locally, so
-//      the server holds no per-reader state and returns only a tiny vector.
+//      the server holds no per-reader state and returns only a tiny vector. Ranking is
+//      HYBRID: the cosine is blended with a client-side lexical bonus (a fuzzy word
+//      match of the query against each section's own words), see rank()/lexicalScore.
 //
 // On a not-yet-embedded page the box asks the server to embed it right away
 // (POST /api/sem/page/<cis>), polls until ready, then searches. A baseline-only page
@@ -51,14 +53,22 @@
   // gated here too so we never fire a request the server would 400.
   const MIN_CHARS = 5;
   const MAX_CHARS = 400;
-  const TOP_K = 8; // distinct passages surfaced per query
-  // Minimum cosine similarity (query vs passage) to surface a hit. e5's query/passage
-  // cosines sit in a narrow high band (roughly ~0.75 for unrelated text .. 0.90+ for a
-  // strong match), so a passage below this is almost certainly off-topic noise for THIS
-  // drug and is dropped instead of padding the list with junk. Scores are the int8-
-  // dequantised dot product of ~unit-norm vectors, i.e. the cosine itself. The one knob
-  // to tune: lower it if good results go missing, raise it if junk still shows.
-  const MIN_SCORE = 0.8;
+  const MAX_RESULTS = 25; // hard cap on distinct passages surfaced per query
+  // HYBRID ranking. We start from the semantic (cosine) score of every section chunk,
+  // then ADD a small lexical bonus whenever the reader's own words fuzzily match the
+  // words in that section (see lexicalScore). So a passage that is both semantically
+  // close AND literally mentions the query terms floats to the top, while a purely
+  // semantic match still ranks on its own merit. e5's query/passage cosines sit in a
+  // narrow high band, so a low absolute floor keeps every plausible section and lets the
+  // lexical bonus plus the MAX_RESULTS cap do the pruning.
+  //   SEM_FLOOR     - minimum cosine (0..1) for a chunk to be a candidate at all ("at
+  //                   least 50 % similarity"); below it the chunk is dropped as noise.
+  //   KEYWORD_BOOST - most a full keyword match can add to the cosine. Kept small so it
+  //                   re-orders within the semantic band without overriding it.
+  // Scores are the int8-dequantised dot product of ~unit-norm vectors, i.e. the cosine.
+  const SEM_FLOOR = 0.5;
+  const KEYWORD_BOOST = 0.15;
+  const MIN_TERM_LEN = 3; // ignore shorter query/section words (stopword-ish noise)
   const POLL_MS = 1500; // gap between page-status polls while indexing
   const POLL_MAX = 90; // give up after ~POLL_MS * POLL_MAX (crawl + embed can be slow)
 
@@ -112,7 +122,7 @@
   let pageDim = 0; // dim of this page's section vectors, to guard a model/dim mismatch
   let readyPromise = null;
   let queryController = null; // aborts a superseded /api/sem/embed
-  let hits = []; // [{sec, snippet, score, el}]
+  let hits = []; // [{sec, snippet, score, cosine, lexical, el}]
   let current = -1;
   let highlighted = []; // elements currently tagged, for cleanup
   let lastRanked = ""; // the query behind the current hit list (Enter = next vs search)
@@ -143,6 +153,119 @@
 
   function norm(s) {
     return (s || "").replace(/\s+/g, " ").trim().toLowerCase();
+  }
+
+  // --- hybrid lexical matching ----------------------------------------------
+  // A compact, accent-folded French stoplist so ubiquitous words don't inflate the
+  // lexical bonus uniformly across sections. Kept deliberately small: it only needs the
+  // words frequent enough to match almost everywhere and thus tell sections apart poorly.
+  const STOP = new Set(
+    (
+      "les des une aux avec sans pour dans par sur que qui quoi dont mais donc car " +
+      "est sont etre ete avoir plus moins tres peut puis lors chez vers cette ces mon " +
+      "mes son ses nos vos leur leurs quel quelle quels quelles comment quand pourquoi " +
+      "ainsi cela ceci celui celle vous nous ils elles"
+    ).split(" ")
+  );
+
+  // Accent-fold + lowercase a string and split it into word tokens >= MIN_TERM_LEN.
+  function foldTokens(s) {
+    return (s || "")
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((w) => w.length >= MIN_TERM_LEN);
+  }
+
+  // The reader's query as a deduped list of meaningful (non-stopword) folded terms.
+  function queryTerms(q) {
+    const seen = new Set();
+    const out = [];
+    for (const w of foldTokens(q)) {
+      if (STOP.has(w) || seen.has(w)) continue;
+      seen.add(w);
+      out.push(w);
+    }
+    return out;
+  }
+
+  // Folded word bag of one rendered section, cached (the DOM is static). Returns
+  // {set, list}: the set for O(1) exact hits, the deduped list to scan for fuzzy/prefix
+  // matches. We read the SAME blocks locate()/sectionBlocks walk, so a lexical match
+  // reflects the section body the reader would actually scroll to.
+  const secWordsCache = new Map();
+  function getSecWords(secId) {
+    let cached = secWordsCache.get(secId);
+    if (cached) return cached;
+    const head = document.getElementById(secId);
+    const set = new Set();
+    if (head) {
+      const parts = [];
+      for (const el of sectionBlocks(head)) parts.push(el.textContent);
+      for (const w of foldTokens(parts.join(" "))) set.add(w);
+    }
+    cached = { set: set, list: Array.from(set) };
+    secWordsCache.set(secId, cached);
+    return cached;
+  }
+
+  // Bounded Levenshtein: true iff the edit distance(a, b) <= max. Two-row DP with an
+  // early exit as soon as a whole row exceeds max, so it stays cheap on short words.
+  function levLE(a, b, max) {
+    const la = a.length;
+    const lb = b.length;
+    if (Math.abs(la - lb) > max) return false;
+    let prev = new Array(lb + 1);
+    for (let j = 0; j <= lb; j++) prev[j] = j;
+    for (let i = 1; i <= la; i++) {
+      const cur = new Array(lb + 1);
+      cur[0] = i;
+      let best = i;
+      const ca = a.charCodeAt(i - 1);
+      for (let j = 1; j <= lb; j++) {
+        const cost = ca === b.charCodeAt(j - 1) ? 0 : 1;
+        const v = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost);
+        cur[j] = v;
+        if (v < best) best = v;
+      }
+      if (best > max) return false;
+      prev = cur;
+    }
+    return prev[lb] <= max;
+  }
+
+  // How well one query term matches a section's words: 1 exact, 0.85 prefix/inflection
+  // (plural, conjugation), 0.7 fuzzy (within a small edit distance, i.e. a typo), else 0.
+  function termCredit(term, words) {
+    if (words.set.has(term)) return 1;
+    const maxD = term.length <= 5 ? 1 : 2;
+    let best = 0;
+    for (const w of words.list) {
+      if (
+        w.length >= 4 &&
+        term.length >= 4 &&
+        (w.startsWith(term) || term.startsWith(w))
+      ) {
+        best = 0.85;
+        break; // nothing non-exact beats a prefix match
+      }
+      if (Math.abs(w.length - term.length) <= maxD && levLE(term, w, maxD)) {
+        if (best < 0.7) best = 0.7;
+      }
+    }
+    return best;
+  }
+
+  // Lexical bonus in [0, 1] for a section: the mean per-term credit, so a query whose
+  // every word is present scores 1 and a query with no lexical overlap scores 0.
+  function lexicalScore(secId, terms) {
+    if (!terms.length) return 0;
+    const words = getSecWords(secId);
+    if (!words.list.length) return 0;
+    let sum = 0;
+    for (const t of terms) sum += termCredit(t, words);
+    return sum / terms.length;
   }
 
   // --- readiness state machine ----------------------------------------------
@@ -301,27 +424,48 @@
 
   function rank(qv) {
     lastRanked = input.value.trim(); // so Enter can tell "next hit" from "new search"
-    // cosine == dot product (both int8-dequantised, ~unit-norm).
+    const terms = queryTerms(input.value);
+    // Score every chunk: semantic cosine (== dot product, both int8-dequantised and
+    // ~unit-norm) PLUS a lexical bonus when the reader's words fuzzily match this
+    // section's words. Keep the raw cosine too: it, not the hybrid score, is what the
+    // SEM_FLOOR candidate gate tests, so a keyword match re-orders candidates without
+    // inventing them out of semantically-unrelated sections.
     const scored = chunks.map((c) => {
       const v = c.vec;
       const n = Math.min(v.length, qv.length);
       let dot = 0;
       for (let i = 0; i < n; i++) dot += v[i] * qv[i];
-      return { sec: c.sec, snippet: c.snippet, score: dot };
+      const lexical = lexicalScore(c.sec, terms);
+      return {
+        sec: c.sec,
+        snippet: c.snippet,
+        cosine: dot,
+        lexical: lexical,
+        score: dot + KEYWORD_BOOST * lexical,
+      };
     });
     scored.sort((a, b) => b.score - a.score);
     // Resolve each to a DOM block, deduping by target element (Set compares by
-    // identity) so two chunks in one paragraph count once; keep the best-scored
-    // TOP_K distinct passages.
+    // identity) so two chunks in one paragraph count once; keep up to MAX_RESULTS
+    // distinct passages that clear the semantic floor.
     clearHits();
     const seen = new Set();
     for (const s of scored) {
-      if (hits.length >= TOP_K) break;
-      if (s.score < MIN_SCORE) break; // sorted desc: the rest are below the bar too
+      if (hits.length >= MAX_RESULTS) break;
+      // Gate on the raw cosine, and `continue` (not `break`): the list is sorted by the
+      // HYBRID score, so a lower-cosine item can sit above a higher-cosine one.
+      if (s.cosine < SEM_FLOOR) continue;
       const el = locate(s.sec, s.snippet);
       if (!el || seen.has(el)) continue;
       seen.add(el);
-      hits.push({ sec: s.sec, snippet: s.snippet, score: s.score, el: el });
+      hits.push({
+        sec: s.sec,
+        snippet: s.snippet,
+        score: s.score,
+        cosine: s.cosine,
+        lexical: s.lexical,
+        el: el,
+      });
     }
     renderHits();
     // "The semantic search was used": fire once per opened session, after a real
@@ -421,12 +565,17 @@
       const name = document.createElement("span");
       name.className = "semsearch-hit-name";
       name.textContent = head ? head.textContent.trim() : hit.sec;
-      // Show the similarity score as a percentage, small + muted: discoverable but not
-      // prominent. It's the cosine (0..1) rendered as 0..100 %; a tooltip says what it is.
+      // Show the hybrid relevance as a percentage, small + muted: discoverable but not
+      // prominent. It blends the semantic cosine with the keyword bonus (clamped to
+      // 100 %); the tooltip splits it back into its two halves so the number stays clear.
       const score = document.createElement("span");
       score.className = "semsearch-score";
-      score.textContent = Math.round(hit.score * 100) + " %";
-      score.title = "Similarité sémantique";
+      score.textContent = Math.round(Math.min(1, hit.score) * 100) + " %";
+      score.title =
+        "Pertinence : " +
+        Math.round(hit.cosine * 100) +
+        " % sémantique" +
+        (hit.lexical > 0 ? " + mots-clés" : "");
       title.append(name, score);
       const snip = document.createElement("span");
       snip.className = "semsearch-snippet";

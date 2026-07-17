@@ -568,10 +568,17 @@ Key facts that aren't obvious from a single file:
   `src/rcp-semsearch.js` gates on `.rcp[data-cis]` (skips `.rcp-stub`); on first open
   it `POST`s `/api/sem/page/<cis>`, polls `GET` until `embedded`, then fetches the
   `.vec.json`; typing (>= min chars, 250 ms debounce, `AbortController` cancels the
-  superseded embed) `POST`s the query, dequantises + cosine-ranks locally, drops any
-  passage below `MIN_SCORE` (a cosine floor, ~0.8, so junk hits are not surfaced and a
-  wholly-irrelevant query yields "Aucun passage pertinent."), lists each surviving hit
-  with its cosine shown small + muted as a percentage (`.semsearch-score`), then LIGHTLY tints every
+  superseded embed) `POST`s the query, dequantises + ranks locally with a HYBRID score:
+  the semantic cosine PLUS a client-side lexical bonus (`lexicalScore`/`termCredit`, a
+  fuzzy word match of the query's terms, accent-folded, stopwords dropped, against each
+  section's own words: exact/prefix-inflection/small-edit-distance credit, mean over the
+  query terms x `KEYWORD_BOOST`), so a passage that both reads close AND literally mentions
+  the query floats up. The candidate gate is the RAW cosine `>= SEM_FLOOR` (~0.5, "at
+  least 50% similarity"; a `continue`, not a `break`, since the list is sorted by the
+  hybrid score), capped at `MAX_RESULTS` (25) distinct passages; a wholly-irrelevant query
+  (nothing clears the floor) still yields "Aucun passage pertinent.". Each surviving hit
+  shows its blended relevance small + muted as a percentage (`.semsearch-score`, clamped to
+  100%, tooltip splits it back into cosine + keyword), then it LIGHTLY tints every
   surviving ranked passage (`.semsearch-hit`) but does NOT auto-jump: `current` stays
   `-1` and the reader picks a passage (click a result, or step the nav bar / Enter),
   which promotes it to `.semsearch-current` and scrolls to it (`setCurrent(i, true)` is
