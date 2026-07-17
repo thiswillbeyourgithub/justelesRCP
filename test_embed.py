@@ -628,6 +628,9 @@ def test_rcp_page_has_canonical_and_no_leftover_slots():
         assert slot not in html, f"unfilled template slot {slot}"
     assert f'<link rel="canonical" href="{build.SITE_URL}/rcp/{row["slug"]}">' in html
     assert row["asof"] == "2022-05-02"  # rides back for the sitemap, not into search-index
+    # Per-drug description: intent keywords + the active substance (from _SUBSTANCES).
+    assert '<meta name="description" content="RCP de DOLIPRANE' in html
+    assert "Substance active : paracetamol." in html
     print("ok  test_rcp_page_has_canonical_and_no_leftover_slots")
 
 

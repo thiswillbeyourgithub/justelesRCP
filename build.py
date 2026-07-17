@@ -52,7 +52,7 @@ from lxml import html as lxml_html
 
 import bdpm  # shared, pure-stdlib BDPM tokenising + frequency scoring
 
-__version__ = "0.32.1"  # single source of truth; bump patch/minor per change
+__version__ = "0.32.2"  # single source of truth; bump patch/minor per change
 
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
@@ -1385,6 +1385,36 @@ def _static_page_head(asset: str, path: str) -> str:
     return _canonical_link(path)
 
 
+def _rcp_description(name: str, cis: str) -> str:
+    """Per-drug <meta description> for an RCP page: the drug name, the intent keywords
+    people actually search ('posologie', 'indications', 'effets indésirables', ...) and
+    the active substance when known, so the snippet is specific rather than a generic
+    boilerplate repeated on 12k pages. Reads the process-wide substance map."""
+    desc = (
+        f"RCP de {name} : indications, posologie, contre-indications, effets "
+        "indésirables et interactions."
+    )
+    subs = _SUBSTANCES.get(cis)
+    if subs:
+        desc += f" Substance active : {subs.lower()}."
+    return desc + " Source ANSM / BDPM."
+
+
+def _eu_description(name: str, full: bool) -> str:
+    """Per-drug <meta description> for a /eu/ page. A full converted page advertises the
+    on-site EMA text + intent keywords; a bare stub advertises the pointer to the EMA."""
+    if full:
+        return (
+            f"RCP de {name}, médicament autorisé au niveau européen (procédure "
+            "centralisée EMA), converti depuis le PDF officiel : indications, "
+            "posologie, effets indésirables. Source EMA."
+        )
+    return (
+        f"{name} : médicament à autorisation de mise sur le marché européenne "
+        "centralisée (EMA). Accès au RCP officiel de l'EMA et aux génériques."
+    )
+
+
 def _sitemap_url(path: str, lastmod: str = "") -> str:
     """One <url> entry. lastmod (a W3C YYYY-MM-DD date) is omitted when unknown so we
     never advertise a fake modification date."""
@@ -1810,6 +1840,7 @@ def render_record(item: tuple[str, str, str]) -> dict[str, str] | None:
     slug = f"{cis}-{slugify(name)}"
     page = (
         _TPL.replace("{{TITLE}}", _esc(name))
+        .replace("{{DESCRIPTION}}", _esc(_rcp_description(name, cis)))
         .replace("{{HEADEXTRA}}", _canonical_link(f"/rcp/{slug}"))
         .replace("{{CIS}}", _esc(cis))
         .replace("{{TOC}}", _toc_html(toc))
@@ -2145,6 +2176,7 @@ def render_eu_page(cis: str, overlay_html: str, meta: tuple[str, str, str] | Non
         + _ref_links_html(cis, name, include_ema=False)
     page = (
         page_tpl.replace("{{TITLE}}", _esc(name))
+        .replace("{{DESCRIPTION}}", _esc(_eu_description(name, full=True)))
         # A full /eu/ page carries the real converted EMA SmPC/notice, so it IS
         # indexable (unlike the bare stub below, which only points out and stays
         # noindex). These are high-intent pages for EMA-only drugs (ABILIFY etc.).
@@ -2269,6 +2301,7 @@ def build_stubs(
         else:
             page = (
                 page_tpl.replace("{{TITLE}}", _esc(name))
+                .replace("{{DESCRIPTION}}", _esc(_eu_description(name, full=False)))
                 # A bare stub is thin (just a pointer out), so it stays noindex; it
                 # still carries a self-canonical so any inbound link resolves to one URL.
                 .replace(
