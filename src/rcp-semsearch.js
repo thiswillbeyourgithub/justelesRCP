@@ -54,6 +54,7 @@
   const MIN_CHARS = 5;
   const MAX_CHARS = 400;
   const MAX_RESULTS = 25; // hard cap on distinct passages surfaced per query
+  const MAX_SUBQUERIES = 25; // a "//"-split query fans out into at most this many (test)
   // HYBRID ranking. We start from the semantic (cosine) score of every section chunk,
   // then ADD a small lexical bonus whenever the reader's own words fuzzily match the
   // words in that section (see lexicalScore). So a passage that is both semantically
@@ -414,14 +415,27 @@
 
   // --- query + ranking ------------------------------------------------------
   async function runSearch() {
-    const q = input.value.trim();
-    if (q.length < MIN_CHARS) {
+    const raw = input.value.trim();
+    if (raw.length < MIN_CHARS) {
       clearHits();
-      setStatus(q.length ? "Tapez au moins " + MIN_CHARS + " caractères." : "");
+      setStatus(raw.length ? "Tapez au moins " + MIN_CHARS + " caractères." : "");
       return;
     }
     if (phase !== "ready") {
       ensureReady().catch(() => {}); // status set by the state machine
+      return;
+    }
+    // A "//" splits the query into equal-weight sub-queries whose hybrid scores are
+    // averaged per chunk (an unadvertised experiment; a plain query is simply one
+    // sub-query). Strip each, drop the too-short ones (the server would 400 them),
+    // dedupe so a repeat can't skew the average, and cap the count.
+    let subs = raw
+      .split("//")
+      .map((s) => s.trim())
+      .filter((s) => s.length >= MIN_CHARS);
+    subs = Array.from(new Set(subs)).slice(0, MAX_SUBQUERIES);
+    if (!subs.length) {
+      setStatus("Tapez au moins " + MIN_CHARS + " caractères.");
       return;
     }
     // Cancel any still-in-flight query: only the latest keystroke matters.
@@ -429,57 +443,75 @@
     const controller = new AbortController();
     queryController = controller;
     setStatus("Recherche…");
-    let qv;
+    let queries;
     try {
-      const res = await fetch("/api/sem/embed", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ q: q.slice(0, MAX_CHARS) }),
-        signal: controller.signal,
-      });
-      if (!res.ok) {
-        setStatus("Erreur lors de l'encodage de la requête.");
-        return;
-      }
-      const data = await res.json();
-      qv = decodeVec(data.q);
+      // Embed every sub-query in parallel under the SAME controller, so a newer
+      // keystroke aborts them all. A sub-query the server rejects yields null and is
+      // dropped; the rest still rank.
+      queries = await Promise.all(
+        subs.map(async (sub) => {
+          const res = await fetch("/api/sem/embed", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ q: sub.slice(0, MAX_CHARS) }),
+            signal: controller.signal,
+          });
+          if (!res.ok) return null;
+          const data = await res.json();
+          return { vec: decodeVec(data.q), terms: queryTerms(sub) };
+        })
+      );
     } catch (err) {
       if (err && err.name === "AbortError") return; // superseded, ignore
       setStatus("Recherche indisponible (service d'indexation absent).");
       return;
     }
     if (controller !== queryController) return; // a newer query already superseded us
+    queries = queries.filter(Boolean);
+    if (!queries.length) {
+      setStatus("Erreur lors de l'encodage de la requête.");
+      return;
+    }
     // The query encoder and this page's section vectors must share a dimension (same
-    // model). If they disagree, the page was embedded by a different model and needs
+    // model). If any disagree, the page was embedded by a different model and needs
     // re-indexing: surface it instead of silently ranking a truncated dot product.
-    if (pageDim && qv.length !== pageDim) {
+    if (pageDim && queries.some((query) => query.vec.length !== pageDim)) {
       clearHits();
       setStatus("Index de cette page à mettre à jour, réessayez plus tard.");
       return;
     }
-    rank(qv);
+    rank(queries);
   }
 
-  function rank(qv) {
+  function rank(queries) {
     lastRanked = input.value.trim(); // so Enter can tell "next hit" from "new search"
-    const terms = queryTerms(input.value);
-    // Score every chunk: semantic cosine (== dot product, both int8-dequantised and
-    // ~unit-norm) PLUS a lexical bonus when the reader's words fuzzily match this
-    // section's words. Keep the raw cosine too: it, not the hybrid score, is what the
-    // SEM_FLOOR candidate gate tests, so a keyword match re-orders candidates without
-    // inventing them out of semantically-unrelated sections.
+    // Score every chunk. For each sub-query: semantic cosine (== dot product, both
+    // int8-dequantised and ~unit-norm) PLUS a lexical bonus when that sub-query's words
+    // fuzzily match this section's words. We AVERAGE both the cosine and the lexical
+    // bonus across sub-queries (equal weights), so a plain single query is unchanged and
+    // an "a//b" query surfaces chunks close to BOTH. Keep the (averaged) raw cosine too:
+    // it, not the hybrid score, is what the SEM_FLOOR candidate gate tests, so a keyword
+    // match re-orders candidates without inventing them out of unrelated sections.
     const scored = chunks.map((c) => {
       const v = c.vec;
-      const n = Math.min(v.length, qv.length);
-      let dot = 0;
-      for (let i = 0; i < n; i++) dot += v[i] * qv[i];
-      const lexical = lexicalScore(c.sec, terms);
+      let cosSum = 0;
+      let lexSum = 0;
+      for (const query of queries) {
+        const qv = query.vec;
+        const n = Math.min(v.length, qv.length);
+        let dot = 0;
+        for (let i = 0; i < n; i++) dot += v[i] * qv[i];
+        cosSum += dot;
+        lexSum += lexicalScore(c.sec, query.terms);
+      }
+      const cosine = cosSum / queries.length;
+      const lexical = lexSum / queries.length;
       return {
         sec: c.sec,
         snippet: c.snippet,
-        cosine: dot,
+        cosine: cosine,
         lexical: lexical,
-        score: dot + KEYWORD_BOOST * lexical,
+        score: cosine + KEYWORD_BOOST * lexical,
       };
     });
     scored.sort((a, b) => b.score - a.score);
