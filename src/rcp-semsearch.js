@@ -52,6 +52,13 @@
   const MIN_CHARS = 5;
   const MAX_CHARS = 400;
   const TOP_K = 8; // distinct passages surfaced per query
+  // Minimum cosine similarity (query vs passage) to surface a hit. e5's query/passage
+  // cosines sit in a narrow high band (roughly ~0.75 for unrelated text .. 0.90+ for a
+  // strong match), so a passage below this is almost certainly off-topic noise for THIS
+  // drug and is dropped instead of padding the list with junk. Scores are the int8-
+  // dequantised dot product of ~unit-norm vectors, i.e. the cosine itself. The one knob
+  // to tune: lower it if good results go missing, raise it if junk still shows.
+  const MIN_SCORE = 0.8;
   const POLL_MS = 1500; // gap between page-status polls while indexing
   const POLL_MAX = 90; // give up after ~POLL_MS * POLL_MAX (crawl + embed can be slow)
 
@@ -310,6 +317,7 @@
     const seen = new Set();
     for (const s of scored) {
       if (hits.length >= TOP_K) break;
+      if (s.score < MIN_SCORE) break; // sorted desc: the rest are below the bar too
       const el = locate(s.sec, s.snippet);
       if (!el || seen.has(el)) continue;
       seen.add(el);

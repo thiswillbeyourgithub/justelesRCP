@@ -565,8 +565,10 @@ Key facts that aren't obvious from a single file:
   `src/rcp-semsearch.js` gates on `.rcp[data-cis]` (skips `.rcp-stub`); on first open
   it `POST`s `/api/sem/page/<cis>`, polls `GET` until `embedded`, then fetches the
   `.vec.json`; typing (>= min chars, 250 ms debounce, `AbortController` cancels the
-  superseded embed) `POST`s the query, dequantises + cosine-ranks locally, then LIGHTLY
-  tints every ranked passage (`.semsearch-hit`) but does NOT auto-jump: `current` stays
+  superseded embed) `POST`s the query, dequantises + cosine-ranks locally, drops any
+  passage below `MIN_SCORE` (a cosine floor, ~0.8, so junk hits are not surfaced and a
+  wholly-irrelevant query yields "Aucun passage pertinent."), then LIGHTLY tints every
+  surviving ranked passage (`.semsearch-hit`) but does NOT auto-jump: `current` stays
   `-1` and the reader picks a passage (click a result, or step the nav bar / Enter),
   which promotes it to `.semsearch-current` and scrolls to it (`setCurrent(i, true)` is
   the ONLY scroll path; `rank()` never scrolls). The box is `position: sticky` (like the
