@@ -539,6 +539,66 @@ def test_duplicate_chunks_within_page_dropped():
     print("ok  test_duplicate_chunks_within_page_dropped")
 
 
+def test_sitemap_lists_indexable_pages():
+    # write_sitemap must list home + /a-propos + browse + every RCP + the FULL /eu/
+    # pages, exclude bare /eu/ stubs (they are noindex), and stamp <lastmod> only when
+    # a page's asof is known. It reads full/asof from the manifest, not the index rows.
+    index = [
+        {"cis": "11111111", "name": "AMOXICILLINE", "slug": "11111111-amoxicilline"},
+        {"cis": "22222222", "name": "300", "slug": "22222222-300"},  # no alpha -> '#'
+    ]
+    stub_index = [
+        {"cis": "33333333", "name": "ABILIFY", "slug": "33333333-abilify", "eu": 1},
+        {"cis": "44444444", "name": "STUBONLY", "slug": "44444444-stubonly", "eu": 1},
+    ]
+    records = {
+        "11111111": {"asof": "2022-05-02"},
+        "22222222": {"asof": ""},                       # no date -> no <lastmod>
+        "33333333": {"full": True, "asof": "2026-07-10T08:00:00"},  # full -> indexed
+        "44444444": {"full": False, "asof": ""},        # bare stub -> excluded
+    }
+    with tempfile.TemporaryDirectory() as d:
+        saved = build.DIST
+        build.DIST = Path(d)
+        try:
+            n = build.write_sitemap(index, stub_index, records)
+            xml = (Path(d) / "sitemap.xml").read_text()
+        finally:
+            build.DIST = saved
+    base = build.SITE_URL
+    # Static + browse (letters present: A for amoxicilline, # for the digit name).
+    assert f"<loc>{base}/</loc>" in xml
+    assert f"<loc>{base}/a-propos</loc>" in xml
+    assert f"<loc>{base}/browse/</loc>" in xml
+    assert f"<loc>{base}/browse/a</loc>" in xml
+    assert f"<loc>{base}/browse/num</loc>" in xml
+    # RCP pages, with lastmod only where asof is known.
+    assert f"<loc>{base}/rcp/11111111-amoxicilline</loc><lastmod>2022-05-02</lastmod>" in xml
+    assert f"<loc>{base}/rcp/22222222-300</loc></url>" in xml  # no lastmod
+    # Full /eu/ is indexed (lastmod is the date part only); the bare stub is NOT.
+    assert f"<loc>{base}/eu/33333333-abilify</loc><lastmod>2026-07-10</lastmod>" in xml
+    assert "44444444-stubonly" not in xml
+    # Count: 3 static + 2 browse letters + 2 rcp + 1 full eu = 8.
+    assert n == 8, n
+    assert xml.startswith('<?xml version="1.0" encoding="UTF-8"?><urlset'), xml[:60]
+    print("ok  test_sitemap_lists_indexable_pages")
+
+
+def test_robots_points_at_sitemap():
+    with tempfile.TemporaryDirectory() as d:
+        saved = build.DIST
+        build.DIST = Path(d)
+        try:
+            build.write_robots()
+            txt = (Path(d) / "robots.txt").read_text()
+        finally:
+            build.DIST = saved
+    assert "User-agent: *" in txt
+    assert "Disallow: /api/" in txt
+    assert f"Sitemap: {build.SITE_URL}/sitemap.xml" in txt
+    print("ok  test_robots_points_at_sitemap")
+
+
 if __name__ == "__main__":
     test_quantize_roundtrip()
     test_section_chunks_align_with_toc()
@@ -559,4 +619,6 @@ if __name__ == "__main__":
     test_sentence_chunks_group_and_fallbacks()
     test_long_section_tail_survives_raised_cap()
     test_duplicate_chunks_within_page_dropped()
+    test_sitemap_lists_indexable_pages()
+    test_robots_points_at_sitemap()
     print("\nAll tests passed.")

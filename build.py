@@ -52,7 +52,7 @@ from lxml import html as lxml_html
 
 import bdpm  # shared, pure-stdlib BDPM tokenising + frequency scoring
 
-__version__ = "0.31.3"  # single source of truth; bump patch/minor per change
+__version__ = "0.32.0"  # single source of truth; bump patch/minor per change
 
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
@@ -102,6 +102,14 @@ SCRAPE_MANIFEST_PATH = DATA / ".scrape-manifest.json"
 # The frozen bulk RCP dump's date (data.gouv.fr upload). Every baseline-sourced
 # page carries it as its "as of" date; overlay pages use their scrape date.
 BASELINE_DATE = "2022-05-02"
+# The site's public origin (no trailing slash). The one place the deployed domain
+# lives: sitemap.xml, robots.txt, and every page's <link rel="canonical"> +
+# Open Graph URL are built from it (see _abs_url / write_sitemap / _canonical_link).
+# A hardcoded constant on purpose (not an env var): render_record / render_eu_page
+# run BOTH in the batch build AND in the refresh-service container, and baking the
+# origin into build.py's source keeps a re-rendered page's canonical identical to a
+# batch-built one, with no env-var plumbing to forget. A self-hoster edits this line.
+SITE_URL = "https://justelesrcp.olicorne.org"
 # Official ANSM page for one drug (RCP + notice tabs). Each RCP page links it at
 # the top so a reader who doubts our copy or spots a bug can check the source.
 # Same URL scrape-rcp.py fetches from (PAGE_URL there); kept here to avoid a
@@ -1351,6 +1359,77 @@ def compress(path: Path) -> None:
     )
 
 
+# --- SEO: absolute URLs, sitemap.xml, robots.txt ----------------------------
+def _abs_url(path: str) -> str:
+    """Absolute URL for a site-root-relative path ('/rcp/x' -> SITE_URL + '/rcp/x').
+    The single origin (SITE_URL) feeds canonical links, Open Graph URLs, the sitemap
+    and robots.txt, so the deployed domain lives in exactly one place."""
+    return SITE_URL + path
+
+
+def _sitemap_url(path: str, lastmod: str = "") -> str:
+    """One <url> entry. lastmod (a W3C YYYY-MM-DD date) is omitted when unknown so we
+    never advertise a fake modification date."""
+    loc = _esc(_abs_url(path))
+    lm = f"<lastmod>{_esc(lastmod)}</lastmod>" if lastmod else ""
+    return f"<url><loc>{loc}</loc>{lm}</url>"
+
+
+def write_sitemap(
+    index: list[dict[str, str]],
+    stub_index: list[dict[str, str]],
+    records: dict[str, dict],
+) -> int:
+    """Write dist/sitemap.xml listing every crawlable URL: home, /a-propos, the /browse
+    A-Z pages, every /rcp/ page, and the INDEXABLE full /eu/ pages (bare stubs are
+    noindex, so they are left out). ``records`` is the per-CIS manifest, read only for
+    the ``asof`` lastmod (and the ``full`` flag distinguishing a full /eu/ page from a
+    noindex stub). One flat sitemap: the catalog (~12k RCP + a few hundred full /eu/)
+    is well under the 50k-URL / 50 MB sitemap limit; split into a sitemap index if it
+    ever grows past that. Returns the URL count."""
+    urls = [
+        _sitemap_url("/"),
+        _sitemap_url("/a-propos"),
+        _sitemap_url("/browse/"),
+    ]
+    for letter in sorted({_first_letter(e["name"]) for e in index},
+                         key=lambda l: (l == "#", l)):
+        urls.append(_sitemap_url(f"/browse/{_letter_key(letter)}"))
+    for e in index:
+        lastmod = (records.get(e["cis"], {}).get("asof") or "").split("T")[0]
+        urls.append(_sitemap_url(f"/rcp/{e['slug']}", lastmod))
+    for e in stub_index:
+        rec = records.get(e["cis"], {})
+        if not rec.get("full"):
+            continue  # a bare /eu/ stub is noindex -> keep it out of the sitemap
+        lastmod = (rec.get("asof") or "").split("T")[0]
+        urls.append(_sitemap_url(f"/eu/{e['slug']}", lastmod))
+    xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+        + "".join(urls)
+        + "</urlset>"
+    )
+    out = DIST / "sitemap.xml"
+    out.write_text(xml, encoding="utf-8")
+    compress(out)
+    return len(urls)
+
+
+def write_robots() -> None:
+    """Write dist/robots.txt: allow everything except the runtime /api/* proxy and
+    point crawlers at the sitemap."""
+    txt = (
+        "User-agent: *\n"
+        "Allow: /\n"
+        "Disallow: /api/\n"
+        f"Sitemap: {_abs_url('/sitemap.xml')}\n"
+    )
+    out = DIST / "robots.txt"
+    out.write_text(txt, encoding="utf-8")
+    compress(out)
+
+
 # --- semantic-search: the served .vec.json sidecar -------------------------
 # Per-drug section vectors are computed server-side now (the warm ONNX encoder in
 # embed-service.py, or embed-rcp.py offline), NOT baked from data/emb here. These two
@@ -1731,7 +1810,9 @@ def render_record(item: tuple[str, str, str]) -> dict[str, str] | None:
     out = DIST / "rcp" / f"{slug}.html"
     out.write_text(page, encoding="utf-8")
     compress(out)
-    return {"cis": cis, "name": name, "slug": slug}
+    # ``asof`` rides back only for the manifest (sitemap <lastmod>); main() strips it
+    # before it can reach the client-downloaded search-index.json.
+    return {"cis": cis, "name": name, "slug": slug, "asof": asof}
 
 
 # --- EU-authorization stub pages -------------------------------------------
@@ -2046,7 +2127,10 @@ def render_eu_page(cis: str, overlay_html: str, meta: tuple[str, str, str] | Non
         + _ref_links_html(cis, name, include_ema=False)
     page = (
         page_tpl.replace("{{TITLE}}", _esc(name))
-        .replace("{{HEADEXTRA}}", '<meta name="robots" content="noindex">')
+        # A full /eu/ page carries the real converted EMA SmPC/notice, so it IS
+        # indexable (unlike the bare stub below, which only points out and stays
+        # noindex). These are high-intent pages for EMA-only drugs (ABILIFY etc.).
+        .replace("{{HEADEXTRA}}", "")
         .replace("{{CIS}}", _esc(cis))
         .replace("{{TOC}}", _toc_html(_eu_toc(overlay_html)))
         .replace("{{ASOF}}", asof)
@@ -2177,7 +2261,14 @@ def build_stubs(
             out.write_text(page, encoding="utf-8")
             compress(out)
         stub_index.append({"cis": cis, "name": name, "slug": slug, "eu": 1})
-        stub_records[cis] = {"h": h, "name": name, "slug": slug, "eu": 1}
+        # ``full`` (indexable full /eu/ page vs noindex stub) + ``asof`` (the EMA
+        # capture date) live only in the manifest, for write_sitemap: a full page is
+        # listed with its lastmod, a bare stub is excluded. Kept off stub_index so the
+        # client-downloaded search-index.json stays lean.
+        stub_records[cis] = {
+            "h": h, "name": name, "slug": slug, "eu": 1, "full": full,
+            "asof": (_eu_fetched(overlay) or _eu_date(overlay)) if full else "",
+        }
 
     _prune({e["slug"] for e in stub_index})
     return stub_index, stub_records, reused, len(stub_cis) - reused
@@ -2260,7 +2351,10 @@ def main() -> None:
             hit = prev_records.get(cis)
             if hit and hit.get("h") == rec_hash and output_ok(hit["slug"]):
                 index.append({"cis": cis, "name": hit["name"], "slug": hit["slug"]})
-                new_records[cis] = {"h": rec_hash, "name": hit["name"], "slug": hit["slug"]}
+                # asof is part of rec_hash, so a hit means it is unchanged: store the
+                # live value for the sitemap <lastmod> (kept in the manifest, not index).
+                new_records[cis] = {"h": rec_hash, "name": hit["name"],
+                                    "slug": hit["slug"], "asof": asof}
                 reused += 1
                 continue
             miss_hashes[cis] = rec_hash
@@ -2283,12 +2377,15 @@ def main() -> None:
             desc="  rendering RCP pages", unit="page", unit_scale=False,
         ):
             if entry is not None:
-                index.append(entry)
                 cis = entry["cis"]
+                # Keep the index (-> search-index.json, downloaded by every visitor)
+                # lean; asof goes only into the manifest for the sitemap <lastmod>.
+                index.append({"cis": cis, "name": entry["name"], "slug": entry["slug"]})
                 new_records[cis] = {
                     "h": miss_hashes[cis],
                     "name": entry["name"],
                     "slug": entry["slug"],
+                    "asof": entry["asof"],
                 }
 
     # EU-authorization stubs: findable landing pages for centrally-authorized
@@ -2357,10 +2454,18 @@ def main() -> None:
 
     browse_pages = write_browse(index)
 
+    # SEO discovery: sitemap.xml (home + /a-propos + browse + every RCP + full /eu/)
+    # and robots.txt pointing at it. Regenerated in full each build (cheap) so they
+    # always reflect the current page set; the refresh service, which rebuilds single
+    # pages, does not touch them (a new full /eu/ page appears at the next full build).
+    sitemap_urls = write_sitemap(index, stub_index, new_records)
+    write_robots()
+
     print(
         f"done: {len(index)} RCP pages ({reused} reused, {pruned} pruned) "
         f"+ {len(stub_index)} EU stubs ({stub_reused} reused, {stub_rendered} built) "
-        f"+ {browse_pages} browse pages ({skipped_empty} empty CIS skipped) -> {DIST}"
+        f"+ {browse_pages} browse pages ({skipped_empty} empty CIS skipped) "
+        f"+ sitemap.xml ({sitemap_urls} urls) + robots.txt -> {DIST}"
     )
 
 
