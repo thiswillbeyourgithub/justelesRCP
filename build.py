@@ -51,7 +51,7 @@ from lxml import html as lxml_html
 
 import bdpm  # shared, pure-stdlib BDPM tokenising + frequency scoring
 
-__version__ = "0.28.1"  # single source of truth; bump patch/minor per change
+__version__ = "0.28.2"  # single source of truth; bump patch/minor per change
 
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
@@ -960,8 +960,9 @@ _SEC_MAX_CHUNKS = 160
 # the .vec.json content-hash gate; folding it into raw_hash (below) busts every sidecar
 # so a re-bake / re-crawl re-embeds with the new segmentation. History: "1" = original
 # title-prefixed chunks; "2" = headers no longer embedded + DSFR back-to-top/tooltip
-# chrome stripped + filler paragraphs ("Sans objet", <= 2 words / <= 5 chars) dropped.
-_CHUNK_FORMAT_VERSION = "2"
+# chrome stripped + filler paragraphs ("Sans objet", <= 2 words / <= 5 chars) dropped;
+# "3" = also drop the "[à compléter ultérieurement par le titulaire]" QRD placeholder.
+_CHUNK_FORMAT_VERSION = "3"
 
 
 def quantize_int8(values) -> list[int]:
@@ -1014,15 +1015,21 @@ def _char_windows(text: str, limit: int) -> list[str]:
 
 
 def _is_filler_paragraph(text: str) -> bool:
-    """True for a narrative paragraph too short/generic to carry searchable meaning:
-    RCP boilerplate like "Sans objet." (not applicable), a stray "Oui", a one-cell
-    leftover. Dropped BEFORE a section's body is assembled so it never dilutes a
-    chunk's vector. Rule: empty, exactly "Sans objet", <= 5 chars, or <= 2 words.
-    Table rows are exempt (they carry column context and take their own path)."""
+    """True for a narrative paragraph too short/generic, or a QRD template placeholder,
+    to carry searchable meaning: RCP boilerplate like "Sans objet." (not applicable), an
+    unfilled editorial placeholder like "[à compléter ultérieurement par le titulaire]"
+    (many accent/bracket/case variants), a stray "Oui", a one-cell leftover. Dropped
+    BEFORE a section's body is assembled so it never dilutes a chunk's vector. Rules
+    (on the accent-folded lower-cased text): empty, exactly "Sans objet", contains the
+    "à compléter ultérieurement" placeholder, <= 5 chars, or <= 2 words. Table rows are
+    exempt (they carry column context and take their own path)."""
     t = _norm_ws(text)
     if not t:
         return True
-    if t.strip(" .;:").lower() == "sans objet":
+    folded = unicodedata.normalize("NFKD", t).encode("ascii", "ignore").decode().lower()
+    if folded.strip(" .;:") == "sans objet":
+        return True
+    if "completer ulterieurement" in folded:
         return True
     return len(t) <= 5 or len(t.split()) <= 2
 

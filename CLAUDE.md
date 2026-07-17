@@ -522,8 +522,8 @@ Key facts that aren't obvious from a single file:
   no chunk; DSFR back-to-top links + their "Redirection vers le haut de page" tooltip
   spans (fresh-scrape chrome) are stripped in `_STRIP_XPATH` so they never reach a
   chunk; and filler narrative paragraphs (`_is_filler_paragraph`: exactly "Sans objet",
-  `<= 5` chars, or `<= 2` words) are dropped before the section body is assembled (table
-  rows are exempt). `_CHUNK_FORMAT_VERSION` (folded into `raw_hash`/`src_hash`) busts
+  the "[à compléter ultérieurement par le titulaire]" QRD placeholder, `<= 5` chars, or
+  `<= 2` words) are dropped before the section body is assembled (table rows are exempt). `_CHUNK_FORMAT_VERSION` (folded into `raw_hash`/`src_hash`) busts
   every `.vec.json` when this segmentation changes, since the raw overlay is untouched.
   **The warm encoder** (`onnx_embed.Encoder`) loads the int8
   `Xenova/multilingual-e5-small` ONNX weights + tokenizer ONCE with

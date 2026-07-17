@@ -128,10 +128,15 @@ def test_filler_paragraphs_dropped():
     # RCP boilerplate paragraphs ("Sans objet.", a one-word "Oui", a 2-word fragment)
     # carry no searchable meaning and must not dilute the section vector; a real body
     # paragraph in the same section survives. Table rows keep their own path.
-    assert build._is_filler_paragraph("Sans objet.")           # 2 words + the exact phrase
+    assert build._is_filler_paragraph("Sans objet")            # exact phrase
+    assert build._is_filler_paragraph("Sans objet.")           # with trailing period
     assert build._is_filler_paragraph("Oui")                   # 1 word / 3 chars
     assert build._is_filler_paragraph("Voie orale")            # 2 words
     assert build._is_filler_paragraph("   ")                   # empty after norm
+    # QRD editorial placeholder, in its many accent/bracket/case variants.
+    assert build._is_filler_paragraph("[à compléter ultérieurement par le titulaire]")
+    assert build._is_filler_paragraph("[A compléter ultérieurement par le titulaire]")
+    assert build._is_filler_paragraph("Fax, e-Mail : à compléter ultérieurement par le titulaire]")
     assert not build._is_filler_paragraph("Traitement de la douleur legere.")
 
     sample = """<div id="textDocument">
@@ -139,13 +144,17 @@ def test_filler_paragraphs_dropped():
       <p>Sans objet.</p>
       <p class="AmmAnnexeTitre1">4.4 Mises en garde</p>
       <p>Ne pas depasser la dose recommandee chez les patients ages.</p>
+      <p class="AmmAnnexeTitre1">4.9 Surdosage</p>
+      <p>[&#224; compl&#233;ter ult&#233;rieurement par le titulaire]</p>
     </div>"""
     chunks = build.section_chunks(sample)
     ids = {sid for sid, _, _ in chunks}
-    # "Sans objet." leaves 4.3 empty -> no chunk; 4.4 keeps its real body.
+    # "Sans objet." empties 4.3 and the placeholder empties 4.9 -> no chunk for either;
+    # only 4.4 (real body) survives.
     assert ids == {"sec-1"}, ids
     joined = " ".join(c for _, _, c in chunks).lower()
     assert "sans objet" not in joined, joined
+    assert "compléter" not in joined and "completer" not in joined, joined
     assert "ne pas depasser" in joined, joined
     print("ok  test_filler_paragraphs_dropped")
 
