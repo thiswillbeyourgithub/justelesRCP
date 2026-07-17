@@ -9,30 +9,28 @@
 *Read this in [English](README.en.md).*
 
 **Juste les résumés des caractéristiques du produit.** Un site statique rapide,
-sans pub et sans compte, qui sert les RCP (résumés des caractéristiques du
-produit) des médicaments vendus en France, à partir du jeu de données public
-ANSM / BDPM. Conçu comme une alternative légère aux sites de médicaments lents et
-à but lucratif.
+sans pub et sans compte, qui donne accès aux RCP (résumés des caractéristiques du
+produit) des médicaments vendus en France. L'objectif : aider soignants et
+patients à trouver plus vite une information fiable et officielle, sans publicité
+et sans sacrifier leur vie privée. Une alternative légère aux sites de médicaments
+lents et à but lucratif.
 
-- Aucun serveur applicatif, aucune base de données : chaque page est un fichier
-  statique précalculé.
-- Recherche instantanée côté client sur ~15 600 médicaments, plus des pages de
-  navigation A-Z indexables par les moteurs de recherche.
-- Recherche sémantique par *embeddings* à l'intérieur d'une page RCP donnée :
-  tapez une question en langage naturel (« puis-je le prendre enceinte ? ») et la
-  page surligne les passages les plus pertinents, avec une navigation
-  précédent/suivant. La requête est vectorisée par un petit service auto-hébergé
-  (plus aucun modèle de ~120 Mo à télécharger dans le navigateur) ; elle ne couvre
-  que les pages rafraîchies depuis la source officielle, jamais la version figée de
-  2022. Optionnel, voir plus bas.
-- Liens croisés entre médicaments : chaque page RCP relie automatiquement les
-  noms de médicaments et de substances qu'elle cite (par ex. « oméprazole »,
-  « carbamazépine ») vers leurs propres pages, avec un encart « Médicaments
-  liés » en bas. Seules les substances qui ont une page RCP dans le jeu de
-  données sont liées (jamais un lien mort). Ces liens sont ajoutés par
-  justelesRCP et ne font pas partie du texte officiel de l'ANSM.
-- Précompressé (brotli + gzip), servi par un conteneur Caddy durci en lecture
-  seule.
+- Chaque page est un fichier statique précalculé : aucun serveur applicatif,
+  aucune base de données, rien à traquer côté visiteur.
+- Recherche instantanée sur ~15 600 médicaments, plus des pages de navigation
+  A-Z indexables par les moteurs de recherche.
+- **Recherche en langage naturel à l'intérieur d'un RCP** : posez une question
+  telle que « puis-je le prendre enceinte ? » et la page met en avant les
+  passages qui répondent au *sens* de votre question, pas seulement aux mots
+  exacts. Votre question est analysée sur notre propre serveur puis aussitôt
+  oubliée : jamais enregistrée, jamais transmise à un tiers.
+- Liens croisés entre médicaments : chaque page relie automatiquement les noms de
+  médicaments et de substances qu'elle cite vers leurs propres pages (jamais un
+  lien mort). Ces liens sont ajoutés par justelesRCP et ne font pas partie du
+  texte officiel.
+- Médicaments à autorisation européenne (dont le RCP est publié par l'EMA et non
+  par l'ANSM, ex. Abilify) : leur RCP officiel est récupéré, converti et affiché
+  ici, avec un lien vers le document source de l'EMA.
 - Mesure d'audience respectueuse de la vie privée (umami : sans cookies, sans
   traçage publicitaire). Site hébergé en France.
 
@@ -42,219 +40,49 @@ ANSM / BDPM. Conçu comme une alternative légère aux sites de médicaments len
 
 ## Comment ça marche
 
-`build.py` lit le dump des RCP de l'ANSM (`data/CIS_RCP.csv` :
-`Code_CIS <TAB> RCP_html`), nettoie et restyle chaque document, puis écrit :
+Le point de départ est le dernier export en masse des RCP de l'ANSM, **figé au
+2 mai 2022** : c'est le seul export HTML complet qui existe (le téléchargement
+officiel quotidien de la BDPM ne contient que des métadonnées, pas le texte des
+RCP). Ce socle ne couvre que l'ANSM, pas les médicaments à autorisation
+européenne.
 
-- `dist/rcp/<cis>-<slug>.html` : une page nettoyée par médicament, avec un titre
-  (nom du médicament / présentation) en haut de page et une table
-  des matières repliable (« Sommaire ») pour naviguer entre les rubriques
-  et leurs sous-rubriques (4.1, 4.2, …)
-- `dist/eu/<cis>-<slug>.html` : pour les médicaments à AMM européenne centralisée
-  (dont le RCP est publié par l'EMA et non par l'ANSM, ex. Abilify). Quand le PDF
-  d'informations produit de l'EMA a été récupéré (`scrape-ema.py`, converti en HTML
-  propre par `ema_pdf.py`), c'est le **RCP complet converti** qui est affiché, avec
-  un lien direct vers le PDF officiel de l'EMA en haut de page ; sinon, une page
-  d'aiguillage légère qui renvoie vers le RCP officiel sur le site de l'EMA et vers
-  les génériques équivalents présents ici. Un même produit (toutes ses présentations,
-  ex. Abilify Maintena 300 mg et 400 mg) partage un seul PDF EMA : dès qu'une
-  présentation est récupérée, toutes affichent le RCP complet. Et **chaque page
-  `/eu/` a un bouton** pour récupérer le RCP depuis l'EMA à la demande, sans attendre
-  le rafraîchissement de fond. Dans les deux cas ils restent trouvables
-  via la recherche. Si le PDF de l'EMA est momentanément indisponible, le texte est
-  récupéré via l'Internet Archive (une mention l'indique sur la page ; le lien
-  officiel reste celui de l'EMA)
-- `dist/search-index.json` : consommé par la recherche côté client
-- `dist/a-propos.html` : la page « À propos »
-- `style.css`, `search.js`, et un jumeau `.gz`/`.br` pour chaque fichier texte
+À partir de là, le contenu est rafraîchi **progressivement** : un service de fond
+récupère les pages officielles quelques-unes à la fois, toutes les quelques
+minutes, en commençant par les médicaments les plus consultés, et n'importe quel
+lecteur peut demander le rafraîchissement immédiat d'une page via un bouton. Au
+fil du temps on aboutit à une **copie locale à jour** des données, sans jamais
+solliciter agressivement les sites sources : requêtes peu fréquentes, limitées en
+débit, et une seule requête même si plusieurs lecteurs consultent la même page.
 
-La génération est **incrémentale** : un cache par médicament
-(`dist/.build-manifest.json`) évite de re-parser et re-compresser les documents
-inchangés, ce qui accélère fortement les redéploiements après un simple
-rafraîchissement des données. Le numéro de version n'est pas figé dans le HTML
-des pages (il est servi au runtime via `app-version.js`), de sorte qu'un simple
-changement de version n'invalide pas le cache.
+Pour les médicaments à autorisation européenne, le RCP est publié par l'EMA sous
+forme de PDF. J'ai posé la question à l'EMA : ils m'ont confirmé qu'il fallait le
+récupérer nous-mêmes ainsi, faute d'accès prévu aux RCP. justelesRCP télécharge
+donc ce PDF officiel, le convertit en page lisible et renvoie toujours vers le
+document source.
 
-Voir [CLAUDE.md](CLAUDE.md) pour l'architecture détaillée.
+Tout le rendu est précalculé : au moment de servir les pages, rien de dynamique ne
+tourne. La recherche en langage naturel et le rafraîchissement à la demande sont
+deux petits services compagnons optionnels et durcis, séparés du serveur web.
 
-## Démarrage rapide
-
-```bash
-./download-data.sh                                  # récupère les jeux de données source dans ./data (gitignored)
-uv run build.py                                     # génère ./dist à partir de ./data
-cp docker/env.example docker/.env                   # optionnel : configurer les statistiques
-docker compose -f docker/docker-compose.yml up -d   # sert sur http://localhost:8459
-```
-
-Placez votre propre reverse proxy TLS devant le port 8459.
-
-La configuration optionnelle au runtime (statistiques [umami](https://umami.is)
-respectueuses de la vie privée et bannière « travaux en cours ») se trouve dans
-`docker/.env` ; voir `docker/env.example`. Laissez le fichier vide pour zéro
-traçage. Rien n'est chargé depuis un CDN ; une CSP stricte n'ouvre que votre
-propre origine umami quand vous définissez `ANALYTICS_URL`.
-
-## Garder les RCP à jour
-
-Le dump `CIS_RCP.csv` est figé (2 mai 2022) et c'est le seul export *HTML* en
-masse qui existe : le téléchargement officiel de la BDPM, lui, est rafraîchi
-quotidiennement mais ne contient que des métadonnées, jamais le corps HTML des
-RCP. Pour rafraîchir les RCP sans renoncer à l'architecture statique, `scrape-rcp.py`
-récupère en arrière-plan les pages de médicaments sur le site de l'ANSM et écrit
-un fichier de surcharge par médicament (`data/rcp/<cis>.html.gz`, gzip par défaut)
-que `build.py` préfère au dump de 2022. Rien de dynamique ne tourne au moment de
-servir les pages.
-
-Chaque page RCP affiche en tête la date de révision du RCP par l'ANSM
-(« Informations à jour au … », lue dans le corps du RCP), plus une petite ligne
-« Version vérifiée par justelesRCP le … » indiquant quand nous avons contrôlé
-cette copie auprès de l'ANSM pour la dernière fois. Un avertissement n'apparaît
-que si *notre copie* n'a pas été recontrôlée depuis plus d'un an, et non parce
-que le texte de l'ANSM est ancien : un RCP révisé en 2021 mais jamais modifié
-reste le texte officiel en vigueur, son ancienneté seule n'est pas de
-l'obsolescence.
-
-En tête de chaque page, une rangée de boutons (pastilles) renvoie vers des
-sources externes : **BDPM** (la fiche officielle du médicament, par code CIS),
-puis **HAS**, **EMA** et **Vidal** (une recherche plein texte sur la substance
-active du médicament). Aucune de ces pages n'est récupérée à la construction :
-ce sont de simples liens de recherche.
-
-```bash
-uv run scrape-rcp.py --limit 60   # rafraîchit 60 médicaments (les plus consultés d'abord)
-uv run scrape-ema.py --limit 60   # récupère + convertit les PDF EMA des médicaments à AMM
-                                  # centralisée en pages /eu/ complètes (facultatif)
-uv run build.py                    # régénère (incrémental : seuls les changements)
-```
-
-Un CIS rafraîchi depuis moins de `--ttl-days` (30 par défaut) est ignoré. L'ordre
-de priorité vient d'une liste de fréquence JSONL (`--frequency`, par défaut
-`data/drugs_frequency.jsonl`) où chaque ligne est
-`{"term": "<nom de médicament ou substance>", "score": <plus haut = plus tôt>}` ;
-les termes sont rapprochés du nom de chaque médicament (insensible aux accents),
-et un médicament qu'aucun terme ne matche reçoit le score du 25e centile pour
-rester à une priorité moyenne. Idéal en tâche `cron`. Voir l'en-tête du script
-pour toutes les options (`--all` pour un scan complet unique, `--only` pour des
-CIS précis).
-
-Deux réglages se pilotent aussi par variable d'environnement, pratique pour un
-`cron` : `RCP_OVERLAY_GZIP` (surcharges gzippées, activé par défaut ; `--no-gzip`
-pour du HTML brut, `build.py` lit les deux de façon transparente) et
-`RCP_SCRAPE_RATE_SECONDS` (délai de base entre deux requêtes, un aléa est ajouté).
-Le script journalise une barre de progression avec estimation du temps restant et
-indique à chaque page si elle est demandée manuellement (`--only`, « user ») ou
-issue de la file automatique (« timer »).
-
-### Rafraîchir un RCP à la demande (service optionnel)
-
-Chaque page RCP possède un bouton « Rafraîchir maintenant », et une page dont
-notre copie a été récupérée il y a plus d'un an se rafraîchit automatiquement au
-chargement. Les deux
-appellent un petit service compagnon (`refresh-service.py`, `POST
-/api/refresh/<cis>`) qui récupère la page ANSM en direct, écrit la surcharge et
-régénère cette seule page. C'est l'une des deux seules parties dynamiques du projet
-(l'autre est le service d'embeddings de la recherche sémantique, plus bas) : elle
-tourne dans un conteneur séparé et durci (en lecture seule sauf trois chemins
-précis) pour que le serveur web, lui, reste entièrement en lecture seule, et des
-limiteurs de débit par voie plus un plancher par médicament (plusieurs visiteurs sur
-la même page ne déclenchent qu'une seule requête) évitent de solliciter le site de
-l'ANSM. Tout est **facultatif** : `docker compose ... up` démarre le service, mais
-`docker compose ... up web` le laisse de côté ; sans lui, `/api/*` renvoie une
-erreur et le bouton signale simplement l'indisponibilité, le site restant 100 %
-statique. En arrière-plan, un **crawler** parcourt en continu toutes les pages par
-ordre de fréquence (unités vendues) et rafraîchit celles dont la copie dépasse le
-seuil d'ancienneté (`REFRESH_CRAWL_TTL_DAYS`, 12 mois par défaut), puis se met en
-veille jusqu'à ce que la plus ancienne repasse ce seuil. Le crawler et les clics
-« Rafraîchir maintenant » tournent sur **deux voies distinctes, chacune avec son
-propre limiteur de débit** : un clic est donc récupéré quasi immédiatement sur sa
-voie rapide (`REFRESH_DEMAND_RATE_SECONDS`, ~5 s) au lieu d'attendre derrière le
-filet lent du crawler (`REFRESH_RATE_SECONDS`, ~2 min) ; les deux voies restent
-séquentielles et douces. Il tient des statistiques de crawl par
-origine (bouton / automatique / crawler) consultables via `GET /api/stats`. Les
-réglages (`REFRESH_*`) sont dans `docker/.env` ; voir `docker/env.example`.
-
-Pour forcer un nouveau passage complet du crawler (par exemple après un changement
-de rendu) sans supprimer les copies existantes (ce qui laisserait des pages vides
-le temps de les récupérer), on envoie `SIGHUP` au conteneur de rafraîchissement
-(`deploy.sh --rebuild` le fait après le déploiement) : le crawler re-balaye tout le
-catalogue en ignorant le seuil d'ancienneté, une passe, pendant que le site
-continue de servir les pages actuelles jusqu'à ce que chacune soit récupérée.
-
-Le même service gère aussi les pages `/eu/` des médicaments à AMM centralisée, via
-une **voie EMA distincte** (bouton « Rafraîchir » sur une page `/eu/` et un second
-crawler) qui récupère le PDF de l'EMA, le convertit et régénère la page. Cette voie
-a ses propres réglages (`REFRESH_EMA_CRAWL`, `REFRESH_EMA_RATE_SECONDS` à 300 s par
-défaut car l'EMA est plus stricte, `REFRESH_EMA_CRAWL_TTL_DAYS` à 180 jours) et son
-propre manifeste, indépendants de la voie ANSM.
-
-## Recherche sémantique par médicament (optionnel)
-
-Chaque page RCP (ainsi que chaque page `/eu/` au RCP complet converti depuis
-l'EMA) propose un encart « Recherche sémantique dans ce RCP » : posez une question en langage
-naturel (« puis-je le prendre pendant la grossesse ? », « effets sur le foie ») et
-l'encart classe les passages les plus proches de ce seul médicament, en affiche le
-texte complet (les passages d'une même rubrique sont regroupés sous un seul titre),
-surligne le paragraphe correspondant et permet de parcourir les résultats avec
-précédent/suivant.
-Les tableaux (posologie, etc.) sont indexés ligne par ligne pour que chaque ligne
-reste retrouvable. Le classement est **hybride** : à la proximité sémantique s'ajoute
-un bonus lexical quand vos propres mots (même approximativement : pluriels, fautes de
-frappe) apparaissent dans une rubrique, ce qui fait remonter les passages qui vous
-répondent à la fois par le sens et par les mots.
-
-La requête est vectorisée **côté serveur** par un petit service compagnon durci et en
-lecture seule (`embed-service.py`) qui garde un modèle multilingue
-(`Xenova/multilingual-e5-small`, ONNX int8, ~120 Mo) au chaud. Le navigateur ne
-télécharge **plus aucun modèle** (l'ancienne version en tirait ~120 Mo par visiteur) ;
-il n'envoie que le court texte de la requête à notre propre point d'accès
-`/api/sem/embed` (même origine) et classe le vecteur renvoyé face aux vecteurs des
-rubriques, localement. Le compromis est une légère baisse de confidentialité : le
-texte de la requête transite désormais par notre serveur, mais il n'est **jamais
-journalisé** (seulement des compteurs et des latences) et abandonné aussitôt après
-vectorisation (le petit cache en mémoire qui évite de recalculer les requêtes
-répétées est indexé par un hachage du texte, pas par le texte lui-même), sur un
-conteneur en lecture seule. La CSP stricte redevient `default-src 'self'` sans aucune
-ouverture WebAssembly.
-
-La recherche sémantique ne couvre que les pages **rafraîchies depuis la source
-officielle** (le re-scraping ANSM ou le PDF EMA), jamais la version figée de 2022. Le
-service vectorise chaque page au moment où elle est crawlée ; chercher dans une page
-jamais crawlée déclenche d'abord un rafraîchissement, puis l'indexe.
-
-C'est **entièrement facultatif** : laissez le service d'embeddings de côté
-(`docker compose ... up web refresh`) et l'encart affiche simplement « indisponible »,
-le reste du site étant inchangé. Pour l'activer :
-
-```bash
-./download-model.sh               # récupère le modèle ONNX + le tokenizer dans ./models (~120 Mo, gitignored)
-docker compose -f docker/docker-compose.yml up -d --build   # démarre le service d'embeddings (monte ./models en lecture seule)
-uv run embed-rcp.py --limit 60    # OPTIONNEL : pré-calcule les vecteurs hors-ligne pour amorcer (après build.py)
-```
-
-La vectorisation est incrémentale via un hachage de contenu : une page n'est
-ré-embarquée que si son texte ou le modèle a changé, donc un rafraîchissement à
-l'identique ne ré-embarque rien. L'outil hors-ligne `embed-rcp.py` et le service en
-direct partagent exactement le même encodeur et le même test de fraîcheur, donc leurs
-vecteurs ne divergent jamais.
+Pour l'exécuter vous-même ou pour l'architecture détaillée, voir
+[CLAUDE.md](CLAUDE.md).
 
 ## Source des données et licence
 
 Les données proviennent de la
 [base de données publique des médicaments (BDPM)](https://base-donnees-publique.medicaments.gouv.fr/telechargement),
-publiée par l'ANSM. Ce sont des **données ouvertes** sous
-[Licence Ouverte / Etalab 2.0](https://www.etalab.gouv.fr/licence-ouverte-open-licence/),
-et justelesRCP les réutilise **dans le respect de cette licence** : citation de la
-source et de sa date, aucune altération du sens, aucune suggestion de caractère
-officiel. Le socle des RCP date du **2 mai 2022** (dépôt en masse le plus récent),
-donc le contenu peut être ancien et ne plus être exact ; certaines pages sont
-progressivement rafraîchies. Cette réutilisation ne confère aucun caractère officiel
-et ne suggère aucune reconnaissance de l'ANSM, de la HAS ou de l'UNCAM. Ce site
-n'est affilié à aucune autorité et ne remplace pas un avis médical professionnel.
+publiée par l'ANSM, réutilisées sous
+[Licence Ouverte / Etalab 2.0](https://www.etalab.gouv.fr/licence-ouverte-open-licence/)
+dans le respect de cette licence : citation de la source et de sa date, aucune
+altération du sens, aucune suggestion de caractère officiel. Le socle des RCP date
+du 2 mai 2022, le contenu peut donc être ancien même si les pages sont
+progressivement rafraîchies. justelesRCP n'est affilié à aucune autorité (ANSM,
+HAS, EMA…) et ne remplace pas un avis médical professionnel.
 
-Pour maintenir les RCP à jour, justelesRCP récupère ponctuellement certaines pages
-directement sur le site public de l'ANSM. Ces requêtes sont peu fréquentes, limitées
-en débit et accompagnées d'une adresse de contact, afin de ne pas peser sur ce
-service public ; aucune donnée personnelle des visiteurs n'est transmise à cette
-occasion.
+## Des questions ?
+
+Le plus simple est de lire le code, d'ouvrir une *issue*, ou de me contacter via
+[olicorne.org/fr/contact](https://olicorne.org/fr/contact).
 
 ## Crédits
 
