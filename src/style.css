@@ -269,10 +269,19 @@ a:hover { text-decoration: underline; }
   background: none; border: 0; color: var(--fg);
 }
 .semsearch-hit-link:hover { background: var(--bg); }
-.semsearch-hit-link strong { display: block; color: var(--accent); font-size: .92rem; }
+.semsearch-hit-link strong {
+  display: flex; align-items: baseline; gap: .4rem;
+  color: var(--accent); font-size: .92rem;
+}
+.semsearch-hit-name { flex: 1 1 auto; }
+/* Similarity score: right-aligned, small, muted, monospaced digits so it stays put. */
+.semsearch-score {
+  flex: 0 0 auto; color: var(--muted); font-size: .72rem; font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
 .semsearch-snippet { display: block; color: var(--muted); font-size: .82rem; margin-top: .15rem; }
 .semsearch-current-item .semsearch-hit-link { background: var(--bg); }
-.semsearch-current-item .semsearch-hit-link strong::before { content: "\25B8\00a0"; }
+.semsearch-current-item .semsearch-hit-link strong::before { content: "\25B8"; }
 /* Persistent highlight on the matched paragraph(s) in the RCP body: every ranked hit
    gets a subtle tint, the active one a stronger tint + an accent bar and a scroll
    margin so a sticky header doesn't hide it. Theme-aware via color-mix on --accent;

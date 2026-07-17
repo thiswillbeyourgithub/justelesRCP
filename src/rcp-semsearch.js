@@ -418,7 +418,16 @@
       a.className = "semsearch-hit-link";
       const head = document.getElementById(hit.sec);
       const title = document.createElement("strong");
-      title.textContent = head ? head.textContent.trim() : hit.sec;
+      const name = document.createElement("span");
+      name.className = "semsearch-hit-name";
+      name.textContent = head ? head.textContent.trim() : hit.sec;
+      // Show the similarity score, small + muted: discoverable but not prominent. It's
+      // the cosine (0..1); a tooltip says what it is.
+      const score = document.createElement("span");
+      score.className = "semsearch-score";
+      score.textContent = hit.score.toFixed(2);
+      score.title = "Similarité sémantique (0 à 1)";
+      title.append(name, score);
       const snip = document.createElement("span");
       snip.className = "semsearch-snippet";
       snip.textContent = hit.snippet;
