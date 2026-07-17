@@ -438,8 +438,11 @@ Key facts that aren't obvious from a single file:
   `src/app-init.js` shows a refresh button on EVERY `/eu/` page: a full page bakes
   `data-rcp-asof` and gets "Rafraîchir maintenant" (+ the >1yr auto-refresh keyed
   off that date), while a stub (which has no `data-rcp-asof`) is detected by its
-  `.rcp-stub` body and gets a manual-only "Récupérer le RCP depuis l'EMA" button, so
-  a reader never has to wait for the background crawler. Clicking either POSTs
+  `.rcp-stub` body and gets a manual-only "Importer le RCP de l'EMA sur justelesRCP"
+  button (worded so the reader understands the SITE downloads + shows the doc here, not
+  that they leave for the EMA), so a reader never has to wait for the background crawler.
+  The click status sets a clear expectation (the page reloads itself, usually under 30 s,
+  else refresh manually). Clicking either POSTs
   `/api/refresh/<cis>`; the refresh service's EMA lane resolves the PDF (own,
   sibling, or harvested live off the ANSM page) and converts it, and the button's
   poll reloads into the now-full page. Keep the stub contract in sync across

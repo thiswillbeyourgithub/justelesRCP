@@ -144,8 +144,10 @@
     const btn = document.createElement("button");
     btn.type = "button";
     // On a stub we have no copy yet, so the action is "fetch it", not "refresh it".
+    // Be explicit that justelesRCP ITSELF downloads + shows the document here: readers
+    // misread the old "Récupérer le RCP depuis l'EMA" as a link to go read it at the EMA.
     btn.textContent = isEuStub
-      ? "Récupérer le RCP depuis l'EMA"
+      ? "Importer le RCP de l'EMA sur justelesRCP"
       : "Rafraîchir maintenant";
     const msg = document.createElement("span");
     msg.className = "msg";
@@ -158,6 +160,15 @@
     function setMsg(text) {
       msg.textContent = text ? " " + text : "";
     }
+    // Set the reader's expectation clearly: the page reloads itself once the copy is
+    // ready (usually well under 30 s), and if it takes longer they can just refresh.
+    // A stub is a first-time DOWNLOAD from the EMA, so it gets "récupération" wording.
+    const askedMsg = isEuStub ? "Récupération demandée…" : "Mise à jour demandée…";
+    const workingMsg = isEuStub
+      ? "Récupération du RCP depuis l'EMA… la page se rechargera automatiquement dès qu'il est prêt, en général en moins de 30 secondes."
+      : "Mise à jour en cours… la page se rechargera automatiquement dès qu'elle est prête, en général en moins de 30 secondes.";
+    const slowMsg =
+      "C'est un peu plus long que prévu ; rechargez la page dans un instant pour voir le résultat.";
 
     // After a refresh is queued, poll the service until it reports a scrape date
     // newer than the one baked into this page, then reload to show the fresh RCP.
@@ -180,7 +191,7 @@
           } else {
             polling = false;
             btn.disabled = false;
-            setMsg("la mise à jour prend du temps ; réessayez plus tard.");
+            setMsg(slowMsg);
           }
         });
     }
@@ -188,7 +199,7 @@
     btn.addEventListener("click", () => {
       if (polling) return;
       btn.disabled = true;
-      setMsg("mise à jour demandée…");
+      setMsg(askedMsg);
       refresh(cis, "user")
         .then((r) => r.json())
         .then((s) => {
@@ -204,7 +215,7 @@
             setMsg("service occupé, réessayez plus tard.");
           } else {
             polling = true;
-            setMsg("mise à jour en cours…");
+            setMsg(workingMsg);
             pollUntilFresh(Date.now() + 90000);
           }
         })
