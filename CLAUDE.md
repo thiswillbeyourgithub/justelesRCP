@@ -571,7 +571,7 @@ Key facts that aren't obvious from a single file:
   superseded embed) `POST`s the query, dequantises + cosine-ranks locally, drops any
   passage below `MIN_SCORE` (a cosine floor, ~0.8, so junk hits are not surfaced and a
   wholly-irrelevant query yields "Aucun passage pertinent."), lists each surviving hit
-  with its cosine shown small + muted (`.semsearch-score`), then LIGHTLY tints every
+  with its cosine shown small + muted as a percentage (`.semsearch-score`), then LIGHTLY tints every
   surviving ranked passage (`.semsearch-hit`) but does NOT auto-jump: `current` stays
   `-1` and the reader picks a passage (click a result, or step the nav bar / Enter),
   which promotes it to `.semsearch-current` and scrolls to it (`setCurrent(i, true)` is
