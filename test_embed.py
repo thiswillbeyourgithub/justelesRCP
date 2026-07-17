@@ -465,6 +465,55 @@ def test_overlay_iterators_agree():
     print("ok  test_overlay_iterators_agree")
 
 
+def test_sentence_chunks_group_and_fallbacks():
+    # Prose is grouped on whole sentences up to the limit; a chunk ends on a sentence
+    # boundary, never mid-sentence (the coherence win over the old word-windows).
+    para = ("Phrase une. Phrase deux. Phrase trois un peu plus longue mais qui "
+            "reste tout a fait raisonnable pour ce test.")
+    out = build._sentence_chunks(para, 40)
+    assert out and all(len(c) <= 40 for c in out), out
+    # Nothing is dropped: rejoining the chunks reproduces the normalised text.
+    assert " ".join(out) == build._norm_ws(para)
+    # A single sentence longer than the limit falls back to word-windows (still <= limit).
+    long_sentence = "mot " * 50  # 200 chars, no sentence punctuation -> one "sentence"
+    out2 = build._sentence_chunks(long_sentence, 40)
+    assert out2 and all(len(c) <= 40 for c in out2), out2
+    # Last resort: a single unbroken token longer than the limit is cut between letters.
+    giant = "x" * 130
+    out3 = build._sentence_chunks(giant, 40)
+    assert out3 and all(len(c) <= 40 for c in out3), out3
+    assert "".join(out3) == giant, out3  # letters preserved, just re-windowed
+    print("ok  test_sentence_chunks_group_and_fallbacks")
+
+
+def test_long_section_tail_survives_raised_cap():
+    # The bug: the old 160-chunk-per-page cap silently DROPPED the tail of very long
+    # drugs, so a passage late in the RCP was never embedded and thus unfindable (the
+    # reported real case: quetiapine LP, a fatty-meal pharmacokinetics passage in a doc
+    # whose section 4 alone spent all 160 chunks). Build one huge section whose
+    # distinctive passage sits well past where 160 chunks would have stopped, and assert
+    # it is still emitted (cap raised to a pure failsafe) and kept intact in one chunk.
+    filler = ("Le medicament est absorbe apres administration orale puis distribue "
+              "dans l'organisme de facon tout a fait habituelle. ")
+    target = ("Un repas riche en graisses induit une augmentation significative de la "
+              "Cmax et de l'ASC de la substance a liberation prolongee.")
+    body = filler * 900 + target  # ~130k chars -> far more than 160 * _SEC_CHUNK_CHARS
+    sample = ('<div id="textDocument">'
+              '<p class="AmmAnnexeTitre1">5.2 Proprietes pharmacocinetiques</p>'
+              f"<p>{body}</p></div>")
+    chunks = build.section_chunks(sample)
+    # Old behaviour capped at exactly 160; the tail now survives.
+    assert len(chunks) > 160, len(chunks)
+    assert len(chunks) <= build._SEC_MAX_CHUNKS, len(chunks)
+    joined = " ".join(c for _, _, c in chunks)
+    assert "repas riche en graisses" in joined, "tail passage was dropped"
+    # The distinctive passage is intact within a SINGLE chunk (sentence grouping did not
+    # cut it across two vectors, which would dilute both).
+    assert any("repas riche en graisses induit une augmentation" in c
+               for _, _, c in chunks), "passage was split across chunks"
+    print("ok  test_long_section_tail_survives_raised_cap")
+
+
 if __name__ == "__main__":
     test_quantize_roundtrip()
     test_section_chunks_align_with_toc()
@@ -482,4 +531,6 @@ if __name__ == "__main__":
     test_raw_hash_is_the_staleness_key()
     test_vec_is_fresh_gate()
     test_overlay_iterators_agree()
+    test_sentence_chunks_group_and_fallbacks()
+    test_long_section_tail_survives_raised_cap()
     print("\nAll tests passed.")
