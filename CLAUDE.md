@@ -619,13 +619,6 @@ Key facts that aren't obvious from a single file:
   the backlog before a first deploy) reuses the SAME `onnx_embed.Encoder` and
   `build.embed_page_to_vec` over `build.iter_overlay_raw()`, writing the SAME
   `.vec.json` with the SAME `src_hash`, so offline and online vectors never disagree.
-  For a BULK bake it wraps the encoder in `onnx_embed.CachingEncoder` (default on,
-  `--no-cross-drug-cache` to disable), which memoises `encode_passages` by content hash
-  so a passage repeated verbatim across drugs (generics share ~63% of chunks) is
-  encoded ONCE: a compute-only optimisation (the cached vector IS the encoder's own
-  output, so the written bytes are identical), transient RAM freed at exit. The
-  long-lived service deliberately does NOT wrap its encoder (scattered duplicates ->
-  little steady-state benefit for permanent RAM).
   `onnx_embed.RUNTIME_MODEL` (server) and the model `download-model.sh` fetches MUST
   stay the same weights (query and passage vectors must match). Keep the contract in
   sync across `section_chunks`/`quantize_int8`/`raw_hash`/`iter_overlay_paths`/
@@ -687,9 +680,6 @@ uv run embed-rcp.py --limit 60    # OPTIONAL offline pre-bake of the semantic-se
                                   # service uses, over build.iter_overlay_raw (CRAWLED overlays only,
                                   # --no-eu for RCP only), writing dist/<rcp|eu>/<slug>.vec.json
                                   # DIRECTLY with the same src_hash. No manifest (content-hash gated).
-                                  # Wraps the encoder in CachingEncoder (default on; --no-cross-drug-cache
-                                  # to disable) so a passage repeated across generics is encoded once
-                                  # (~63% of chunks skipped on a full bake; identical output).
                                   # Needs ./download-model.sh's model + a prior `uv run build.py`.
 uv run build.py           # build ./dist from ./data (overlay wins over the 2022 CSV; a data/eu
                           #  overlay makes /eu/<cis> a full converted page instead of a stub). Does NOT
