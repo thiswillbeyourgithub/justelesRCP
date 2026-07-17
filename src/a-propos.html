@@ -22,9 +22,13 @@
   <h1>À propos</h1>
   <p><strong>justelesRCP</strong> donne un accès rapide, gratuit et sans publicité
   aux résumés des caractéristiques du produit (RCP) des médicaments vendus en
-  France. Les données proviennent de la base de données publique des médicaments
-  (BDPM) publiée par l'ANSM. Le site est entièrement statique : aucune donnée de
-  navigation n'est nécessaire pour le consulter.</p>
+  France. Son objectif est simple : aider les soignants et les patients à trouver
+  plus vite une information fiable et officielle, sans publicité et sans sacrifier
+  leur vie privée. Les données proviennent de la base de données publique des
+  médicaments (BDPM) publiée par l'ANSM, complétées, pour les médicaments à
+  autorisation européenne, par les RCP publiés par l'Agence européenne des
+  médicaments (EMA). Les pages sont précalculées et servies telles quelles :
+  la simple consultation ne nécessite aucune donnée de navigation.</p>
 
   <h2>Source des données et licence</h2>
   <p>Les données proviennent de la
@@ -34,6 +38,14 @@
   qui en autorise la réutilisation libre. Les fichiers sources et leurs conditions
   d'utilisation sont disponibles sur la
   <a href="https://base-donnees-publique.medicaments.gouv.fr/telechargement" target="_blank" rel="noopener">page de téléchargement de la BDPM</a>.</p>
+  <p>Certains médicaments relèvent d'une <strong>autorisation européenne
+  (procédure centralisée)</strong> : leur RCP n'est pas publié par l'ANSM mais par
+  l'<a href="https://www.ema.europa.eu/en/medicines" target="_blank" rel="noopener">Agence européenne des médicaments</a>
+  (EMA). Pour ces médicaments, justelesRCP récupère le document d'information
+  produit officiel (le PDF français de l'EMA) et le convertit en page lisible ;
+  un lien vers le document source de l'EMA est toujours affiché. En cas
+  d'indisponibilité momentanée, une copie archivée peut être utilisée, ce qui est
+  alors signalé sur la page.</p>
   <p>Le socle des RCP provient de l'export en masse daté du <strong>2 mai 2022</strong> ;
   certaines pages sont progressivement rafraîchies depuis le site de l'ANSM. Ces
   informations peuvent donc être obsolètes : vérifiez toujours une source à jour.</p>
@@ -47,6 +59,21 @@
   l'UNCAM. La responsabilité de ces organismes ne saurait être engagée en cas
   d'information non à jour.</p>
 
+  <h2>Recherche sémantique dans un RCP</h2>
+  <p>Chaque RCP dispose d'une <strong>recherche sémantique</strong> : au lieu de
+  chercher des mots exacts, vous posez une question en langage naturel (par exemple
+  « puis-je le prendre en cas d'insuffisance rénale ? ») et le site met en avant les
+  passages du document dont le <em>sens</em> se rapproche le plus de votre question.
+  C'est une aide à la lecture ; elle ne remplace ni le texte officiel ni un avis
+  médical.</p>
+  <p>Pour que votre navigateur n'ait rien de lourd à télécharger, votre question est
+  analysée par un composant du serveur, sur le même domaine que le site. Cette
+  question <strong>n'est jamais enregistrée</strong> et est effacée aussitôt après
+  l'analyse ; elle n'est jamais transmise à un service tiers ni à la mesure
+  d'audience. Le fonctionnement du site n'en dépend pas : sans ce composant, la
+  recherche sémantique est simplement indisponible et le reste de la page fonctionne
+  normalement.</p>
+
   <h2>L'auteur</h2>
   <p>Site créé par Olivier Cornelis, interne en psychiatrie et développeur.
   Vous pouvez en apprendre plus sur
@@ -55,7 +82,9 @@
   <h2>Vie privée et hébergement</h2>
   <p>La mesure d'audience utilise <strong>umami</strong>, une solution
   respectueuse de la vie privée : pas de cookies, pas de traçage publicitaire,
-  pas de revente de données. Le site est <strong>hébergé en France</strong>.</p>
+  pas de revente de données. Le site est <strong>hébergé en France</strong>. La
+  recherche sémantique constitue la seule exception : votre question transite par le
+  serveur pour y être analysée, sans jamais être enregistrée (voir ci-dessus).</p>
 
   <h2>Code source</h2>
   <p>Le code est ouvert et disponible sur
