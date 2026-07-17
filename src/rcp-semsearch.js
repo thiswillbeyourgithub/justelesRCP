@@ -657,6 +657,10 @@
 
   function renderHits() {
     results.replaceChildren();
+    // A new ranking means the reader edited the query: start the list back at the top
+    // (renderHits runs only on rank(), never on prev/next stepping, so this scrolls the
+    // internal results list up on edit only, not while navigating hits).
+    results.scrollTop = 0;
     for (const el of highlighted) el.classList.remove("semsearch-current");
     highlighted = [];
     let prevSec = null; // group consecutive hits that share a section heading
