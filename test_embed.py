@@ -637,9 +637,11 @@ def test_rcp_page_has_canonical_and_no_leftover_slots():
     assert '<meta property="og:site_name" content="justelesRCP">' in html
     assert f'<meta property="og:url" content="{build.SITE_URL}/rcp/{row["slug"]}">' in html
     assert '<meta name="twitter:card" content="summary">' in html
-    # JSON-LD @graph: a Drug node (with its active ingredient) + a MedicalWebPage.
-    assert '<script type="application/ld+json">' in html
-    ld = json.loads(html.split('<script type="application/ld+json">')[1].split("</script>")[0])
+    # Two JSON-LD blocks: the Drug @graph, then the BreadcrumbList.
+    blocks = [b.split("</script>")[0]
+              for b in html.split('<script type="application/ld+json">')[1:]]
+    assert len(blocks) == 2, len(blocks)
+    ld = json.loads(blocks[0])
     types = {node["@type"] for node in ld["@graph"]}
     assert types == {"Drug", "MedicalWebPage"}, types
     drug = next(n for n in ld["@graph"] if n["@type"] == "Drug")
@@ -647,6 +649,15 @@ def test_rcp_page_has_canonical_and_no_leftover_slots():
     page = next(n for n in ld["@graph"] if n["@type"] == "MedicalWebPage")
     assert page["lastReviewed"] == "2021-02-03", page  # ANSM revision date (ISO)
     assert page["mainEntity"]["@id"] == drug["@id"]
+    # Breadcrumb: visible nav + matching BreadcrumbList (Accueil > A-Z > lettre > drug).
+    assert '<nav class="breadcrumb"' in html
+    assert 'href="/browse/d">D</a>' in html  # DOLIPRANE -> letter D
+    crumb = json.loads(blocks[1])
+    assert crumb["@type"] == "BreadcrumbList"
+    names = [it["name"] for it in crumb["itemListElement"]]
+    assert names[0] == "Accueil" and names[1] == "Médicaments A-Z"
+    assert names[-1] == "DOLIPRANE 1000 mg, comprime"
+    assert crumb["itemListElement"][-1]["item"] == f"{build.SITE_URL}/rcp/{row['slug']}"
     print("ok  test_rcp_page_has_canonical_and_no_leftover_slots")
 
 

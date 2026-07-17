@@ -149,6 +149,20 @@ a:hover { text-decoration: underline; }
   color: var(--muted); font-size: .7rem; opacity: .7;
 }
 
+/* Fil d'Ariane (breadcrumb) at the very top of a drug page (build.py _breadcrumb),
+   matching the BreadcrumbList JSON-LD. Small + muted so it sits quietly above the
+   title; separators are drawn with a "/" between items. Wraps on narrow screens. */
+.breadcrumb { margin: 0 0 .8rem; font-size: .8rem; color: var(--muted); }
+.breadcrumb ol {
+  list-style: none; margin: 0; padding: 0;
+  display: flex; flex-wrap: wrap; align-items: center; gap: .35rem;
+}
+.breadcrumb li { display: inline-flex; align-items: center; gap: .35rem; }
+.breadcrumb li + li::before { content: "/"; color: var(--line); }
+.breadcrumb a { color: var(--muted); text-decoration: none; }
+.breadcrumb a:hover { text-decoration: underline; }
+.breadcrumb [aria-current="page"] { color: var(--fg); }
+
 /* Drug/presentation name header at the top of every page (RCP, full /eu/, stub);
    emitted from the {{TITLE}} template slot. Sits above the CIS line + banner. */
 .rcp .rcp-title { font-size: 1.5rem; line-height: 1.25; margin: 0 0 .3rem; }
