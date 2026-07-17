@@ -268,7 +268,9 @@ a:hover { text-decoration: underline; }
   flex: 0 0 auto; color: var(--muted); font-size: .72rem; font-weight: 400;
   font-variant-numeric: tabular-nums;
 }
-.semsearch-snippet { display: block; color: var(--muted); font-size: .82rem; margin-top: .15rem; }
+/* Full on-page passage of the hit (chunks are small, shown whole). overflow-wrap so a
+   long unbroken token can't force the sticky panel to scroll horizontally. */
+.semsearch-snippet { display: block; color: var(--muted); font-size: .82rem; margin-top: .15rem; overflow-wrap: anywhere; }
 .semsearch-current-item .semsearch-hit-link { background: var(--bg); }
 .semsearch-current-item .semsearch-hit-link strong::before { content: "\25B8"; }
 /* Persistent highlight on the matched paragraph(s) in the RCP body: every ranked hit

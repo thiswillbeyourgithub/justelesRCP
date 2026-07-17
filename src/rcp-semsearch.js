@@ -194,6 +194,12 @@
     return (s || "").replace(/\s+/g, " ").trim().toLowerCase();
   }
 
+  // Collapse whitespace runs + trim, PRESERVING case (unlike norm(), which lowercases
+  // for matching). Used for the text we display to the reader.
+  function collapseWs(s) {
+    return (s || "").replace(/\s+/g, " ").trim();
+  }
+
   // --- hybrid lexical matching ----------------------------------------------
   // A compact, accent-folded French stoplist so ubiquitous words don't inflate the
   // lexical bonus uniformly across sections. Kept deliberately small: it only needs the
@@ -619,6 +625,19 @@
     nav.hidden = true;
   }
 
+  // The text shown for a hit: the FULL on-page passage it resolved to (chunks are
+  // small, so we show the whole paragraph, not a truncated excerpt). When locate() fell
+  // back to the section heading (a linearised table-row / non-contiguous chunk has no
+  // single paragraph, so hit.el IS the heading and carries the sec-N id), there is
+  // nothing sensible to expand, so use the stored snippet.
+  function displayText(hit) {
+    if (hit.el && hit.el.id !== hit.sec) {
+      const full = collapseWs(hit.el.textContent);
+      if (full) return full;
+    }
+    return collapseWs(hit.snippet);
+  }
+
   function renderHits() {
     results.replaceChildren();
     for (const el of highlighted) el.classList.remove("semsearch-current");
@@ -649,7 +668,7 @@
       title.append(name, score);
       const snip = document.createElement("span");
       snip.className = "semsearch-snippet";
-      snip.textContent = hit.snippet;
+      snip.textContent = displayText(hit);
       a.append(title, snip);
       a.addEventListener("click", () => setCurrent(i, true));
       li.append(a);
