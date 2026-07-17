@@ -52,11 +52,15 @@ dist/search-index.json       [{cis,name,slug}] consumed by client-side search
                              (+ {cis,name,slug,eu:1} rows for /eu/ pages below)
 dist/eu/<cis>-<slug>.html    EU-authorization page for a centrally-authorized drug
                              whose RCP lives at the EMA (empty ANSM cell): a full
-                             converted SmPC/notice if data/eu has an overlay, else a
-                             lightweight stub pointing to the EMA. noindex, findable
-                             via search only, NOT in browse
+                             converted SmPC/notice if data/eu has an overlay (INDEXABLE,
+                             in the sitemap), else a lightweight stub pointing to the
+                             EMA (noindex). Findable via search only, NOT in browse
 dist/browse/index.html       A-Z landing (letter grid with counts)
 dist/browse/<letter>.html    alphabetical drug list per letter ('#' -> num.html)
+dist/sitemap.xml robots.txt  SEO: sitemap of every crawlable URL (home, /a-propos,
+                             browse, every /rcp/ + full /eu/) + robots.txt pointing at
+                             it. Every page also bakes a canonical link + Open Graph +
+                             JSON-LD (see the SEO bullet). Origin = SITE_URL constant
 dist/index.html a-propos.html style.css search.js
 dist/app-config.js app-init.js dev-banner.js toc.js app-version.js rcp-semsearch.js  (runtime client assets)
 dist/rcp/<cis>-<slug>.vec.json   OPTIONAL per-page section vectors for server-side
@@ -432,14 +436,19 @@ Key facts that aren't obvious from a single file:
   `_XREF_STOP`/`_XREF_MIN_LEN`; a `(len, token)` tiebreak keeps the pick
   deterministic so the incremental cache doesn't churn on set-iteration order).
   Design that keeps them clean: they ARE in `search-index.json` (an `eu:1` flag
-  routes `search.js` to `/eu/` instead of `/rcp/`), but are `noindex` and kept OUT
-  of `/browse`, so they add no thin-content SEO surface; their own `/eu/` URL space
+  routes `search.js` to `/eu/` instead of `/rcp/`) and kept OUT of `/browse`; a
+  **full** converted `/eu/` page is `INDEXABLE` (real EMA SmPC content, in the
+  sitemap), but a bare **stub** stays `noindex` (thin, just a pointer out) so it adds
+  no thin-content SEO surface. Their own `/eu/` URL space
   keeps them OUT of the RCP cross-link graph (`page_cis_from_dist()` globs
   `dist/rcp`, never `dist/eu`, so full build and the refresh service agree on link
-  targets); they reuse `src/rcp.html` via a `{{HEADEXTRA}}` slot (the noindex meta
-  on stubs, empty on RCP pages) so there is no chrome duplication; and they fold
+  targets); they reuse `src/rcp.html` via a `{{HEADEXTRA}}` slot (which now carries the
+  canonical + Open Graph + JSON-LD, plus the `noindex` meta on stubs only) so there is
+  no chrome duplication; and they fold
   into the incremental manifest (stub CIS never collide with RCP CIS: one has an
-  empty RCP, the other non-empty), so an unchanged rebuild reuses all of them.
+  empty RCP, the other non-empty), so an unchanged rebuild reuses all of them. The
+  manifest also carries a per-CIS `full` flag + `asof` date (never in `search-index.
+  json`), so `write_sitemap` lists full pages with a `<lastmod>` and excludes stubs.
   `src/app-init.js` shows a refresh button on EVERY `/eu/` page: a full page bakes
   `data-rcp-asof` and gets "Rafraîchir maintenant" (+ the >1yr auto-refresh keyed
   off that date), while a stub (which has no `data-rcp-asof`) is detected by its
@@ -634,6 +643,41 @@ Key facts that aren't obvious from a single file:
 - **Precompression (.gz/.br) is baked at build time** so Caddy spends zero CPU
   compressing. `compress()` writes both siblings; the Caddyfile uses
   `precompressed br gzip`.
+- **SEO is baked at build time, from ONE origin constant (`SITE_URL`).** The site
+  is a mirror of public ANSM/EMA data, so the SEO job is discovery + making its
+  advantages (speed, structure, no ads) legible, not unique content. `SITE_URL`
+  (the deployed origin) is a hardcoded constant, deliberately NOT an env var:
+  `render_record`/`render_eu_page` run in BOTH the batch build AND the
+  refresh-service container, so baking it into `build.py`'s source keeps a
+  re-rendered page's canonical/OG identical to a batch-built one with no env-var
+  plumbing to forget (a self-hoster edits the one line). What's emitted, all from
+  `SITE_URL` via `_abs_url`: (1) `dist/sitemap.xml` (`write_sitemap`) listing home,
+  `/a-propos`, the browse pages, every `/rcp/` and the INDEXABLE full `/eu/` pages,
+  each with a `<lastmod>` from its capture date (bare `/eu/` stubs are noindex, so
+  excluded); (2) `dist/robots.txt` (`write_robots`) allowing all but `/api/*` and
+  pointing at the sitemap; (3) a `<link rel="canonical">` on every page
+  (`_canonical_link`); (4) Open Graph + Twitter Card tags (`_social_meta`, no
+  `og:image` yet: no logo asset); (5) JSON-LD (`_jsonld`, `<`-escaped, CSP-exempt as
+  a data block): `WebSite` + `SearchAction` on the home page, and a `Drug` +
+  `MedicalWebPage` @graph on each RCP/full-`/eu/` page (`lastReviewed` = the ANSM
+  revision date, or the EMA PDF ModDate on `/eu/`); (6) a visible breadcrumb +
+  matching `BreadcrumbList` on drug pages (`_breadcrumb`, built together so they
+  never disagree). The per-drug `<meta description>` is dynamic too
+  (`_rcp_description`/`_eu_description`: substance + intent keywords, not one
+  boilerplate on 12k pages). Injection points: the shared `src/rcp.html` fills
+  `{{HEADEXTRA}}` (canonical/OG/JSON-LD/noindex), `{{DESCRIPTION}}` and
+  `{{BREADCRUMB}}` in all three render paths; the hand-written `src/index.html`,
+  `src/a-propos.html` and `src/browse.html` carry a `{{HEAD}}` slot filled by
+  `_static_page_head`/`write_browse`. All of this is baked, so the strict CSP is
+  untouched and the site stays 100% static; the refresh service (single-page
+  rebuilds) does NOT regenerate the sitemap, so a NEW full `/eu/` page enters the
+  sitemap only at the next full build. `asof`/`full` ride in the build manifest (NOT
+  in the client-downloaded `search-index.json`, kept lean). Keep the contract in
+  sync across `SITE_URL`/`_abs_url`/`write_sitemap`/`write_robots`/`_canonical_link`/
+  `_social_meta`/`_jsonld`/`_drug_jsonld`/`_website_jsonld`/`_breadcrumb`/
+  `_rcp_description`/`_eu_description`/`_static_page_head` (build.py), the `{{HEAD}}`/
+  `{{HEADEXTRA}}`/`{{DESCRIPTION}}`/`{{BREADCRUMB}}` slots in `src/*.html`, and
+  `.breadcrumb` in `style.css`. `test_embed.py` covers the pure pieces.
 - **Runtime config is injected, not baked.** Every page loads `/app-config.js`,
   which defines `window.__APP_CONFIG__` (optional umami analytics + a DEV
   banner). `src/app-config.js` is the local-dev fallback (all empty = nothing

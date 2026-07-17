@@ -18,7 +18,8 @@ lents et à but lucratif.
 - Chaque page est un fichier statique précalculé : aucun serveur applicatif,
   aucune base de données, rien à traquer côté visiteur.
 - Recherche instantanée sur ~15 600 médicaments, plus des pages de navigation
-  A-Z indexables par les moteurs de recherche.
+  A-Z pensées pour les moteurs de recherche (plan du site, liens canoniques,
+  données structurées et fil d'Ariane sur chaque page).
 - **Recherche en langage naturel à l'intérieur d'un RCP** : posez une question
   telle que « puis-je le prendre enceinte ? » et la page met en avant les
   passages qui répondent au *sens* de votre question, pas seulement aux mots

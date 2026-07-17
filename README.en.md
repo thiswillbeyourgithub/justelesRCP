@@ -18,7 +18,8 @@ slow, for-profit medicine sites.
 - Every page is a precomputed static file: no application server, no database,
   nothing to track on the visitor's side.
 - Instant search over ~15,600 medicines, plus crawlable A-Z browse pages
-  indexable by search engines.
+  built for search engines (sitemap, canonical links, structured data and a
+  breadcrumb on every page).
 - **Natural-language search inside an RCP**: ask a question like "can I take it
   while pregnant?" and the page surfaces the passages that answer the *meaning*
   of your question, not just the exact words. Your question is analysed on our
