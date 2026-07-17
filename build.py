@@ -3,6 +3,7 @@
 # dependencies = [
 #   "lxml>=5.0",
 #   "brotli>=1.1",
+#   "tqdm>=4.66",
 # ]
 # ///
 """Build the static justelesRCP site from the ANSM RCP dump.
@@ -51,7 +52,7 @@ from lxml import html as lxml_html
 
 import bdpm  # shared, pure-stdlib BDPM tokenising + frequency scoring
 
-__version__ = "0.31.0"  # single source of truth; bump patch/minor per change
+__version__ = "0.31.1"  # single source of truth; bump patch/minor per change
 
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
@@ -2266,13 +2267,20 @@ def main() -> None:
             yield cis, raw, asof
 
     # Parsing + brotli are CPU-bound and independent per record -> fan out.
+    # tqdm is imported lazily here (NOT at module load) so the refresh/embed containers,
+    # which import build.py but never call main(), don't need it installed.
+    from tqdm import tqdm
+
     workers = max(1, (os.cpu_count() or 2) - 1)
     print(f"  rendering with {workers} workers ({len(prev_records)} cached)...")
     with Pool(
         workers, initializer=_init_worker, initargs=(names, page_tpl, xref, _SUBSTANCES)
     ) as pool:
-        for i, entry in enumerate(
-            pool.imap_unordered(render_record, misses(), chunksize=8)
+        # misses() is a lazy generator (raw HTML blobs are too big to materialise for a
+        # count), so the total is unknown: tqdm shows count + rate + elapsed, no ETA.
+        for entry in tqdm(
+            pool.imap_unordered(render_record, misses(), chunksize=8),
+            desc="  rendering RCP pages", unit="page", unit_scale=False,
         ):
             if entry is not None:
                 index.append(entry)
@@ -2282,8 +2290,6 @@ def main() -> None:
                     "name": entry["name"],
                     "slug": entry["slug"],
                 }
-            if (i + 1) % 2000 == 0:
-                print(f"  {i + 1} rendered...")
 
     # EU-authorization stubs: findable landing pages for centrally-authorized
     # drugs whose RCP lives at the EMA (empty ANSM cell -> no normal RCP page).
