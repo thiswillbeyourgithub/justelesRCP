@@ -47,9 +47,9 @@
   const cis = (main.getAttribute("data-cis") || "").trim();
   if (!/^\d{8}$/.test(cis)) return;
 
-  // Must match the server's EMBED_MIN_QUERY_CHARS / EMBED_MAX_QUERY_CHARS (10 / 400);
+  // Must match the server's EMBED_MIN_QUERY_CHARS / EMBED_MAX_QUERY_CHARS (5 / 400);
   // gated here too so we never fire a request the server would 400.
-  const MIN_CHARS = 10;
+  const MIN_CHARS = 5;
   const MAX_CHARS = 400;
   const TOP_K = 8; // distinct passages surfaced per query
   const POLL_MS = 1500; // gap between page-status polls while indexing

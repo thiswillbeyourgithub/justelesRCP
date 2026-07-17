@@ -477,7 +477,7 @@ EMBEDDER: Embedder | None = None  # set in main(), read by _Handler
               envvar="EMBED_INTRA_THREADS",
               help="onnxruntime intra-op threads (env EMBED_INTRA_THREADS). Query embeds "
                    "are tiny; this mainly speeds background page embedding.")
-@click.option("--min-query-chars", type=int, default=10, show_default=True,
+@click.option("--min-query-chars", type=int, default=5, show_default=True,
               envvar="EMBED_MIN_QUERY_CHARS",
               help="Reject queries shorter than this (env EMBED_MIN_QUERY_CHARS).")
 @click.option("--max-query-chars", type=int, default=400, show_default=True,
