@@ -22,6 +22,7 @@ on:
 """
 
 import base64
+import json
 import math
 import os
 import struct
@@ -636,7 +637,33 @@ def test_rcp_page_has_canonical_and_no_leftover_slots():
     assert '<meta property="og:site_name" content="justelesRCP">' in html
     assert f'<meta property="og:url" content="{build.SITE_URL}/rcp/{row["slug"]}">' in html
     assert '<meta name="twitter:card" content="summary">' in html
+    # JSON-LD @graph: a Drug node (with its active ingredient) + a MedicalWebPage.
+    assert '<script type="application/ld+json">' in html
+    ld = json.loads(html.split('<script type="application/ld+json">')[1].split("</script>")[0])
+    types = {node["@type"] for node in ld["@graph"]}
+    assert types == {"Drug", "MedicalWebPage"}, types
+    drug = next(n for n in ld["@graph"] if n["@type"] == "Drug")
+    assert drug["activeIngredient"] == "PARACETAMOL", drug
+    page = next(n for n in ld["@graph"] if n["@type"] == "MedicalWebPage")
+    assert page["lastReviewed"] == "2021-02-03", page  # ANSM revision date (ISO)
+    assert page["mainEntity"]["@id"] == drug["@id"]
     print("ok  test_rcp_page_has_canonical_and_no_leftover_slots")
+
+
+def test_jsonld_escapes_script_breakout_and_website_searchaction():
+    # A '<' in any value must be escaped so a drug name containing '</script>' can't
+    # break out of the JSON-LD block; the escaped form still parses back to the value.
+    blob = build._jsonld({"@type": "Drug", "name": "X </script><script>y"})
+    inner = blob[len('<script type="application/ld+json">'):-len("</script>")]
+    assert "</script>" not in inner and "\\u003c" in inner
+    assert json.loads(inner)["name"] == "X </script><script>y"
+    # WebSite + SearchAction on the home page points at the client-side search.
+    ws = build._website_jsonld()
+    assert ws["@type"] == "WebSite"
+    assert ws["potentialAction"]["@type"] == "SearchAction"
+    assert ws["potentialAction"]["target"]["urlTemplate"] == \
+        f"{build.SITE_URL}/?q={{search_term_string}}"
+    print("ok  test_jsonld_escapes_script_breakout_and_website_searchaction")
 
 
 def test_robots_points_at_sitemap():
@@ -677,4 +704,5 @@ if __name__ == "__main__":
     test_sitemap_lists_indexable_pages()
     test_robots_points_at_sitemap()
     test_rcp_page_has_canonical_and_no_leftover_slots()
+    test_jsonld_escapes_script_breakout_and_website_searchaction()
     print("\nAll tests passed.")

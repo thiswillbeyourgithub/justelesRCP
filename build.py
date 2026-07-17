@@ -52,7 +52,7 @@ from lxml import html as lxml_html
 
 import bdpm  # shared, pure-stdlib BDPM tokenising + frequency scoring
 
-__version__ = "0.32.3"  # single source of truth; bump patch/minor per change
+__version__ = "0.32.4"  # single source of truth; bump patch/minor per change
 
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
@@ -1420,11 +1420,73 @@ _STATIC_META = {
 }
 
 
+def _jsonld(obj: dict) -> str:
+    """Wrap a dict as an inline JSON-LD <script> block. '<' is escaped to \\u003c so a
+    value can never break out of the element (a '</script>' or '<!--' inside a drug
+    name). A data block like this is NOT executed, so the strict script-src CSP does not
+    apply to it (it is exempt from inline-script blocking)."""
+    data = json.dumps(obj, ensure_ascii=False, separators=(",", ":")).replace("<", "\\u003c")
+    return f'<script type="application/ld+json">{data}</script>'
+
+
+def _website_jsonld() -> dict:
+    """WebSite + SearchAction for the home page. The SearchAction advertises the
+    client-side search (/?q=... prefills + runs it) so Google may show a sitelinks
+    search box."""
+    return {
+        "@context": "https://schema.org",
+        "@type": "WebSite",
+        "name": "justelesRCP",
+        "url": _abs_url("/"),
+        "inLanguage": "fr",
+        "description": _STATIC_META["index.html"][1],
+        "potentialAction": {
+            "@type": "SearchAction",
+            "target": {
+                "@type": "EntryPoint",
+                "urlTemplate": _abs_url("/?q={search_term_string}"),
+            },
+            "query-input": "required name=search_term_string",
+        },
+    }
+
+
+def _drug_jsonld(name: str, cis: str, description: str, path: str,
+                 *, reviewed: str = "", substance: str = "",
+                 manufacturer: str = "") -> dict:
+    """schema.org @graph for a drug page: a Drug node (name, active ingredient, holder)
+    + the MedicalWebPage that presents it. Used by both RCP (ANSM) and full /eu/ (EMA)
+    pages; ``reviewed`` is the official text's revision date (lastReviewed)."""
+    url = _abs_url(path)
+    drug: dict = {"@type": "Drug", "@id": url + "#drug", "name": name, "url": url}
+    subs = substance or _SUBSTANCES.get(cis, "")
+    if subs:
+        drug["activeIngredient"] = subs
+    if manufacturer:
+        drug["manufacturer"] = {"@type": "Organization", "name": manufacturer}
+    page: dict = {
+        "@type": "MedicalWebPage",
+        "@id": url,
+        "url": url,
+        "name": f"{name} - RCP",
+        "description": description,
+        "inLanguage": "fr",
+        "mainEntity": {"@id": url + "#drug"},
+    }
+    if reviewed:
+        page["lastReviewed"] = reviewed
+    return {"@context": "https://schema.org", "@graph": [drug, page]}
+
+
 def _static_page_head(asset: str, path: str) -> str:
     """The injected <head> block ({{HEAD}}) for a hand-written static page (home,
-    /a-propos): canonical + Open Graph/Twitter. JSON-LD is layered on in a later step."""
+    /a-propos): canonical + Open Graph/Twitter, plus WebSite + SearchAction JSON-LD on
+    the home page (which drives the sitelinks search box)."""
     title, desc, page_type = _STATIC_META[asset]
-    return _canonical_link(path) + _social_meta(title, desc, path, page_type)
+    head = _canonical_link(path) + _social_meta(title, desc, path, page_type)
+    if asset == "index.html":
+        head += _jsonld(_website_jsonld())
+    return head
 
 
 def _rcp_description(name: str, cis: str) -> str:
@@ -1882,9 +1944,11 @@ def render_record(item: tuple[str, str, str]) -> dict[str, str] | None:
     slug = f"{cis}-{slugify(name)}"
     path = f"/rcp/{slug}"
     description = _rcp_description(name, cis)
+    ansm = _ansm_date(cleaned)  # official revision date, reused by the banner + JSON-LD
     head_extra = (
         _canonical_link(path)
         + _social_meta(f"{name} - RCP", description, path)
+        + _jsonld(_drug_jsonld(name, cis, description, path, reviewed=ansm))
     )
     page = (
         _TPL.replace("{{TITLE}}", _esc(name))
@@ -1894,7 +1958,7 @@ def render_record(item: tuple[str, str, str]) -> dict[str, str] | None:
         .replace("{{TOC}}", _toc_html(toc))
         .replace(
             "{{ASOF}}",
-            _asof_html(_ansm_date(cleaned), asof)
+            _asof_html(ansm, asof)
             + _official_source_html(_source_button(
                 ANSM_PAGE_URL.format(cis=cis),
                 "Consulter le RCP officiel sur le site de l'ANSM →",
@@ -2227,7 +2291,14 @@ def render_eu_page(cis: str, overlay_html: str, meta: tuple[str, str, str] | Non
     # A full /eu/ page carries the real converted EMA SmPC/notice, so it IS indexable
     # (unlike the bare stub below, which only points out and stays noindex). These are
     # high-intent pages for EMA-only drugs (ABILIFY etc.).
-    head_extra = _canonical_link(path) + _social_meta(f"{name} - RCP", description, path)
+    head_extra = (
+        _canonical_link(path)
+        + _social_meta(f"{name} - RCP", description, path)
+        + _jsonld(_drug_jsonld(
+            name, cis, description, path,
+            reviewed=_eu_date(overlay_html), manufacturer=holder,
+        ))
+    )
     page = (
         page_tpl.replace("{{TITLE}}", _esc(name))
         .replace("{{DESCRIPTION}}", _esc(description))
