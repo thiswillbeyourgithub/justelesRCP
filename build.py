@@ -52,7 +52,7 @@ from lxml import html as lxml_html
 
 import bdpm  # shared, pure-stdlib BDPM tokenising + frequency scoring
 
-__version__ = "0.32.0"  # single source of truth; bump patch/minor per change
+__version__ = "0.32.1"  # single source of truth; bump patch/minor per change
 
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
@@ -1301,9 +1301,13 @@ def write_browse(index: list[dict[str, str]]) -> int:
         return '<nav class="azbar">' + "".join(cells) + "</nav>"
 
     def emit(key: str, title: str, desc: str, heading: str, active: str, body: str):
+        # Clean canonical URL: the A-Z landing lives at /browse/, each letter at
+        # /browse/<key> (Caddy resolves both from the .html files).
+        path = "/browse/" if key == "index" else f"/browse/{key}"
         page = (
             tpl.replace("{{TITLE}}", _esc(title))
             .replace("{{DESC}}", _esc(desc))
+            .replace("{{HEAD}}", _canonical_link(path))
             .replace("{{HEADING}}", _esc(heading))
             .replace("{{NAV}}", nav(active))
             .replace("{{BODY}}", body)
@@ -1365,6 +1369,20 @@ def _abs_url(path: str) -> str:
     The single origin (SITE_URL) feeds canonical links, Open Graph URLs, the sitemap
     and robots.txt, so the deployed domain lives in exactly one place."""
     return SITE_URL + path
+
+
+def _canonical_link(path: str) -> str:
+    """<link rel="canonical"> for a page, so a drug is indexed under one absolute URL
+    (guards against trailing-slash / query-string duplicates and is a mild 'this is
+    the definitive copy' signal for our mirror of the public ANSM/EMA data)."""
+    return f'<link rel="canonical" href="{_esc(_abs_url(path))}">'
+
+
+def _static_page_head(asset: str, path: str) -> str:
+    """The injected <head> block ({{HEAD}}) for a hand-written static page (home,
+    /a-propos): its canonical link. Open Graph + JSON-LD are layered on top of this
+    in later steps, keyed off ``asset``."""
+    return _canonical_link(path)
 
 
 def _sitemap_url(path: str, lastmod: str = "") -> str:
@@ -1792,7 +1810,7 @@ def render_record(item: tuple[str, str, str]) -> dict[str, str] | None:
     slug = f"{cis}-{slugify(name)}"
     page = (
         _TPL.replace("{{TITLE}}", _esc(name))
-        .replace("{{HEADEXTRA}}", "")  # RCP pages are indexable; only /eu/ stubs opt out
+        .replace("{{HEADEXTRA}}", _canonical_link(f"/rcp/{slug}"))
         .replace("{{CIS}}", _esc(cis))
         .replace("{{TOC}}", _toc_html(toc))
         .replace(
@@ -2130,7 +2148,7 @@ def render_eu_page(cis: str, overlay_html: str, meta: tuple[str, str, str] | Non
         # A full /eu/ page carries the real converted EMA SmPC/notice, so it IS
         # indexable (unlike the bare stub below, which only points out and stays
         # noindex). These are high-intent pages for EMA-only drugs (ABILIFY etc.).
-        .replace("{{HEADEXTRA}}", "")
+        .replace("{{HEADEXTRA}}", _canonical_link(f"/eu/{slug}"))
         .replace("{{CIS}}", _esc(cis))
         .replace("{{TOC}}", _toc_html(_eu_toc(overlay_html)))
         .replace("{{ASOF}}", asof)
@@ -2251,7 +2269,13 @@ def build_stubs(
         else:
             page = (
                 page_tpl.replace("{{TITLE}}", _esc(name))
-                .replace("{{HEADEXTRA}}", '<meta name="robots" content="noindex">')
+                # A bare stub is thin (just a pointer out), so it stays noindex; it
+                # still carries a self-canonical so any inbound link resolves to one URL.
+                .replace(
+                    "{{HEADEXTRA}}",
+                    _canonical_link(f"/eu/{slug}")
+                    + '<meta name="robots" content="noindex">',
+                )
                 .replace("{{CIS}}", _esc(cis))
                 .replace("{{TOC}}", "")
                 .replace("{{ASOF}}", _ref_links_html(cis, name, include_ema=False))
@@ -2443,8 +2467,19 @@ def main() -> None:
         "toc.js",
         "rcp-semsearch.js",
     )
+    # index.html + a-propos.html are hand-written static pages carrying a {{HEAD}}
+    # placeholder; inject their canonical/social/JSON-LD head (built from the one
+    # SITE_URL origin) instead of copying verbatim. Everything else is copied as-is.
+    head_pages = {"index.html": "/", "a-propos.html": "/a-propos"}
     for asset in static_assets:
-        shutil.copy(SRC / asset, DIST / asset)
+        src = SRC / asset
+        if asset in head_pages:
+            html = src.read_text(encoding="utf-8").replace(
+                "{{HEAD}}", _static_page_head(asset, head_pages[asset])
+            )
+            (DIST / asset).write_text(html, encoding="utf-8")
+        else:
+            shutil.copy(src, DIST / asset)
     for f in (*static_assets, "app-version.js", "search-index.json"):
         compress(DIST / f)
 

@@ -584,6 +584,53 @@ def test_sitemap_lists_indexable_pages():
     print("ok  test_sitemap_lists_indexable_pages")
 
 
+_RCP_TEMPLATE_SLOTS = (
+    "{{TITLE}}", "{{DESCRIPTION}}", "{{HEADEXTRA}}", "{{HEAD}}", "{{CIS}}",
+    "{{BREADCRUMB}}", "{{TOC}}", "{{ASOF}}", "{{CONTENT}}", "{{XREF}}",
+)
+
+
+def _render_one_rcp(d):
+    """Render a minimal RCP page in a temp DIST, returning (row, html). Sets the
+    module globals render_record reads (normally primed by the pool worker)."""
+    tpl = (Path(__file__).parent / "src" / "rcp.html").read_text()
+    raw = ('<html><body><div id="textDocument">'
+           '<p class="AmmAnnexeTitre1">1. DENOMINATION DU MEDICAMENT</p>'
+           '<p>DOLIPRANE 1000 mg, comprime. Contient du paracetamol.</p>'
+           '<p class="AmmAnnexeTitre1">4.1 Indications therapeutiques</p>'
+           '<p>Traitement symptomatique des douleurs.</p>'
+           '<span class="DateNotif">ANSM - Mis a jour le : 03/02/2021</span>'
+           '</div></body></html>')
+    saved = (build.DIST, build._TPL, build._NAMES, build._XREF, build._SUBSTANCES)
+    build.DIST = Path(d)
+    (Path(d) / "rcp").mkdir(exist_ok=True)
+    build._TPL = tpl
+    build._NAMES = {"12345678": "DOLIPRANE 1000 mg, comprime"}
+    build._XREF = {}
+    build._SUBSTANCES = {"12345678": "PARACETAMOL"}
+    try:
+        row = build.render_record(("12345678", raw, "2022-05-02"))
+        html = (Path(d) / "rcp" / f"{row['slug']}.html").read_text()
+    finally:
+        (build.DIST, build._TPL, build._NAMES, build._XREF,
+         build._SUBSTANCES) = saved
+    return row, html
+
+
+def test_rcp_page_has_canonical_and_no_leftover_slots():
+    # Renders a real RCP page through the shared template and asserts the canonical is
+    # injected AND no template slot survived unfilled (guards every render path that
+    # fills the rcp.html slots). '}}' can legitimately appear inside JSON-LD, so we
+    # check the named slot tokens, not a bare '{{'.
+    with tempfile.TemporaryDirectory() as d:
+        row, html = _render_one_rcp(d)
+    for slot in _RCP_TEMPLATE_SLOTS:
+        assert slot not in html, f"unfilled template slot {slot}"
+    assert f'<link rel="canonical" href="{build.SITE_URL}/rcp/{row["slug"]}">' in html
+    assert row["asof"] == "2022-05-02"  # rides back for the sitemap, not into search-index
+    print("ok  test_rcp_page_has_canonical_and_no_leftover_slots")
+
+
 def test_robots_points_at_sitemap():
     with tempfile.TemporaryDirectory() as d:
         saved = build.DIST
@@ -621,4 +668,5 @@ if __name__ == "__main__":
     test_duplicate_chunks_within_page_dropped()
     test_sitemap_lists_indexable_pages()
     test_robots_points_at_sitemap()
+    test_rcp_page_has_canonical_and_no_leftover_slots()
     print("\nAll tests passed.")
