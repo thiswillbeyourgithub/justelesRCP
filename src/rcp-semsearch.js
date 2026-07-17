@@ -120,7 +120,7 @@
   const input = document.createElement("input");
   input.type = "search";
   input.className = "semsearch-input";
-  input.placeholder = "ex. : « contraception et reproduction », « prise des repas »";
+  input.placeholder = "ex. : « Impact des repas sur la biodisponibilité »";
   input.setAttribute("enterkeyhint", "search");
   input.setAttribute("aria-label", "Recherche sémantique dans ce RCP");
   input.setAttribute("minlength", String(MIN_CHARS));
