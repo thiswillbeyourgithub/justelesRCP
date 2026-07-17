@@ -659,10 +659,13 @@
     results.replaceChildren();
     for (const el of highlighted) el.classList.remove("semsearch-current");
     highlighted = [];
+    let prevSec = null; // group consecutive hits that share a section heading
     hits.forEach((hit, i) => {
       hit.el.classList.add("semsearch-hit");
       highlighted.push(hit.el);
+      const sameSection = hit.sec === prevSec;
       const li = document.createElement("li");
+      if (sameSection) li.className = "semsearch-cont";
       const a = document.createElement("button");
       a.type = "button";
       a.className = "semsearch-hit-link";
@@ -670,7 +673,10 @@
       const title = document.createElement("strong");
       const name = document.createElement("span");
       name.className = "semsearch-hit-name";
-      name.textContent = head ? head.textContent.trim() : hit.sec;
+      // Print the section heading ONCE per run of same-section hits; continuation
+      // paragraphs leave it blank (a dashed divider separates them) but keep their own
+      // score, which the empty flex-grow name still pushes to the right edge.
+      name.textContent = sameSection ? "" : head ? head.textContent.trim() : hit.sec;
       title.append(name, buildScore(hit));
       const snip = document.createElement("span");
       snip.className = "semsearch-snippet";
@@ -679,6 +685,7 @@
       a.addEventListener("click", () => setCurrent(i, true));
       li.append(a);
       results.append(li);
+      prevSec = hit.sec;
     });
     nav.hidden = hits.length === 0;
   }

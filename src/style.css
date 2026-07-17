@@ -252,6 +252,11 @@ a:hover { text-decoration: underline; }
   max-height: 40vh; overflow-y: auto;
 }
 .semsearch-results li + li { border-top: 1px solid var(--line); }
+/* Consecutive hits from the SAME section: heading printed once, the rest are
+   continuation paragraphs. A dashed divider (vs the solid section-boundary one) and a
+   small indent read them as "next passage in this section". */
+.semsearch-results li.semsearch-cont { border-top-style: dashed; }
+.semsearch-cont .semsearch-hit-link { padding-left: .9rem; }
 .semsearch-hit-link {
   display: block; width: 100%; box-sizing: border-box; text-align: left;
   font: inherit; cursor: pointer; padding: .5rem .3rem;
