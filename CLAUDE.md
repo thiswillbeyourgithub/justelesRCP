@@ -377,10 +377,16 @@ Key facts that aren't obvious from a single file:
   `.rcp-asof` card so it reads as belonging to the capture dates; a stub (no card,
   no `data-rcp-asof`) keeps it just under the `.cis` line instead. Directly under the banner,
   `_official_source_html(url, label)` (injected into the same `{{ASOF}}` slot)
-  renders a `.rcp-source` button to the authoritative page (ANSM `ANSM_PAGE_URL`
-  on `/rcp/`, the EMA on `/eu/` stubs) so a reader who doubts our copy or spots a
-  rendering bug can open the official one; it shares the `.official-link` button
-  style with the stub's EMA button.
+  renders a `.rcp-source` link to the authoritative page (ANSM `ANSM_PAGE_URL`,
+  labelled "Ouvrir la source officielle", on `/rcp/`; the EMA PDF + search on full
+  `/eu/` pages) so a reader who doubts our copy or spots a rendering bug can open
+  the official one. On RCP pages `app-init.js` relocates this lone `.official-link`
+  UP into the `.rcp-refresh` control (after the button, with an "ou" separator), so
+  the card reads "Rafraîchir maintenant ou Ouvrir la source officielle"; with no JS
+  it stays a standalone `.rcp-source` link below the card. `/eu/` full pages carry
+  TWO source buttons, so they are left in their own `.rcp-source` row (not paired).
+  It shares the `.official-link` button style with the stub's EMA button (and, once
+  relocated, with the refresh button via `.rcp-refresh .official-link`).
 - **Every page has an external-reference pill row** (`_ref_links_html`, injected
   into the same `{{ASOF}}` slot): a `.rcp-refs` row of small `.ref-pill` buttons to
   **BDPM** (this drug's official record, `ANSM_PAGE_URL` keyed by CIS), then

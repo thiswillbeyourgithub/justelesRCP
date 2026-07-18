@@ -52,7 +52,7 @@ from lxml import html as lxml_html
 
 import bdpm  # shared, pure-stdlib BDPM tokenising + frequency scoring
 
-__version__ = "0.34.2"  # single source of truth; bump patch/minor per change
+__version__ = "0.34.3"  # single source of truth; bump patch/minor per change
 
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
@@ -2006,7 +2006,7 @@ def render_record(item: tuple[str, str, str]) -> dict[str, str] | None:
             _asof_html(ansm, asof)
             + _official_source_html(_source_button(
                 ANSM_PAGE_URL.format(cis=cis),
-                "Consulter le RCP officiel sur le site de l'ANSM →",
+                "Ouvrir la source officielle",
             ))
             + _ref_links_html(cis, name),
         )

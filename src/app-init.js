@@ -151,7 +151,23 @@
       : "Rafraîchir maintenant";
     const msg = document.createElement("span");
     msg.className = "msg";
-    box.append(btn, msg);
+    box.append(btn);
+    // Pull the server-rendered "Ouvrir la source officielle" link (baked as a
+    // no-JS fallback in .rcp-source) up INTO this control, right after the button
+    // with an "ou" separator, so the reader sees "Rafraîchir maintenant ou Ouvrir
+    // la source officielle" inside the freshness card. Only a lone source link is
+    // paired (ANSM RCP pages); /eu/ pages carry two source buttons, left in their
+    // own row below the card. No .rcp-source (e.g. a stub) => nothing to pair.
+    const srcP = document.querySelector(".rcp-source");
+    if (srcP && srcP.querySelectorAll(".official-link").length === 1) {
+      const link = srcP.querySelector(".official-link");
+      const or = document.createElement("span");
+      or.className = "rcp-refresh-or";
+      or.textContent = "ou";
+      box.append(or, link);
+      srcP.remove();
+    }
+    box.append(msg);
     // Prefer to sit INSIDE the freshness "carton" (.rcp-asof), so the refresh
     // control reads as belonging to those capture dates. A stub has no such card
     // (no asofEl): fall back to just after the CIS line, else prepend to main.

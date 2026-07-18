@@ -196,15 +196,22 @@ a:hover { text-decoration: underline; }
 /* On-demand refresh control (built by app-init.js when the companion service is
    reachable). Lives INSIDE the .rcp-asof freshness card (a stub, which has no
    card, keeps it just under the CIS line). background:var(--bg) so the button
-   reads as a control against the card's --card fill. */
+   reads as a control against the card's --card fill. app-init.js also relocates
+   the server-rendered "Ouvrir la source officielle" link (.official-link) into
+   this control, after the button, so it shares the button look here. */
 .rcp-refresh { margin: .5rem 0 0; font-size: .85rem; }
-.rcp-refresh button {
+.rcp-refresh button, .rcp-refresh .official-link {
+  display: inline-block; vertical-align: middle;
   font: inherit; cursor: pointer; color: var(--accent);
   background: var(--bg); border: 1px solid var(--line);
   border-radius: .4rem; padding: .3rem .7rem;
 }
-.rcp-refresh button:hover { border-color: var(--accent); }
+.rcp-refresh button:hover, .rcp-refresh .official-link:hover {
+  border-color: var(--accent); text-decoration: none;
+}
 .rcp-refresh button:disabled { color: var(--muted); cursor: default; opacity: .7; }
+/* "ou" separator between the refresh button and the relocated source link. */
+.rcp-refresh .rcp-refresh-or { vertical-align: middle; margin: 0 .4rem; color: var(--muted); }
 .rcp-refresh .msg { color: var(--muted); }
 /* Per-drug semantic search (src/rcp-semsearch.js): a collapsible box that asks the
    reader for a natural-language question and highlights the closest passages with a
