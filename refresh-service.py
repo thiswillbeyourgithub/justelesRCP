@@ -70,6 +70,7 @@ import sys
 import threading
 import time
 import urllib.request
+from collections import deque
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -202,7 +203,8 @@ class Refresher:
                  timeout: float, gzip_overlay: bool, user_agent: str, queue_max: int,
                  crawl: bool = True, crawl_ttl_days: int = 365,
                  eu_crawl: bool = True, eu_rate: float = 300.0,
-                 eu_crawl_ttl_days: int = 180, embed_notify_url: str = "") -> None:
+                 eu_crawl_ttl_days: int = 180, embed_notify_url: str = "",
+                 demand_hourly_max: int = 0) -> None:
         self.rate = rate
         self.demand_rate = demand_rate
         self.min_interval = min_interval
@@ -227,14 +229,26 @@ class Refresher:
         self._manifest = scrape.load_manifest()
         # On-demand lane throttle mark (each crawler lane owns its own, see _CrawlLane).
         self._last_demand_fetch = 0.0
+        # Global anti-amplification ceiling on the ON-DEMAND lane: a rolling-hour cap
+        # on how many distinct on-demand fetches we will ever START, so nobody can
+        # turn this service into a high-volume ANSM/EMA scraper by enumerating CIS.
+        # The per-CIS min-interval floor stops hammering ONE drug; this stops
+        # hammering the WHOLE catalog (which is what makes our IP look abusive to a
+        # government site). The crawler is exempt: it is TTL-bounded and IS the
+        # intended steady background traffic. 0 disables the ceiling. Monotonic
+        # timestamps of accepted on-demand fetches, pruned to the last hour under
+        # ``_lock`` (see _demand_budget_ok_locked).
+        self.demand_hourly_max = max(0, demand_hourly_max)
+        self._demand_window: deque[float] = deque()
         # Crawl statistics, surfaced in the logs and at GET /api/stats. Counts of
         # *completed* refreshes by outcome (ok/empty/error) and by trigger source
         # (user = button, auto = >1yr page-load refresh, crawl = background crawler),
         # plus request-level short-circuits (fresh = min-interval hit, busy = queue
-        # full). ok+empty+error == user+auto+crawl by construction.
+        # full, budget = the hourly on-demand ceiling was hit). ok+empty+error ==
+        # user+auto+crawl by construction.
         self._stats = {"ok": 0, "empty": 0, "error": 0,
                        "user": 0, "auto": 0, "crawl": 0,
-                       "fresh": 0, "busy": 0}
+                       "fresh": 0, "busy": 0, "budget": 0}
         # Prime build.py's render globals (names + page template + cross-drug
         # backlink index) once, so render_record() can run outside its normal pool
         # worker AND a refreshed page carries the same "Médicaments liés" links a
@@ -568,6 +582,25 @@ class Refresher:
 
     # -- public API ----------------------------------------------------------
 
+    def _demand_budget_ok_locked(self) -> bool:
+        """True if the rolling-hour on-demand ceiling has room for one more fetch.
+
+        CALLER MUST HOLD ``_lock``. Prunes the window of accepted-fetch timestamps to
+        the last hour in place, then compares its size to ``demand_hourly_max`` (0 =
+        unlimited). This is the catalog-wide anti-amplification cap: no matter how
+        many distinct CIS an attacker enumerates (via the button or the embed
+        service's crawl trigger, both on-demand), the service starts at most this
+        many outbound scrapes per hour. The crawler is not counted (separate lane,
+        TTL-bounded, the intended steady traffic).
+        """
+        if not self.demand_hourly_max:
+            return True
+        cutoff = time.monotonic() - 3600.0
+        window = self._demand_window
+        while window and window[0] < cutoff:
+            window.popleft()
+        return len(window) < self.demand_hourly_max
+
     def request(self, cis: str, source: str = "auto") -> dict:
         """Enqueue an on-demand refresh for one CIS; return a small status dict.
 
@@ -580,7 +613,8 @@ class Refresher:
 
         ``fresh``  - refreshed within min_interval, nothing to do.
         ``queued`` - accepted (either just now or already in flight).
-        ``busy``   - the on-demand lane is full; the caller should retry later.
+        ``busy``   - the on-demand lane is full OR the hourly on-demand ceiling was
+                     hit (see ``demand_hourly_max``); the caller should retry later.
         """
         # "crawl" is an internal source the caller may not set; anything else
         # unrecognised collapses to "auto". _SOURCES stays the canonical set.
@@ -601,12 +635,20 @@ class Refresher:
                 if source == "user":
                     self._pending[cis] = "user"
             else:
+                # Catalog-wide anti-amplification ceiling before we commit to a
+                # fetch: distinct-CIS enumeration cannot exceed this many outbound
+                # on-demand fetches per hour. Shed as "busy" (same as a full queue),
+                # so the caller just retries later.
+                if not self._demand_budget_ok_locked():
+                    self._stats["budget"] += 1
+                    return {"status": "busy"}
                 try:
                     self._demand.put_nowait(cis)
                 except queue.Full:
                     self._stats["busy"] += 1
                     return {"status": "busy"}
                 self._pending[cis] = source
+                self._demand_window.append(time.monotonic())
                 pending_n = self._demand.qsize()
         if not already:
             logger.info("queued {} [{}] (on-demand pending={})", cis, source, pending_n)
@@ -1002,6 +1044,13 @@ REFRESHER: Refresher | None = None  # set in main(), read by _Handler
               envvar="REFRESH_QUEUE_MAX",
               help="Max pending ON-DEMAND refreshes; further requests get 'busy' "
                    "(env REFRESH_QUEUE_MAX). The crawler is unbounded (it holds no queue).")
+@click.option("--demand-hourly-max", type=int, default=300, show_default=True,
+              envvar="REFRESH_DEMAND_HOURLY_MAX",
+              help="Global ceiling on ON-DEMAND (button/auto) outbound fetches per "
+                   "rolling hour (env REFRESH_DEMAND_HOURLY_MAX). Anti-amplification "
+                   "cap: distinct-CIS enumeration cannot turn this service into a "
+                   "high-volume ANSM/EMA scraper. Past it, requests get 'busy'. The "
+                   "crawler is exempt (TTL-bounded). 0 disables the ceiling.")
 @click.option("--crawl/--no-crawl", default=True, show_default=True,
               envvar="REFRESH_CRAWL",
               help="Run the perpetual background crawler that freshens every page in "
@@ -1050,8 +1099,8 @@ REFRESHER: Refresher | None = None  # set in main(), read by _Handler
                    "per-request DEBUG chatter (status polls, refresh POSTs) out of the "
                    "logs; the /api/health check is never logged at any level.")
 def main(host: str, port: int, rate: float, demand_rate: float, min_interval: float,
-         queue_max: int, crawl: bool, crawl_ttl_days: int, eu_crawl: bool,
-         eu_rate: float, eu_crawl_ttl_days: int, timeout: float,
+         queue_max: int, demand_hourly_max: int, crawl: bool, crawl_ttl_days: int,
+         eu_crawl: bool, eu_rate: float, eu_crawl_ttl_days: int, timeout: float,
          gzip_overlay: bool, user_agent: str | None, embed_notify_url: str,
          log_level: str) -> None:
     """Run the RCP refresh service (see module docstring)."""
@@ -1070,7 +1119,7 @@ def main(host: str, port: int, rate: float, demand_rate: float, min_interval: fl
                           timeout=timeout, gzip_overlay=gzip_overlay, user_agent=ua,
                           queue_max=queue_max, crawl=crawl, crawl_ttl_days=crawl_ttl_days,
                           eu_crawl=eu_crawl, eu_rate=eu_rate, eu_crawl_ttl_days=eu_crawl_ttl_days,
-                          embed_notify_url=embed_notify_url)
+                          embed_notify_url=embed_notify_url, demand_hourly_max=demand_hourly_max)
     REFRESHER.start()
 
     # SIGHUP arms a full re-crawl of both lanes without dropping any overlays
@@ -1086,8 +1135,10 @@ def main(host: str, port: int, rate: float, demand_rate: float, min_interval: fl
     signal.signal(signal.SIGHUP, _on_recrawl)
 
     logger.info("refresh service on {}:{} (crawl-rate {}s, demand-rate {}s, "
-                "min-interval {}s, overlay={}, rcp-crawl={}, eu-crawl={}, embed-notify={})",
+                "min-interval {}s, demand-hourly-max={}, overlay={}, rcp-crawl={}, "
+                "eu-crawl={}, embed-notify={})",
                 host, port, rate, demand_rate, min_interval,
+                demand_hourly_max or "off",
                 "gzip" if gzip_overlay else "plain",
                 f"on ttl={crawl_ttl_days}d" if crawl else "off",
                 f"on rate={eu_rate}s ttl={eu_crawl_ttl_days}d" if eu_crawl else "off",

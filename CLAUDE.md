@@ -235,7 +235,15 @@ Key facts that aren't obvious from a single file:
   point). The ON-DEMAND lane (`_demand`, worker `_demand_run`; the button + the >1yr
   auto-refresh) is throttled by the small `REFRESH_DEMAND_RATE_SECONDS` (default 5s),
   so a lone click after an idle period fetches almost at once, and is bounded by
-  `REFRESH_QUEUE_MAX` (sheds load as "busy"). The perpetual CRAWLER (worker
+  `REFRESH_QUEUE_MAX` (sheds load as "busy") AND by a catalog-wide
+  anti-amplification ceiling `REFRESH_DEMAND_HOURLY_MAX` (default 300, 0=off): a
+  rolling-hour cap on distinct on-demand outbound fetches (`_demand_budget_ok_locked`
+  prunes `_demand_window` under `_lock`), so nobody can turn the service into a
+  high-volume ANSM/EMA scraper by enumerating CIS (the per-CIS floor stops hammering
+  ONE drug, this stops hammering the WHOLE catalog); over-budget requests get "busy"
+  and a `budget` stat ticks. The crawler is exempt (TTL-bounded, the intended steady
+  traffic). It complements, not replaces, the per-IP `rate_limit` on `/api/*` in the
+  Caddyfile. The perpetual CRAWLER (worker
   `_crawl_run`) trickles on the large `REFRESH_RATE_SECONDS` (+ jitter, default 120s).
   Both lanes are still SERIAL (one worker each) and share the per-CIS min-interval
   floor (`REFRESH_MIN_INTERVAL_SECONDS`, default 1h), so repeat clicks and many
