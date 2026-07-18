@@ -355,6 +355,9 @@ class _Handler(BaseHTTPRequestHandler):
     """
 
     server_version = "justelesRCP-embed"
+    # Bound a stalled read so a slow client cannot pin a server thread. Applied as
+    # the socket timeout by StreamRequestHandler; defence-in-depth behind Caddy.
+    timeout = 60
 
     def _send(self, code: int, payload: dict) -> None:
         body = json.dumps(payload).encode("utf-8")

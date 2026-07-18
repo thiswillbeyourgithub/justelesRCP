@@ -968,6 +968,12 @@ class _Handler(BaseHTTPRequestHandler):
     """
 
     server_version = "justelesRCP-refresh"
+    # Bound a stalled read (a client that opens a connection and sends bytes
+    # slowly) so it cannot pin a worker thread indefinitely. StreamRequestHandler
+    # applies this as the socket timeout. Caddy fronts us and manages its own
+    # upstream pool, so this is defence-in-depth against a slowloris that somehow
+    # reaches the service directly.
+    timeout = 60
 
     def _send(self, code: int, payload: dict) -> None:
         body = json.dumps(payload).encode("utf-8")
@@ -987,6 +993,38 @@ class _Handler(BaseHTTPRequestHandler):
             return
         logger.debug("http {} - {}", self.address_string(), fmt % args)
 
+    def _content_length(self) -> int | None:
+        """Parsed Content-Length: 0 when absent, a clamped non-negative int when
+        valid, None when present but not a number (a malformed header should get a
+        clean 400, not an unhandled ValueError -> 500 traceback)."""
+        raw = self.headers.get("Content-Length")
+        if not raw:
+            return 0
+        try:
+            return max(0, int(raw))
+        except ValueError:
+            return None
+
+    def _drain_body(self) -> None:
+        """Read and discard any request body so a leftover body cannot desync the
+        keep-alive connection Caddy holds to us. No endpoint here consumes a body
+        (the frontend POSTs are empty), so we drain unconditionally and cap the
+        read: an over-long or malformed body just closes the connection instead of
+        tying up the socket. Caddy also caps the body upstream (request_body), so
+        this is the belt to that suspenders."""
+        length = self._content_length()
+        if not length:
+            if length is None:  # malformed header: don't trust the framing, close
+                self.close_connection = True
+            return
+        if length > 65536:
+            self.close_connection = True
+            return
+        try:
+            self.rfile.read(length)
+        except Exception:
+            self.close_connection = True
+
     def do_GET(self) -> None:
         if self.path == "/api/health":
             self._send(200, {"ok": True})
@@ -1003,6 +1041,7 @@ class _Handler(BaseHTTPRequestHandler):
         self._send(404, {"error": "not found"})
 
     def do_POST(self) -> None:
+        self._drain_body()  # no POST here consumes a body; drain+cap any stray one
         parts = urlsplit(self.path)  # strip any ?src=... query before matching
         m = re.fullmatch(r"/api/refresh/(\d{8})", parts.path)
         if not m:
