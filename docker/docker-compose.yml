@@ -7,7 +7,15 @@
 # it into /gen/app-config.js at startup and Caddy serves that for /app-config.js.
 services:
   web:
-    image: caddy:2-alpine
+    # Custom Caddy image (docker/web.Dockerfile): the stock caddy:2-alpine has no
+    # rate-limit module, so caddy-ratelimit is baked in via xcaddy to per-IP
+    # throttle the exposed /api/* scraping endpoints (see docker/Caddyfile). The
+    # Dockerfile COPYs nothing from the context, so it stays this small docker/ dir
+    # (not the repo root the refresh/embed images use). A plain `up` reuses the old
+    # image; rebuild with `up --build` after changing the Caddyfile/web.Dockerfile.
+    build:
+      context: .
+      dockerfile: web.Dockerfile
     # Stable name so deploy.sh can `docker inspect justelesrcp` for health checks
     # (without it the container would be the project-derived `docker-web-1`).
     container_name: justelesrcp

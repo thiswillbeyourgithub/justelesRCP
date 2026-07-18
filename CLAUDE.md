@@ -782,13 +782,38 @@ Restart is not needed (Caddy reads the mounted dir live), but a
 
 - Caddy listens on **:8459 plain HTTP**; TLS is expected to be terminated by an
   upstream reverse proxy you already run. There is no ACME/TLS config here.
+- **The exposed `/api/*` scraping endpoints are rate-limited at the edge.** The
+  `web` image is NOT the stock `caddy:2-alpine`: it is a custom xcaddy build
+  (`docker/web.Dockerfile`, compose `build: context: .`) that bakes in the
+  `caddy-ratelimit` plugin (the stock image has no rate-limit module), so the
+  Caddyfile can `rate_limit` `/api/*` and `/api/sem/*` **per client IP** (returns
+  429 over the limit). Because requests arrive via your upstream TLS proxy, a
+  global-options `servers { trusted_proxies static {$TRUSTED_PROXIES:private_ranges} }`
+  is what lets `{http.request.client_ip}` (the rate-limit key) resolve to the real
+  visitor instead of the proxy IP; set `TRUSTED_PROXIES` if your proxy is on a
+  public IP. The limits are tunable via `API_RATE_EVENTS`/`API_RATE_WINDOW` and
+  `SEM_RATE_EVENTS`/`SEM_RATE_WINDOW` (env, read by Caddy). Both API handles also
+  `request_body { max_size 16KB }` (reject oversized POSTs at the edge) and the two
+  operational stats endpoints (`/api/stats`, `/api/sem/stats`) are **blocked**
+  (`respond 404`, exact-path `handle` before the wildcards) so they are reachable
+  only from inside the docker network, not publicly. These edge limits COMPLEMENT
+  the refresh service's global hourly scrape ceiling (`REFRESH_DEMAND_HOURLY_MAX`,
+  which caps the aggregate) and its per-CIS min-interval floor; keep all three.
+  The `order rate_limit before reverse_proxy` global option is required (the plugin
+  directive is non-standard). `web.Dockerfile` leaves the plugin version UNPINNED
+  (a TODO): pin it for reproducible builds. Rebuild with `up --build` after any
+  Caddyfile/web.Dockerfile change. Keep the contract in sync across
+  `docker/web.Dockerfile`, the global block + the `/api/*` and `/api/sem/*`
+  `handle`s in `docker/Caddyfile`, the `web` `build:` in `docker/docker-compose.yml`,
+  and the rate-limit knobs in `docker/env.example`.
 - The container runs `read_only: true`, `cap_drop: ALL`,
   `no-new-privileges`, with tmpfs for Caddy's scratch dirs (`/tmp`, `/config`,
   `/data`, and `/gen` for the rendered `app-config.js`). Keep it that way; if
   Caddy needs a new writable path, add a tmpfs mount rather than dropping
   read-only.
 - `cap_drop: ALL` is paired with `cap_add: [NET_BIND_SERVICE]`, and that one cap
-  must stay. The `caddy:2-alpine` binary ships with `setcap
+  must stay. The Caddy binary (whether stock `caddy:2-alpine` or our xcaddy build,
+  which is copied onto that same base) ships with `setcap
   cap_net_bind_service=+ep`; the effective bit makes `execve()` fail with EPERM
   ("Operation not permitted", crash loop at the `exec caddy` line of
   entrypoint.sh) if the cap is absent from the bounding set that `cap_drop: ALL`

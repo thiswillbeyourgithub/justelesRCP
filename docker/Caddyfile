@@ -1,4 +1,24 @@
 # justelesRCP - static file server, no TLS in-container (front it with your proxy).
+{
+	# rate_limit is from the caddy-ratelimit plugin, baked into the custom image
+	# (docker/web.Dockerfile) since the stock caddy:2-alpine has no such module. It
+	# is not a standard directive, so declare where it runs in the handler chain:
+	# just before the proxy, so a flood is rejected before we dial the upstream.
+	order rate_limit before reverse_proxy
+
+	# Per-IP rate limiting needs the real visitor IP, but requests reach Caddy via
+	# your upstream TLS proxy, so Caddy's immediate peer is that proxy, not the
+	# visitor. Trust the proxy and read X-Forwarded-For to recover the client IP
+	# ({http.request.client_ip}). `private_ranges` trusts loopback + RFC1918 peers,
+	# the usual case (the proxy runs on the same host / docker network). If your
+	# proxy sits on a PUBLIC IP, set TRUSTED_PROXIES to its address/CIDR in
+	# docker/.env, else client_ip falls back to the proxy IP and the per-IP limit
+	# collapses to a single global bucket.
+	servers {
+		trusted_proxies static {$TRUSTED_PROXIES:private_ranges}
+	}
+}
+
 :8459 {
 	encode zstd gzip
 
@@ -14,6 +34,18 @@
 		file_server
 	}
 
+	# Operational stats endpoints (queue depths, crawl progress, refresh counters)
+	# are not used by the site frontend and would reveal the scraping infra's shape
+	# to anyone, so they are not exposed publicly: reach them from inside the docker
+	# network or via `docker exec`. Exact-path `handle`s before the wildcards below,
+	# and `handle` is first-match, so these win over /api/sem/* and /api/*.
+	handle /api/stats {
+		respond 404
+	}
+	handle /api/sem/stats {
+		respond 404
+	}
+
 	# Per-drug semantic-search API -> the embed service container (embed-service.py
 	# on :8461, not published to the host). MORE SPECIFIC than /api/* below, so it
 	# must come first. Same-origin: the query POST (/api/sem/embed) is covered by the
@@ -21,6 +53,23 @@
 	# the search box degrades to an "indisponible" note (the encoder model is no
 	# longer shipped to the browser, so nothing else regresses).
 	handle /api/sem/* {
+		# Cap the request body at the edge so a giant POST never reaches the small
+		# Python service (the query endpoint also caps internally at 8 KiB).
+		request_body {
+			max_size 16KB
+		}
+		# Per-IP rate limit (caddy-ratelimit). A semantic-search session sends a
+		# burst (page embed + status polls + one debounced embed per keystroke), so
+		# the window is deliberately generous: it only stops a crude flood, while the
+		# embed service's own concurrency semaphore bounds CPU. Tune via
+		# SEM_RATE_EVENTS / SEM_RATE_WINDOW in docker/.env.
+		rate_limit {
+			zone sem {
+				key {http.request.client_ip}
+				events {$SEM_RATE_EVENTS:120}
+				window {$SEM_RATE_WINDOW:1m}
+			}
+		}
 		reverse_proxy embed:8461
 	}
 
@@ -31,6 +80,23 @@
 	# frontend degrades gracefully (the button reports it unavailable). Static-only
 	# deploys can leave the refresh service out entirely.
 	handle /api/* {
+		# Cap the request body at the edge (the refresh POSTs carry no body).
+		request_body {
+			max_size 16KB
+		}
+		# Per-IP rate limit on the scraping API: a refresh POST triggers an outbound
+		# ANSM/EMA fetch, so cap how fast any one client can drive it. The window
+		# allows the status-poll burst after a refresh; the refresh service ALSO
+		# enforces a global hourly scrape ceiling (REFRESH_DEMAND_HOURLY_MAX) that
+		# bounds the aggregate no matter how the traffic is spread across IPs. Tune
+		# via API_RATE_EVENTS / API_RATE_WINDOW in docker/.env.
+		rate_limit {
+			zone api {
+				key {http.request.client_ip}
+				events {$API_RATE_EVENTS:120}
+				window {$API_RATE_WINDOW:1m}
+			}
+		}
 		reverse_proxy refresh:8460
 	}
 
