@@ -62,6 +62,8 @@ dist/sitemap.xml robots.txt  SEO: sitemap of every crawlable URL (home, /a-propo
                              it. Every page also bakes a canonical link + Open Graph +
                              JSON-LD (see the SEO bullet). Origin = SITE_URL constant
 dist/index.html a-propos.html style.css search.js
+dist/logo.svg               site logo (SVG favicon on every page + README header)
+dist/og.png                 raster social card for og:image / twitter:image (1200x630)
 dist/app-config.js app-init.js dev-banner.js toc.js app-version.js rcp-semsearch.js  (runtime client assets)
 dist/rcp/<cis>-<slug>.vec.json   OPTIONAL per-page section vectors for server-side
 dist/eu/<cis>-<slug>.vec.json    per-drug semantic search, written DIRECTLY by
@@ -656,8 +658,9 @@ Key facts that aren't obvious from a single file:
   each with a `<lastmod>` from its capture date (bare `/eu/` stubs are noindex, so
   excluded); (2) `dist/robots.txt` (`write_robots`) allowing all but `/api/*` and
   pointing at the sitemap; (3) a `<link rel="canonical">` on every page
-  (`_canonical_link`); (4) Open Graph + Twitter Card tags (`_social_meta`, no
-  `og:image` yet: no logo asset); (5) JSON-LD (`_jsonld`, `<`-escaped, CSP-exempt as
+  (`_canonical_link`); (4) Open Graph + Twitter Card tags (`_social_meta`) including
+  `og:image` = `/og.png` (a raster social card; the SVG logo is NOT used for
+  `og:image` because most social crawlers can't render SVG); (5) JSON-LD (`_jsonld`, `<`-escaped, CSP-exempt as
   a data block): `WebSite` + `SearchAction` on the home page, and a `Drug` +
   `MedicalWebPage` @graph on each RCP/full-`/eu/` page (`lastReviewed` = the ANSM
   revision date, or the EMA PDF ModDate on `/eu/`); (6) a visible breadcrumb +
@@ -677,7 +680,10 @@ Key facts that aren't obvious from a single file:
   `_social_meta`/`_jsonld`/`_drug_jsonld`/`_website_jsonld`/`_breadcrumb`/
   `_rcp_description`/`_eu_description`/`_static_page_head` (build.py), the `{{HEAD}}`/
   `{{HEADEXTRA}}`/`{{DESCRIPTION}}`/`{{BREADCRUMB}}` slots in `src/*.html`, and
-  `.breadcrumb` in `style.css`. `test_embed.py` covers the pure pieces.
+  `.breadcrumb` in `style.css`. `test_embed.py` covers the pure pieces. The brand
+  assets `src/logo.svg` (SVG favicon linked in all four `src/*.html` heads + the
+  README header) and `src/og.png` (the `og:image` card, regenerated from the logo)
+  are copied to `dist/` by `main()` (`og.png` uncompressed).
 - **Runtime config is injected, not baked.** Every page loads `/app-config.js`,
   which defines `window.__APP_CONFIG__` (optional umami analytics + a DEV
   banner). `src/app-config.js` is the local-dev fallback (all empty = nothing

@@ -52,7 +52,7 @@ from lxml import html as lxml_html
 
 import bdpm  # shared, pure-stdlib BDPM tokenising + frequency scoring
 
-__version__ = "0.32.6"  # single source of truth; bump patch/minor per change
+__version__ = "0.33.0"  # single source of truth; bump patch/minor per change
 
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
@@ -1385,9 +1385,11 @@ def _canonical_link(path: str) -> str:
 def _social_meta(title: str, description: str, path: str,
                  page_type: str = "article") -> str:
     """Open Graph + Twitter Card tags so a shared link unfurls with a title/description
-    (better click-through). og:url is the canonical absolute URL. No og:image: the site
-    ships no logo asset (add one + og:image here if a brand image is introduced)."""
+    + the site logo (better click-through). og:url is the canonical absolute URL. The
+    image is the raster /og.png (not the SVG logo: most social crawlers don't render
+    SVG og:images) and is the same site-wide card on every page."""
     url = _esc(_abs_url(path))
+    img = _esc(_abs_url("/og.png"))
     t, d = _esc(title), _esc(description)
     return (
         f'<meta property="og:type" content="{page_type}">'
@@ -1396,9 +1398,14 @@ def _social_meta(title: str, description: str, path: str,
         f'<meta property="og:title" content="{t}">'
         f'<meta property="og:description" content="{d}">'
         f'<meta property="og:url" content="{url}">'
+        f'<meta property="og:image" content="{img}">'
+        '<meta property="og:image:width" content="1200">'
+        '<meta property="og:image:height" content="630">'
+        '<meta property="og:image:alt" content="justelesRCP">'
         '<meta name="twitter:card" content="summary">'
         f'<meta name="twitter:title" content="{t}">'
         f'<meta name="twitter:description" content="{d}">'
+        f'<meta name="twitter:image" content="{img}">'
     )
 
 
@@ -2674,6 +2681,7 @@ def main() -> None:
         "dev-banner.js",
         "toc.js",
         "rcp-semsearch.js",
+        "logo.svg",  # the site logo (favicon + README); SVG text, so it compresses well
     )
     # index.html + a-propos.html are hand-written static pages carrying a {{HEAD}}
     # placeholder; inject their canonical/social/JSON-LD head (built from the one
@@ -2690,6 +2698,9 @@ def main() -> None:
             shutil.copy(src, DIST / asset)
     for f in (*static_assets, "app-version.js", "search-index.json"):
         compress(DIST / f)
+    # og.png (the social-card image for og:image / twitter:image) is a raster already
+    # compressed by PNG, so copy it as-is without a .gz/.br sibling.
+    shutil.copy(SRC / "og.png", DIST / "og.png")
 
     # Per-drug semantic search: the section vectors (dist/<slug>.vec.json) are now
     # written server-side by the embed service (or embed-rcp.py offline), NOT baked

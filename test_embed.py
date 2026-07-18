@@ -632,11 +632,14 @@ def test_rcp_page_has_canonical_and_no_leftover_slots():
     # Per-drug description: intent keywords + the active substance (from _SUBSTANCES).
     assert '<meta name="description" content="RCP de DOLIPRANE' in html
     assert "Substance active : paracetamol." in html
-    # Open Graph / Twitter unfurl tags, with the canonical absolute og:url.
+    # Open Graph / Twitter unfurl tags, with the canonical absolute og:url + logo card.
     assert '<meta property="og:type" content="article">' in html
     assert '<meta property="og:site_name" content="justelesRCP">' in html
     assert f'<meta property="og:url" content="{build.SITE_URL}/rcp/{row["slug"]}">' in html
+    assert f'<meta property="og:image" content="{build.SITE_URL}/og.png">' in html
     assert '<meta name="twitter:card" content="summary">' in html
+    # SVG favicon (from the template head).
+    assert '<link rel="icon" type="image/svg+xml" href="/logo.svg">' in html
     # Two JSON-LD blocks: the Drug @graph, then the BreadcrumbList.
     blocks = [b.split("</script>")[0]
               for b in html.split('<script type="application/ld+json">')[1:]]

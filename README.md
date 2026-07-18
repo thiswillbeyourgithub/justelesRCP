@@ -2,6 +2,8 @@
      IMPORTANT : README.md (FR) et README.en.md (EN) doivent rester synchronisés.
      Quand vous modifiez l'un, mettez l'autre à jour en conséquence. -->
 
+<p align="center"><img src="src/logo.svg" width="128" height="128" alt="Logo justelesRCP"></p>
+
 # justelesRCP
 
 ### 🌐 Site en ligne : **[justelesrcp.olicorne.org](https://justelesrcp.olicorne.org)**

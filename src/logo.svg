@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="justelesRCP">
+  <title>justelesRCP</title>
+  <defs>
+    <clipPath id="cap">
+      <rect x="72" y="32" width="112" height="192" rx="56.0" ry="56.0"/>
+    </clipPath>
+  </defs>
+  <!-- Solid left half of the capsule: red top, yellow bottom. -->
+  <g clip-path="url(#cap)">
+    <rect x="72" y="32" width="56.0" height="96.0" fill="#E1352B"/>
+    <rect x="72" y="128.0" width="56.0" height="96.0" fill="#F4A81C"/>
+  </g>
+  <!-- Right half dissolving into pixels. -->
+  <g>
+    <rect x="129.4" y="33.4" width="13.2" height="13.2" rx="1" fill="#E1352B"/>
+    <rect x="129.4" y="49.4" width="13.2" height="13.2" rx="1" fill="#E1352B"/>
+    <rect x="129.4" y="65.4" width="13.2" height="13.2" rx="1" fill="#E1352B"/>
+    <rect x="129.4" y="81.4" width="13.2" height="13.2" rx="1" fill="#E1352B"/>
+    <rect x="129.4" y="97.4" width="13.2" height="13.2" rx="1" fill="#E1352B"/>
+    <rect x="129.4" y="113.4" width="13.2" height="13.2" rx="1" fill="#E1352B"/>
+    <rect x="129.4" y="129.4" width="13.2" height="13.2" rx="1" fill="#F4A81C"/>
+    <rect x="129.4" y="145.4" width="13.2" height="13.2" rx="1" fill="#F4A81C"/>
+    <rect x="129.4" y="161.4" width="13.2" height="13.2" rx="1" fill="#F4A81C"/>
+    <rect x="129.4" y="177.4" width="13.2" height="13.2" rx="1" fill="#F4A81C"/>
+    <rect x="129.4" y="193.4" width="13.2" height="13.2" rx="1" fill="#F4A81C"/>
+    <rect x="129.4" y="209.4" width="13.2" height="13.2" rx="1" fill="#F4A81C"/>
+    <rect x="145.4" y="33.4" width="13.2" height="13.2" rx="1" fill="#E1352B"/>
+    <rect x="145.4" y="49.4" width="13.2" height="13.2" rx="1" fill="#E1352B"/>
+    <rect x="145.4" y="65.4" width="13.2" height="13.2" rx="1" fill="#E1352B"/>
+    <rect x="145.4" y="81.4" width="13.2" height="13.2" rx="1" fill="#E1352B"/>
+    <rect x="145.4" y="97.4" width="13.2" height="13.2" rx="1" fill="#E1352B"/>
+    <rect x="145.4" y="113.4" width="13.2" height="13.2" rx="1" fill="#E1352B"/>
+    <rect x="145.4" y="129.4" width="13.2" height="13.2" rx="1" fill="#F4A81C"/>
+    <rect x="145.4" y="145.4" width="13.2" height="13.2" rx="1" fill="#F4A81C"/>
+    <rect x="145.4" y="161.4" width="13.2" height="13.2" rx="1" fill="#F4A81C"/>
+    <rect x="145.4" y="177.4" width="13.2" height="13.2" rx="1" fill="#F4A81C"/>
+    <rect x="145.4" y="193.4" width="13.2" height="13.2" rx="1" fill="#F4A81C"/>
+    <rect x="145.4" y="209.4" width="13.2" height="13.2" rx="1" fill="#F4A81C"/>
+    <rect x="161.4" y="17.4" width="13.2" height="13.2" rx="1" fill="#E1352B"/>
+    <rect x="161.4" y="49.4" width="13.2" height="13.2" rx="1" fill="#E1352B"/>
+    <rect x="161.4" y="65.4" width="13.2" height="13.2" rx="1" fill="#E1352B"/>
+    <rect x="161.4" y="81.4" width="13.2" height="13.2" rx="1" fill="#E1352B"/>
+    <rect x="161.4" y="97.4" width="13.2" height="13.2" rx="1" fill="#E1352B"/>
+    <rect x="161.4" y="113.4" width="13.2" height="13.2" rx="1" fill="#E1352B"/>
+    <rect x="161.4" y="145.4" width="13.2" height="13.2" rx="1" fill="#F4A81C"/>
+    <rect x="161.4" y="161.4" width="13.2" height="13.2" rx="1" fill="#F4A81C"/>
+    <rect x="161.4" y="177.4" width="13.2" height="13.2" rx="1" fill="#F4A81C"/>
+    <rect x="161.4" y="193.4" width="13.2" height="13.2" rx="1" fill="#F4A81C"/>
+    <rect x="177.4" y="33.4" width="13.2" height="13.2" rx="1" fill="#E1352B"/>
+    <rect x="177.4" y="97.4" width="13.2" height="13.2" rx="1" fill="#E1352B"/>
+    <rect x="177.4" y="113.4" width="13.2" height="13.2" rx="1" fill="#E1352B"/>
+    <rect x="177.4" y="129.4" width="13.2" height="13.2" rx="1" fill="#F4A81C"/>
+    <rect x="177.4" y="161.4" width="13.2" height="13.2" rx="1" fill="#F4A81C"/>
+    <rect x="177.4" y="209.4" width="13.2" height="13.2" rx="1" fill="#F4A81C"/>
+    <rect x="177.4" y="225.4" width="13.2" height="13.2" rx="1" fill="#F4A81C"/>
+    <rect x="193.4" y="129.4" width="13.2" height="13.2" rx="1" fill="#F4A81C"/>
+    <rect x="209.4" y="65.4" width="13.2" height="13.2" rx="1" fill="#E1352B"/>
+    <rect x="209.4" y="81.4" width="13.2" height="13.2" rx="1" fill="#E1352B"/>
+    <rect x="241.4" y="81.4" width="13.2" height="13.2" rx="1" fill="#E1352B"/>
+    <rect x="241.4" y="209.4" width="13.2" height="13.2" rx="1" fill="#F4A81C"/>
+  </g>
+</svg>
