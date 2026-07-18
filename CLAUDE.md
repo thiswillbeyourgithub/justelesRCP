@@ -719,7 +719,8 @@ Key facts that aren't obvious from a single file:
 ## Commands
 
 ```bash
-./download-data.sh        # fetch data/CIS_RCP.csv + data/CIS_bdpm.txt (see TODOs in it)
+./download-data.sh        # fetch + auto-extract the frozen 2022 data/CIS_RCP.csv (zip), and
+                          #  refresh data/CIS_bdpm.txt (+ COMPO/GENER) from the LIVE daily BDPM feed
 ./download-model.sh       # OPTIONAL: fetch the ONNX encoder + tokenizer into ./models (~120 Mo,
                           #  gitignored) for SERVER-SIDE per-drug semantic search (mounted read-only
                           #  into the embed container; no longer served to browsers). Skip it and the

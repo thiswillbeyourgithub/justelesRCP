@@ -17,9 +17,19 @@ mkdir -p data
 RCP_URL="https://www.data.gouv.fr/api/1/datasets/r/bdbe2367-1898-4848-ac85-6fe58a1bdf68"
 
 if [ ! -f data/CIS_RCP.csv ]; then
-  echo "Downloading RCP dump..."
+  echo "Downloading RCP dump (~153 MB zip -> ~1 GB CSV)..."
+  if ! command -v unzip >/dev/null 2>&1; then
+    echo "ERROR: 'unzip' is required to extract the RCP dump; install it and re-run." >&2
+    exit 1
+  fi
   wget -O data/CIS_RCP.zip "$RCP_URL"
-  echo "Unzip data/CIS_RCP.zip so that data/CIS_RCP.csv exists, then re-run build."
+  # The archive holds a single member, CIS_RCP.csv. Extract it to a temp file and
+  # swap on success so an interrupted/failed extract never leaves a truncated CSV
+  # that the fetch-once guard above would then treat as complete.
+  unzip -p data/CIS_RCP.zip CIS_RCP.csv > data/CIS_RCP.csv.tmp
+  mv -f data/CIS_RCP.csv.tmp data/CIS_RCP.csv
+  rm -f data/CIS_RCP.zip
+  echo "Extracted data/CIS_RCP.csv."
 fi
 
 # 2. CIS metadata: the CIS -> drug name mapping (official denominations, for
