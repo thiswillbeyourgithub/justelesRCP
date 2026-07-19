@@ -5,6 +5,7 @@
 #   "loguru",
 #   "httpx",
 #   "lxml",
+#   "brotli>=1.1",
 #   "pymupdf>=1.24",
 # ]
 # ///
@@ -48,9 +49,11 @@ from __future__ import annotations
 import hashlib
 import html
 import importlib.util
+import json
 import os
 import random
 import time
+import unicodedata
 import urllib.parse
 from pathlib import Path
 
@@ -104,6 +107,150 @@ def ema_links(ansm_manifest: dict) -> dict[str, str]:
         if url:
             out[cis] = url
     return out
+
+
+# --- Bulk-seeding ema_pdf links from the EMA's own EPAR-documents JSON dump ------
+#
+# The EMA publishes every EPAR document as one JSON (this is the SmPC "product
+# information" among them), so we can learn each centrally-authorized product's
+# French SmPC PDF WITHOUT waiting for scrape-rcp.py to harvest the href off each
+# ANSM /medicament/<cis>/extrait page. `seed_ema_links` downloads that dump, keeps
+# the `product-information` docs, and writes the matching `ema_pdf` link into the
+# ANSM manifest for any auth-group that has none yet; the normal fetch loop then
+# converts them exactly as it does harvested links. A per-CIS *harvested* link
+# always wins (we never overwrite one), and siblings still borrow the overlay at
+# build via build.resolve_eu, so we seed only one representative CIS per group.
+EMA_EPAR_JSON_URL = (
+    "https://www.ema.europa.eu/en/documents/report/"
+    "documents-output-epar_documents_json-report_en.json"
+)
+
+
+def _fold(s: str) -> str:
+    """Accent-fold + lowercase for brand matching (same idiom as build._sort_key)."""
+    return unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode().lower().strip()
+
+
+def _parse_ema_documents(text: str) -> list[dict]:
+    """Parse the EMA EPAR-documents JSON dump into a list of document records.
+
+    The dump is ``{"meta": {...}, "data": [ {record} {record} ... ]}``, but records
+    that carry a ``translations`` object are NOT comma-separated from the next one,
+    so a plain ``json.loads`` raises 'Expecting , delimiter'. Decode successive
+    objects out of the ``data`` array instead, skipping whitespace/commas between
+    them (tolerant of both the comma-joined and the run-on records the dump mixes)."""
+    try:
+        start = text.index("[", text.index('"data"')) + 1
+    except ValueError:
+        return []
+    dec = json.JSONDecoder()
+    i, n, out = start, len(text), []
+    while i < n:
+        while i < n and text[i] in " \t\r\n,":
+            i += 1
+        if i >= n or text[i] == "]":
+            break
+        try:
+            obj, i = dec.raw_decode(text, i)
+        except json.JSONDecodeError:
+            break
+        if isinstance(obj, dict):
+            out.append(obj)
+    return out
+
+
+def _ema_pi_index(records: list[dict]) -> dict[str, str]:
+    """folded EMA ``medicine_name`` -> product-information PDF URL, French
+    (``translations.fr``) preferred, English ``document_url`` as fallback, for
+    ``type == "product-information"`` docs (the SmPC/notice bundle). First URL per
+    brand wins (records are chronological; any current PI doc points at the live PDF)."""
+    idx: dict[str, str] = {}
+    for r in records:
+        if r.get("type") != "product-information":
+            continue
+        url = (r.get("translations") or {}).get("fr") or r.get("document_url") or ""
+        name = _fold(r.get("medicine_name", ""))
+        if url and name and name not in idx:
+            idx[name] = url
+    return idx
+
+
+def _match_brand(brand: str, ema_index: dict[str, str]) -> str | None:
+    """Return the EMA PDF URL whose folded medicine_name matches this folded brand
+    root, else None. Conservative whole-word-boundary match (equal, or one is a
+    word-prefix of the other, e.g. 'abilify maintena' ~ 'abilify'), so a shared
+    leading word alone never mislinks a wrong drug's SmPC onto a whole group."""
+    if not brand:
+        return None
+    if brand in ema_index:
+        return ema_index[brand]
+    for name, url in ema_index.items():
+        if brand.startswith(name + " ") or name.startswith(brand + " "):
+            return url
+    return None
+
+
+def seed_ema_links(ansm: dict, *, ema_json_path: str | None = None,
+                   dry_run: bool = False) -> int:
+    """Bulk-seed the ANSM manifest's ``ema_pdf`` links from the EMA EPAR-documents
+    JSON dump. Mutates ``ansm`` in place and (unless ``dry_run``) persists it.
+
+    Joins by BRAND: the dump keys on the EMA *product* number (EMEA/H/C/xxxxxx),
+    not the EU/x/xx/xxx marketing-auth number build.load_cap_meta keys on, so there
+    is no id join; we match build._brand_root against the EMA medicine_name. Seeds
+    one representative CIS (lowest of the group) per auth-group that has no link on
+    any member yet. Returns the number of groups matched (== seeded when not dry)."""
+    build = _load_module("build.py", "build")  # lazy: only the seeding path needs it
+    cap = build.load_cap_meta()
+    if not cap:
+        logger.warning("no centrally-authorized CIS found "
+                       "(is {} present?); nothing to seed", scrape.BDPM_PATH.name)
+        return 0
+    groups = build.auth_groups(cap)
+
+    if ema_json_path:
+        logger.info("reading EMA EPAR documents from local file {}", ema_json_path)
+        text = Path(ema_json_path).read_text(encoding="utf-8")
+    else:
+        logger.info("downloading EMA EPAR documents JSON …")
+        with httpx.Client(follow_redirects=True, timeout=180.0,
+                          headers={"User-Agent": USER_AGENT}) as client:
+            resp = client.get(EMA_EPAR_JSON_URL)
+            resp.raise_for_status()
+            text = resp.text
+    records = _parse_ema_documents(text)
+    index = _ema_pi_index(records)
+    logger.info("parsed {} EMA documents; {} product-information brands carry a PDF",
+                len(records), len(index))
+
+    need = matched = 0
+    unmatched: list[str] = []
+    for members in groups.values():
+        if any((ansm.get(c) or {}).get("ema_pdf") for c in members):
+            continue  # a harvested (or already-seeded) link covers this group
+        need += 1
+        rep = min(members)
+        brand = _fold(build._brand_root(cap[rep][0]))
+        url = _match_brand(brand, index)
+        if not url:
+            unmatched.append(brand)
+            continue
+        matched += 1
+        if not dry_run:
+            entry = ansm.get(rep)
+            if not isinstance(entry, dict):
+                entry = {}
+            entry["ema_pdf"] = url
+            ansm[rep] = entry
+    logger.info("{}: {} auth-groups lack a link, matched {} to an EMA PDF ({} unmatched)",
+                "dry-run" if dry_run else "seeding", need, matched, len(unmatched))
+    if unmatched:
+        logger.info("sample unmatched brands (need per-CIS ANSM harvest): {}",
+                    ", ".join(sorted(unmatched)[:12]))
+    if matched and not dry_run:
+        scrape.save_manifest(ansm, ANSM_MANIFEST_PATH)
+        logger.info("wrote {} seeded ema_pdf link(s) into {}", matched, ANSM_MANIFEST_PATH.name)
+    return matched
 
 
 def _overlay_html(conv: dict, src_url: str = "", fetched_date: str = "",
@@ -258,8 +405,16 @@ def build_order(ttl_days: int, *, force: bool, frequency: Path | None,
                    "(manifest via_archive), to try the live EMA PDF again. Implies --force.")
 @click.option("--frequency", type=click.Path(dir_okay=False), default=None,
               help="Frequency JSONL for ordering (defaults to data/drugs_frequency.jsonl).")
+@click.option("--seed-from-ema-json", "seed", is_flag=True,
+              help="Before fetching, bulk-seed ema_pdf links from the EMA EPAR-documents "
+                   "JSON dump (brand-joined) so every centrally-authorized product's French "
+                   "SmPC PDF is known without harvesting each ANSM page. Updates the ANSM manifest.")
+@click.option("--ema-json", "ema_json", type=click.Path(exists=True, dir_okay=False), default=None,
+              help="Use this local EMA EPAR-documents JSON for --seed-from-ema-json instead of downloading.")
+@click.option("--dry-run", "dry_run", is_flag=True,
+              help="With --seed-from-ema-json: report the seed plan, write nothing, and exit.")
 def main(limit, fetch_all, only, local_file, local_cis, local_src, local_via_archive,
-         ttl_days, rate, no_gzip, force, retry_archived, frequency):
+         ttl_days, rate, no_gzip, force, retry_archived, frequency, seed, ema_json, dry_run):
     """Refresh EMA /eu/ overlays from the live EMA site (see module docstring)."""
     gzip_overlay = GZIP_DEFAULT and not no_gzip
     freq = Path(frequency) if frequency else None
@@ -281,9 +436,15 @@ def main(limit, fetch_all, only, local_file, local_cis, local_src, local_via_arc
         return
 
     ansm = scrape.load_manifest(ANSM_MANIFEST_PATH)
+    if seed or dry_run:
+        seed_ema_links(ansm, ema_json_path=ema_json, dry_run=dry_run)
+        if dry_run:
+            return
     links = ema_links(ansm)
     if not links:
-        logger.info("no ema_pdf links in {} yet; run scrape-rcp.py first", ANSM_MANIFEST_PATH.name)
+        logger.info("no ema_pdf links in {} yet; run scrape-rcp.py first "
+                    "(or --seed-from-ema-json to seed them from the EMA dump)",
+                    ANSM_MANIFEST_PATH.name)
         return
     ema_manifest = scrape.load_manifest(EMA_MANIFEST_PATH)
 

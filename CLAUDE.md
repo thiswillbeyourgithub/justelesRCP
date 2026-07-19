@@ -506,7 +506,32 @@ Key facts that aren't obvious from a single file:
   overlay per drug at `data/eu/<cis>.html[.gz]` (its OWN manifest,
   `data/.scrape-ema-manifest.json`, so the EMA TTL/last_fetch never collides with
   the ANSM one). It stays DRY by importing scrape-rcp.py's manifest/queue/overlay
-  helpers (parameterised by path/dir) rather than re-implementing them. **Internet
+  helpers (parameterised by path/dir) rather than re-implementing them.
+  **Bulk `ema_pdf` seeding from the EMA JSON dump (`--seed-from-ema-json`).** The
+  `ema_pdf` links usually come from scrape-rcp.py's per-CIS `extract_ema_pdf`
+  harvest off each ANSM page, but the EMA ALSO publishes every EPAR document as one
+  ~28 Mo JSON (`EMA_EPAR_JSON_URL`), the SmPC "product-information" among them, so
+  `seed_ema_links` can learn every centrally-authorized product's French SmPC PDF
+  in one download WITHOUT a prior ANSM harvest. It downloads (or reads a local
+  `--ema-json` file), tolerantly parses the dump (`_parse_ema_documents`: records
+  carrying a `translations` object are NOT comma-separated, so `json.loads` fails,
+  decode successive objects instead), keeps `type == "product-information"`
+  (`_ema_pi_index`, French `translations.fr` preferred), and writes the matching
+  `ema_pdf` into the ANSM manifest for each `build.auth_groups` group that lacks a
+  link, seeding ONE representative CIS (`min(members)`; siblings borrow the overlay
+  via `build.resolve_eu`). The join is by BRAND (`_match_brand` whole-word-boundary
+  match of `build._brand_root` vs the EMA `medicine_name`): the dump keys on the EMA
+  *product* number `EMEA/H/C/xxxxxx`, NOT the `EU/x/xx/xxx` marketing-auth number
+  `load_cap_meta` keys on, so there is no id join; it covers ~97% of auth-groups
+  (~1080/1114), the ~3% brand-mismatched generics still falling to the per-CIS ANSM
+  harvest. A harvested link always wins (never overwritten); a later scrape-rcp
+  re-fetch of a seeded CIS may drop the seeded link, but by then the overlay is
+  fetched + self-describing, so the /eu/ page stays full. `--dry-run` reports the
+  plan and writes nothing. It lazily imports `build.py` (needs `brotli`); pure
+  helpers are covered by `test_ema_seed.py`. Keep in sync across
+  `seed_ema_links`/`_parse_ema_documents`/`_ema_pi_index`/`_match_brand`/
+  `EMA_EPAR_JSON_URL` (scrape-ema.py) and `load_cap_meta`/`auth_groups`/
+  `_brand_root`/`resolve_eu` (build.py). **Internet
   Archive fallback:** when the live EMA PDF fails to download (network error, 404,
   or a 200 that is actually an HTML error page: `_fetch_pdf` requires the `%PDF-`
   signature), `process_one` falls back to the Wayback Machine (`_wayback_pdf`, the
@@ -749,6 +774,10 @@ uv run scrape-ema.py --limit 60   # OPTIONAL bulk scrape of EMA product-informat
                                   # Falls back to the Internet Archive if a live EMA PDF fails (never
                                   # exposes the archive URL; stamps via_archive). --retry-archived
                                   # re-fetches just the archive-sourced CIS against the live EMA.
+                                  # --seed-from-ema-json bulk-seeds the ema_pdf links from the EMA's
+                                  # own EPAR-documents JSON dump (brand-joined, ~97% of auth-groups)
+                                  # so a first seed needs no prior per-CIS ANSM harvest; --ema-json
+                                  # <file> uses a local dump, --dry-run reports the plan and exits.
 uv run embed-rcp.py --limit 60    # OPTIONAL offline pre-bake of the semantic-search vectors (warms
                                   # the backlog before a first deploy). Reuses the SAME warm encoder
                                   # (onnx_embed) + one-page core (build.embed_page_to_vec) the embed
