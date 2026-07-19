@@ -52,7 +52,7 @@ from lxml import html as lxml_html
 
 import bdpm  # shared, pure-stdlib BDPM tokenising + frequency scoring
 
-__version__ = "0.35.2"  # single source of truth; bump patch/minor per change
+__version__ = "0.35.3"  # single source of truth; bump patch/minor per change
 
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
@@ -2101,15 +2101,30 @@ def _ema_search_url(name: str) -> str:
     return _EMA_SEARCH + urllib.parse.quote_plus(_brand_root(name))
 
 
+def _is_central_proc(row: list[str]) -> bool:
+    """True if a CIS_bdpm row's procedure cell marks an EMA *centralised*
+    authorization. Accent-folded so 'Procédure centralisée' matches, and
+    explicitly rejects a *decentralised* procedure: 'décentralisée' folds to
+    'decentralisee', whose substring 'centralis' would otherwise misclassify a
+    purely national (MRP/DCP) generic (e.g. every 'ABACAVIR ARROW ... Procédure
+    décentralisée') as centrally-authorized, giving it a spurious /eu/ page."""
+    for c in row:
+        folded = unicodedata.normalize("NFKD", c).encode("ascii", "ignore").decode().lower()
+        if "centralis" in folded and "decentralis" not in folded:
+            return True
+    return False
+
+
 def load_cap_meta() -> dict[str, tuple[str, str, str]]:
     """CIS -> (name, eu_number, holder) for centrally-authorized products.
 
     A row qualifies when it carries an EU/x/xx/xxx marketing-authorization number
-    or its procedure column says 'centralisée'. eu_number/holder are '' when
-    absent (holder is the field right after the EU number). Returns {} when
-    CIS_bdpm.txt is missing. Parses the same latin-1 TSV as load_names but is kept
-    separate so load_names' contract (also used by the refresh service) is
-    untouched."""
+    or its procedure column says 'centralisée' (NOT 'décentralisée', a national
+    procedure that merely shares the 'centralis' substring; see _is_central_proc).
+    eu_number/holder are '' when absent (holder is the field right after the EU
+    number). Returns {} when CIS_bdpm.txt is missing. Parses the same latin-1 TSV
+    as load_names but is kept separate so load_names' contract (also used by the
+    refresh service) is untouched."""
     if not BDPM_PATH.is_file():
         return {}
     meta: dict[str, tuple[str, str, str]] = {}
@@ -2118,7 +2133,7 @@ def load_cap_meta() -> dict[str, tuple[str, str, str]]:
             if len(row) < 2 or not row[0].strip():
                 continue
             m = _EU_NUM_RE.search("\t".join(row))
-            if not (m or any("centralis" in c.lower() for c in row)):
+            if not (m or _is_central_proc(row)):
                 continue
             eu = m.group(0) if m else ""
             holder = ""

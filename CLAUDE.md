@@ -443,7 +443,8 @@ Key facts that aren't obvious from a single file:
   `resolve_eu` is shared with the refresh service (`_eu_url`, the EMA lane).
   The stub: it explains the EU-authorization case, shows the EU number + holder (parsed by
   `load_cap_meta()` from `CIS_bdpm.txt`: a row with an `EU/x/xx/xxx` number or a
-  `centralisée` procedure), links to the official RCP via **the exact EMA
+  `centralisée` (NOT `décentralisée`, a national procedure that merely shares the
+  `centralis` substring: see `_is_central_proc`) procedure), links to the official RCP via **the exact EMA
   product-information PDF when known, else an EMA medicines-search URL by brand
   root**. The direct link is NOT constructed here: the ANSM `/medicament/<cis>/extrait`
   page for a centrally-authorized drug carries no RCP body but DOES link the real

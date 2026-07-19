@@ -732,7 +732,44 @@ def test_ref_links_include_crat_pill():
     print("ok  test_ref_links_include_crat_pill")
 
 
+def test_load_cap_meta_excludes_decentralised():
+    """load_cap_meta must classify a row as EMA-centrally-authorized ONLY when it
+    carries an EU number or a genuine 'centralisée' procedure. A 'décentralisée'
+    (national) row folds to 'decentralisee', which contains the substring
+    'centralis', so the old ``"centralis" in c.lower()`` check wrongly swept in
+    every decentralised generic (giving it a spurious /eu/ page). This locks the
+    fix: décentralisée rows are excluded, centralisée (with or without an EU
+    number) are kept."""
+    # CIS_bdpm.txt shape: CIS, name, form, route, status, PROCEDURE, marketing,
+    # date, (empty), EU-number-or-empty, holder, ... (latin-1, tab-separated).
+    def row(cis, name, proc, eu="", holder=""):
+        return "\t".join([cis, name, "comprimé", "orale", "Autorisation active",
+                          proc, "Commercialisée", "01/01/2020", "", eu, holder, "Non"])
+    lines = [
+        row("10000001", "ABILIFY 10 mg, comprimé", "Procédure centralisée",
+            "EU/1/04/276", " OTSUKA"),                     # centralised + EU -> kept
+        row("10000002", "SOMEDRUG 5 mg, comprimé", "Procédure centralisée"),  # centralised, no EU -> kept
+        row("10000003", "ABACAVIR ARROW 300 mg, comprimé", "Procédure décentralisée"),  # national -> EXCLUDED
+    ]
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "CIS_bdpm.txt"
+        p.write_text("\n".join(lines) + "\n", encoding="latin-1")
+        saved = build.BDPM_PATH
+        build.BDPM_PATH = p
+        try:
+            meta = build.load_cap_meta()
+        finally:
+            build.BDPM_PATH = saved
+    assert "10000001" in meta, meta
+    assert meta["10000001"] == ("ABILIFY 10 mg, comprimé", "EU/1/04/276", "OTSUKA"), meta["10000001"]
+    assert "10000002" in meta and meta["10000002"][1] == "", meta.get("10000002")
+    # the decentralised generic must NOT be treated as centrally-authorized
+    assert "10000003" not in meta, "décentralisée row wrongly classed as centralised"
+    print("ok  test_load_cap_meta_excludes_decentralised")
+
+
 if __name__ == "__main__":
+    test_load_cap_meta_excludes_decentralised()
     test_clean_substance_strips_salt_hydrate()
     test_ref_links_include_crat_pill()
     test_quantize_roundtrip()
