@@ -1,8 +1,8 @@
 // Optional "work in progress" banner across the top of the page.
 //
 // When the container is started with DEV=1 (docker/.env -> entrypoint ->
-// /app-config.js), this shows a prominent warning that the site is a
-// prototype (incomplete features, likely bugs), plus how
+// /app-config.js), this shows a prominent notice that the site is a
+// prototype in development, plus how
 // long ago the container was last restarted. STARTED_AT (epoch seconds) is stamped by the entrypoint at
 // container start, so "il y a X" reflects the real restart and stays accurate as
 // the tab stays open.
@@ -84,8 +84,7 @@
       ? ` <a href="${validSource}" target="_blank" rel="noopener noreferrer">Code source</a>.`
       : "";
     banner.innerHTML =
-      `<strong>Prototype en développement.</strong> ` +
-      `Fonctionnalités incomplètes et bugs probables. ${when}${source}`;
+      `<strong>Prototype en développement.</strong> ${when}${source}`;
     // Style the link via the CSSOM (a style="" attribute would trip the strict
     // style-src CSP; programmatic styles are allowed).
     const link = banner.querySelector("a");
