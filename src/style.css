@@ -183,10 +183,19 @@ a:hover { text-decoration: underline; }
 /* Link to the authoritative source page (ANSM on /rcp/, EMA on /eu/); shares the
    .official-link button look with the /eu/ stub's EMA button below. */
 .rcp-source { margin: -.6rem 0 1.5rem; }
-/* External-reference pill row (build.py _ref_links_html): the drug's BDPM record
-   plus HAS / EMA / Vidal substance searches. A row of small, vaguely pill-shaped
-   buttons under the freshness banner; wraps on narrow screens. */
-.rcp-refs { display: flex; flex-wrap: wrap; gap: .4rem; margin: .2rem 0 1.5rem; }
+/* External-reference pills (build.py _ref_links_html): the drug's BDPM record plus
+   HAS / EMA / CRAT / Vidal substance searches, grouped in an "En savoir plus"
+   bounding box (.rcp-more) under the freshness banner. The .rcp-refs row of small,
+   vaguely pill-shaped buttons is centered and wraps on narrow screens. */
+.rcp-more {
+  margin: .2rem 0 1.5rem; padding: .6rem .8rem .8rem;
+  border: 1px solid var(--line); border-radius: .5rem; text-align: center;
+}
+.rcp-more-title {
+  margin: 0 0 .5rem; font-size: .75rem; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .04em; color: var(--muted);
+}
+.rcp-refs { display: flex; flex-wrap: wrap; justify-content: center; gap: .4rem; margin: 0; }
 .ref-pill {
   display: inline-block; font-size: .8rem; font-weight: 600;
   padding: .25rem .75rem; border: 1px solid var(--line); border-radius: 999px;

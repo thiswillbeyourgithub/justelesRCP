@@ -52,7 +52,7 @@ from lxml import html as lxml_html
 
 import bdpm  # shared, pure-stdlib BDPM tokenising + frequency scoring
 
-__version__ = "0.34.3"  # single source of truth; bump patch/minor per change
+__version__ = "0.35.0"  # single source of truth; bump patch/minor per change
 
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
@@ -118,14 +118,16 @@ ANSM_PAGE_URL = "https://base-donnees-publique.medicaments.gouv.fr/medicament/{c
 
 # External-reference pill row shown at the top of every page (see _ref_links_html).
 # BDPM reuses ANSM_PAGE_URL (keyed by CIS: the drug's official BDPM record). HAS,
-# EMA and Vidal are full-text searches on the drug's active substance (see
+# EMA, CRAT and Vidal are full-text searches on the drug's active substance (see
 # load_substances); the EMA query template is the exact one the EMA site uses for a
-# document search.
+# document search. CRAT (lecrat.fr, pregnancy/breastfeeding reference) uses the
+# WordPress default search (?s=).
 HAS_SEARCH_URL = "https://www.has-sante.fr/jcms/fc_2875171/fr/resultat-de-recherche?text={q}"
 EMA_REF_URL = (
     "https://www.ema.europa.eu/en/search?keywords=allwords"
     "&search_api_fulltext={q}&f%5B0%5D=ema_search_entity_is_document%3ADocument"
 )
+CRAT_SEARCH_URL = "https://www.lecrat.fr/?s={q}"
 VIDAL_SEARCH_URL = "https://www.vidal.fr/recherche.html?query={q}"
 
 # The RCP HTML field can be very large; lift the csv field-size ceiling.
@@ -1946,10 +1948,12 @@ def _ref_pill(url: str, label: str) -> str:
 
 
 def _ref_links_html(cis: str, name: str, include_ema: bool = True) -> str:
-    """Top-of-page '.rcp-refs' row of external-reference pill buttons: BDPM (this
-    drug's official BDPM record, keyed by CIS) first, then HAS, EMA and Vidal
-    full-text searches on the drug's active substance (falling back to its brand
-    root when the composition is unknown). Vidal is last per the product intent.
+    """Top-of-page '.rcp-more' box ("En savoir plus") wrapping a centered
+    '.rcp-refs' row of external-reference pill buttons: BDPM (this drug's official
+    BDPM record, keyed by CIS) first, then HAS, EMA, CRAT and Vidal full-text
+    searches on the drug's active substance (falling back to its brand root when
+    the composition is unknown). CRAT (lecrat.fr) is the pregnancy/breastfeeding
+    reference; Vidal is last per the product intent.
 
     ``include_ema`` is False on /eu/ pages, which already carry a direct EMA button
     (render_eu_page / the stub), so the EMA pill is dropped there to avoid a
@@ -1965,8 +1969,14 @@ def _ref_links_html(cis: str, name: str, include_ema: bool = True) -> str:
         pills.append(_ref_pill(HAS_SEARCH_URL.format(q=q), "HAS"))
         if include_ema:
             pills.append(_ref_pill(EMA_REF_URL.format(q=q), "EMA"))
+        pills.append(_ref_pill(CRAT_SEARCH_URL.format(q=q), "CRAT"))
         pills.append(_ref_pill(VIDAL_SEARCH_URL.format(q=q), "Vidal"))
-    return f'<p class="rcp-refs">{"".join(pills)}</p>'
+    return (
+        '<section class="rcp-more">'
+        '<p class="rcp-more-title">En savoir plus</p>'
+        f'<p class="rcp-refs">{"".join(pills)}</p>'
+        "</section>"
+    )
 
 
 def render_record(item: tuple[str, str, str]) -> dict[str, str] | None:
