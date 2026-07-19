@@ -397,9 +397,14 @@ Key facts that aren't obvious from a single file:
   last per the product intent. On `/eu/` pages `include_ema=False` drops the EMA
   pill (they already carry a direct EMA button). The substance query is
   `load_substances()` (CIS -> cleaned active-substance string from
-  `CIS_COMPO_bdpm.txt` column 3, keeping only `SA` rows, salts stripped, combos
-  space-joined), falling back to the drug's `_brand_root` when the composition is
-  unknown. Nothing is fetched at build time (plain search links). The substance map
+  `CIS_COMPO_bdpm.txt` column 3, keeping only `SA` rows, combos space-joined). The
+  cleaning (`_clean_substance`) drops the parenthetical/after-comma salt AND the
+  INLINE salt/hydrate/connector words BDPM bakes into the denomination
+  (`_SUBSTANCE_QUALIFIERS`, accent-folded: e.g. "AMOXICILLINE TRIHYDRATEE" ->
+  "amoxicilline"), because LeCRAT's strict all-terms search returns nothing on a
+  query carrying "trihydratée"; "ACIDE" is deliberately kept so multi-word acids
+  survive, and an all-qualifier term (e.g. "SULFATE DE MAGNESIUM") is kept whole. It
+  falls back to the drug's `_brand_root` when the composition is unknown. Nothing is fetched at build time (plain search links). The substance map
   is a process-wide global (`_SUBSTANCES`, primed by `_init_worker` for pool
   workers, set in `main()` for build_stubs/render_eu_page, and by the refresh
   service at startup) and is folded into `_global_key` (it feeds the pills but is

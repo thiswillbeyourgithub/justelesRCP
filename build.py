@@ -52,7 +52,7 @@ from lxml import html as lxml_html
 
 import bdpm  # shared, pure-stdlib BDPM tokenising + frequency scoring
 
-__version__ = "0.35.0"  # single source of truth; bump patch/minor per change
+__version__ = "0.35.1"  # single source of truth; bump patch/minor per change
 
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
@@ -1901,13 +1901,44 @@ def _official_source_html(*buttons: str) -> str:
     return f'<p class="rcp-source">{" ".join(buttons)}</p>'
 
 
+# Salt / hydrate / connector words dropped from a COMPO substance denomination to
+# get a clean search term (accent-folded compare via _FOLD_TABLE). BDPM stores the
+# salt/hydrate INLINE, not just in parentheses (e.g. "AMOXICILLINE TRIHYDRATEE",
+# "PAROXETINE CHLORHYDRATE HEMIHYDRATE"), which breaks LeCRAT's strict all-terms
+# search (?s=): no page contains "trihydratée", so the whole query returns nothing
+# even though the drug is covered. "ACIDE" is deliberately NOT here so multi-word
+# acids ("ACIDE CLAVULANIQUE") stay intact; if stripping empties the term,
+# _clean_substance keeps the original. (Distinct from _XREF_STOP, which also carries
+# dosage-form / narrative words that must not be removed from a substance name.)
+_SUBSTANCE_QUALIFIERS = frozenset("""
+CHLORHYDRATE BROMHYDRATE IODHYDRATE SULFATE HEMISULFATE HYDROGENOSULFATE
+PHOSPHATE HYDROGENOPHOSPHATE DIHYDROGENOPHOSPHATE ACETATE CITRATE
+HYDROGENOCITRATE TARTRATE HYDROGENOTARTRATE BITARTRATE MALEATE MALATE MESILATE
+MESYLATE BESILATE BESYLATE TOSILATE FUMARATE HEMIFUMARATE GLUCONATE LACTATE
+NITRATE BENZOATE STEARATE OXALATE SUCCINATE HEMISUCCINATE DIPROPIONATE
+PROPIONATE PIVALATE VALERATE PAMOATE EMBONATE MALONATE ASPARTATE GLUTAMATE
+SACCHARINATE XINAFOATE ENANTATE DECANOATE FUROATE OROTATE CARBONATE BICARBONATE
+SODIQUE POTASSIQUE CALCIQUE MAGNESIEN SODIUM POTASSIUM CALCIUM MAGNESIUM
+CHLORURE BROMURE HYDROXYDE
+HYDRATE HYDRATEE MONOHYDRATE MONOHYDRATEE DIHYDRATE DIHYDRATEE TRIHYDRATE
+TRIHYDRATEE TETRAHYDRATE PENTAHYDRATE HEPTAHYDRATE HEMIHYDRATE SESQUIHYDRATE
+ANHYDRE
+DE D ET
+""".split())
+
+
 def _clean_substance(text: str) -> str:
     """Reduce a COMPO active-substance denomination to a clean search term: drop a
-    trailing salt/qualifier in parentheses and anything after a comma, collapse
-    whitespace. 'RANITIDINE (CHLORHYDRATE DE)' -> 'RANITIDINE'; 'ARIPIPRAZOLE' ->
-    'ARIPIPRAZOLE'."""
+    trailing salt/qualifier in parentheses and anything after a comma, then drop any
+    inline salt/hydrate/connector words (_SUBSTANCE_QUALIFIERS), collapse whitespace.
+    'RANITIDINE (CHLORHYDRATE DE)' -> 'RANITIDINE'; 'AMOXICILLINE TRIHYDRATEE' ->
+    'AMOXICILLINE'; 'ACIDE CLAVULANIQUE' -> 'ACIDE CLAVULANIQUE'; 'ARIPIPRAZOLE' ->
+    'ARIPIPRAZOLE'. Keeps the original tokens if stripping would empty the term (so
+    a substance that IS a salt, e.g. 'SULFATE DE MAGNESIUM', is not lost)."""
     text = _stdhtml.unescape(text).split("(")[0].split(",")[0]
-    return " ".join(text.split())
+    tokens = text.split()
+    kept = [t for t in tokens if t.translate(_FOLD_TABLE) not in _SUBSTANCE_QUALIFIERS]
+    return " ".join(kept or tokens)
 
 
 def load_substances() -> dict[str, str]:

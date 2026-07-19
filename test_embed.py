@@ -695,7 +695,46 @@ def test_robots_points_at_sitemap():
     print("ok  test_robots_points_at_sitemap")
 
 
+def test_clean_substance_strips_salt_hydrate():
+    """A COMPO denomination carries the salt/hydrate INLINE (e.g. "AMOXICILLINE
+    TRIHYDRATEE"), which breaks LeCRAT's strict all-terms ?s= search. _clean_substance
+    must drop those qualifier words so the external-reference pills land on a real
+    page, while keeping multi-word acids and salt-only minerals intact."""
+    # the reported bug: the hydrate word made ?s=amoxicilline+trihydratee find nothing
+    assert build._clean_substance("AMOXICILLINE TRIHYDRATÉE") == "AMOXICILLINE"
+    # accented masculine hydrate + stacked salt words all go
+    assert build._clean_substance("PAROXÉTINE CHLORHYDRATE HÉMIHYDRATÉ") == "PAROXÉTINE"
+    # multi-word acids must stay whole ("ACIDE" is intentionally not a qualifier)
+    assert build._clean_substance("ACIDE CLAVULANIQUE") == "ACIDE CLAVULANIQUE"
+    # already-clean names and the legacy parenthetical-salt strip are unchanged
+    assert build._clean_substance("ARIPIPRAZOLE") == "ARIPIPRAZOLE"
+    assert build._clean_substance("RANITIDINE (CHLORHYDRATE DE)") == "RANITIDINE"
+    # a substance that IS entirely salt/connector words is kept, not emptied
+    assert build._clean_substance("SULFATE DE MAGNÉSIUM") == "SULFATE DE MAGNÉSIUM"
+    print("ok  test_clean_substance_strips_salt_hydrate")
+
+
+def test_ref_links_include_crat_pill():
+    """_ref_links_html emits the 'En savoir plus' box with a CRAT pill pointing at
+    lecrat.fr's ?s= search on the cleaned substance, and drops EMA on /eu/ pages."""
+    saved = dict(build._SUBSTANCES)
+    build._SUBSTANCES["99999999"] = build._clean_substance("AMOXICILLINE TRIHYDRATÉE")
+    try:
+        html = build._ref_links_html("99999999", "CLAMOXYL 500 mg")
+    finally:
+        build._SUBSTANCES.clear()
+        build._SUBSTANCES.update(saved)
+    assert 'class="rcp-more"' in html and "En savoir plus" in html
+    assert 'href="https://www.lecrat.fr/?s=amoxicilline"' in html
+    # /eu/ pages carry a direct EMA button already, so the EMA pill is dropped there
+    eu = build._ref_links_html("99999999", "CLAMOXYL 500 mg", include_ema=False)
+    assert "lecrat.fr" in eu and "ema.europa.eu" not in eu
+    print("ok  test_ref_links_include_crat_pill")
+
+
 if __name__ == "__main__":
+    test_clean_substance_strips_salt_hydrate()
+    test_ref_links_include_crat_pill()
     test_quantize_roundtrip()
     test_section_chunks_align_with_toc()
     test_heading_only_section_yields_no_chunk()
