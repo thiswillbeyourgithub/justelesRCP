@@ -517,3 +517,29 @@ a:hover { text-decoration: underline; }
   position: fixed; top: .7rem; right: .7rem; z-index: 20;
   box-shadow: 0 2px 8px rgba(0, 0, 0, .18);
 }
+
+/* --- image lightbox (lightbox.js) --- */
+/* Full-screen overlay showing a figure at full size, opened by clicking any image in
+   the drug body. The backdrop (cursor: zoom-out) dismisses on click; the image itself
+   does not (so pinch-zoom / drag work on mobile). */
+body.lb-open { overflow: hidden; } /* freeze the page behind the overlay */
+.lightbox {
+  position: fixed; inset: 0; z-index: 2147483000;
+  display: flex; align-items: center; justify-content: center;
+  padding: 1.5rem; background: rgba(0, 0, 0, .82); cursor: zoom-out;
+}
+.lightbox-img {
+  max-width: 95vw; max-height: 90vh; width: auto; height: auto; cursor: default;
+  /* White pad so a transparent PNG reads on the dark backdrop (like the in-page dark
+     figure pad); a thin, harmless frame on opaque images. */
+  background: #ffffff; padding: .5rem; border-radius: .4rem;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, .5);
+}
+.lightbox-close {
+  position: fixed; top: .8rem; right: 1rem; z-index: 1;
+  font-size: 2rem; line-height: 1; cursor: pointer; padding: .2rem .5rem;
+  border: 0; background: none; color: #fff; text-shadow: 0 1px 3px rgba(0, 0, 0, .6);
+}
+.lightbox-close:hover { color: var(--accent); }
+/* Any drug-body image lightbox.js has wired gets the zoom-in affordance. */
+.rcp img[role="button"] { cursor: zoom-in; }
