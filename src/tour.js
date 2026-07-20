@@ -42,6 +42,7 @@
   var SEM_QUERY = "Impact des repas sur la biodisponibilité"; // the demo semantic query
   var TARGET_SNIPPET = "repas riche en graisses";             // distinctive text of the demo hit
   var SEM_TIMEOUT_MS = 18000;            // give the embed service this long before offering "skip"
+  var RCP_ARRIVAL_MS = 1400;             // pause on landing so the reader registers the new page
   var TOTAL = 9;                         // total numbered steps (2 home + 7 rcp)
 
   // ---- small DOM helpers ---------------------------------------------------
@@ -390,7 +391,10 @@
   function startRcp() {
     try { sessionStorage.removeItem(RESUME_KEY); } catch (e) {}
     track("tour-debut", { phase: "rcp" });
-    stepAsof();
+    // Hold off on the first card: the reader just navigated here from the search, so
+    // give them a beat to see they are now on a concrete drug page before the tour
+    // dims it. ("Precedent" back into step 3 calls stepAsof() directly, with no delay.)
+    window.setTimeout(stepAsof, RCP_ARRIVAL_MS);
   }
 
   // Step 3: freshness / source / "En savoir plus".
