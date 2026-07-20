@@ -52,7 +52,7 @@ from lxml import html as lxml_html
 
 import bdpm  # shared, pure-stdlib BDPM tokenising + frequency scoring
 
-__version__ = "0.36.0"  # single source of truth; bump patch/minor per change
+__version__ = "0.36.1"  # single source of truth; bump patch/minor per change
 
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
@@ -2634,11 +2634,13 @@ def main() -> None:
             and page.with_suffix(".html.br").exists()
         )
 
-    def misses():
+    def misses(pbar):
         """Yield (cis, raw, asof) only for records that must be (re)rendered.
 
         Cache hits are appended straight to the index here (no parsing, no
         compression) as the pool pulls this generator, keeping memory streaming.
+        Each hit still advances the shared progress bar (it is one of the
+        len(present) pages), so the bar tracks total progress, not just misses.
         """
         nonlocal reused
         for cis, raw, asof in records():
@@ -2651,6 +2653,7 @@ def main() -> None:
                 new_records[cis] = {"h": rec_hash, "name": hit["name"],
                                     "slug": hit["slug"], "asof": asof}
                 reused += 1
+                pbar.update(1)
                 continue
             miss_hashes[cis] = rec_hash
             yield cis, raw, asof
@@ -2661,16 +2664,18 @@ def main() -> None:
     from tqdm import tqdm
 
     workers = max(1, (os.cpu_count() or 2) - 1)
-    print(f"  rendering with {workers} workers ({len(prev_records)} cached)...")
-    with Pool(
-        workers, initializer=_init_worker, initargs=(names, page_tpl, xref, _SUBSTANCES)
-    ) as pool:
-        # misses() is a lazy generator (raw HTML blobs are too big to materialise for a
-        # count), so the total is unknown: tqdm shows count + rate + elapsed, no ETA.
-        for entry in tqdm(
-            pool.imap_unordered(render_record, misses(), chunksize=8),
-            desc="  rendering RCP pages", unit="page", unit_scale=False,
-        ):
+    print(f"  rendering {len(present)} RCP pages with {workers} workers "
+          f"({len(prev_records)} cached)...")
+    # ONE bar over ALL pages (hits + misses). The total is len(present), the exact
+    # streamed-record count, computed cheaply above (cached baseline + overlay glob),
+    # so we get a real %/ETA with NO second pass over the 1 GB source: a cache hit
+    # ticks the bar as misses() appends it, a miss ticks it when the worker returns
+    # its rendered page. So the bar flies through the cheap hits, then paces the
+    # expensive renders, and lands at 100% on the last page.
+    with tqdm(total=len(present), desc="  rendering RCP pages", unit="page") as pbar, \
+            Pool(workers, initializer=_init_worker,
+                 initargs=(names, page_tpl, xref, _SUBSTANCES)) as pool:
+        for entry in pool.imap_unordered(render_record, misses(pbar), chunksize=8):
             if entry is not None:
                 cis = entry["cis"]
                 # Keep the index (-> search-index.json, downloaded by every visitor)
@@ -2682,6 +2687,7 @@ def main() -> None:
                     "slug": entry["slug"],
                     "asof": entry["asof"],
                 }
+            pbar.update(1)  # miss rendered (entry is None only on a worker error)
 
     # EU-authorization stubs: findable landing pages for centrally-authorized
     # drugs whose RCP lives at the EMA (empty ANSM cell -> no normal RCP page).
