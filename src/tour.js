@@ -342,7 +342,7 @@
             "pour ouvrir une fiche. Nous continuons sur un exemple concret.",
       targets: [box, results],
       back: homeSearchBox,
-      buttons: [{ label: "Suivant", primary: true, onClick: goToDrugPage }],
+      buttons: [{ label: "Continuer sur la quétiapine", primary: true, onClick: goToDrugPage }],
     });
     var add = setCleanup();
 
