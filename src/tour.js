@@ -72,7 +72,9 @@
   function ensureOverlay() {
     if (spot) return;
     spot = el("div", "tour-spotlight");
-    spot.style.display = "none";
+    // Hidden via opacity (a class), NOT display:none, so the spotlight fades + glides
+    // smoothly when it (re)appears instead of popping in. See .tour-spotlight in style.css.
+    spot.classList.add("tour-hidden");
     card = el("div", "tour-card");
     document.body.appendChild(spot);
     document.body.appendChild(card);
@@ -113,7 +115,7 @@
     var rect = targets.length ? unionRect(targets) : null;
     if (rect) {
       var pad = 8;
-      spot.style.display = "block";
+      spot.classList.remove("tour-hidden");
       spot.style.top = (rect.top - pad) + "px";
       spot.style.left = (rect.left - pad) + "px";
       spot.style.width = (rect.width + pad * 2) + "px";
@@ -121,7 +123,7 @@
       placeCard({ top: rect.top - pad, left: rect.left - pad,
                   width: rect.width + pad * 2, height: rect.height + pad * 2 });
     } else {
-      spot.style.display = "none";
+      spot.classList.add("tour-hidden");
       centerCard();
     }
   }
@@ -225,7 +227,7 @@
   // Centered modal (welcome / end): full backdrop, no spotlight.
   function showModal(spec) {
     ensureOverlay();
-    spot.style.display = "none";
+    spot.classList.add("tour-hidden");
     targets = [];
     if (!backdrop) { backdrop = el("div", "tour-backdrop"); document.body.appendChild(backdrop); }
     renderCard(spec);
