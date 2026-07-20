@@ -357,11 +357,29 @@ a:hover { text-decoration: underline; }
    gets a subtle tint, the active one a stronger tint + an accent bar and a scroll
    margin so a sticky header doesn't hide it. Theme-aware via color-mix on --accent;
    a browser without color-mix simply gets no tint (graceful). */
-.semsearch-hit { background: color-mix(in srgb, var(--accent) 12%, transparent); border-radius: .3rem; }
+.semsearch-hit {
+  position: relative; /* anchors the floating rank badge below */
+  background: color-mix(in srgb, var(--accent) 12%, transparent); border-radius: .3rem;
+}
+/* Floating rank badge (#1, #2 ...) pinned to the top-right of each highlighted passage
+   IN THE RCP TEXT (not in the results list), so a reader scrolling the drug body can
+   judge each highlighted spot's relevance at a glance. The number mirrors the ordered
+   results list; rcp-semsearch.js sets data-semrank as it tags each paragraph. */
+.semsearch-hit::after {
+  content: "#" attr(data-semrank);
+  position: absolute; top: -.55rem; right: 0; z-index: 2;
+  padding: .02rem .35rem; border-radius: .7rem;
+  font-size: .7rem; font-weight: 700; line-height: 1.5;
+  color: #fff; background: var(--accent);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .3);
+  pointer-events: none; white-space: nowrap;
+}
 .semsearch-current {
   background: color-mix(in srgb, var(--accent) 26%, transparent);
   box-shadow: inset 3px 0 0 var(--accent); scroll-margin: 5rem;
 }
+/* The passage the reader is currently on: ring its badge so "you are here" stands out. */
+.semsearch-current::after { outline: 2px solid var(--bg); box-shadow: 0 1px 5px rgba(0, 0, 0, .45); }
 /* Cross-drug backlinks: inline links to other drugs' pages injected into the RCP
    body by build.py (_linkify), and the "Médicaments liés" list at the foot
    (_xref_html). Inline links get a dotted underline so a reader can tell they

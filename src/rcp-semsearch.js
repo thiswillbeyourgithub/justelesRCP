@@ -617,6 +617,7 @@
   function clearHits() {
     for (const el of highlighted) {
       el.classList.remove("semsearch-hit", "semsearch-current");
+      el.removeAttribute("data-semrank");
     }
     highlighted = [];
     hits = [];
@@ -666,6 +667,9 @@
     let prevSec = null; // group consecutive hits that share a section heading
     hits.forEach((hit, i) => {
       hit.el.classList.add("semsearch-hit");
+      // Floating rank badge on the passage in the text (CSS ::after reads this), so its
+      // relevance rank (#1 best) is visible while scrolling the RCP, not only in the list.
+      hit.el.setAttribute("data-semrank", i + 1);
       highlighted.push(hit.el);
       const sameSection = hit.sec === prevSec;
       const li = document.createElement("li");
