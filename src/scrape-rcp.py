@@ -74,7 +74,8 @@ from lxml import html as lxml_html
 
 import bdpm  # shared, pure-stdlib BDPM tokenising + frequency scoring
 
-ROOT = Path(__file__).parent
+# This script lives in ``src/``; data/ hangs off the repo root (its parent's parent).
+ROOT = Path(__file__).resolve().parent.parent
 DATA = ROOT / "data"
 BDPM_PATH = DATA / "CIS_bdpm.txt"
 # Two more optional BDPM exports (same zip as CIS_bdpm) used only to match drugs

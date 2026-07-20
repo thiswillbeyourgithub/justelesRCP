@@ -47,7 +47,10 @@ HERE = Path(__file__).resolve().parent
 # from the same weights). Mounted read-only into the container from ./models by
 # download-model.sh; NOT served to browsers anymore.
 RUNTIME_MODEL = "Xenova/multilingual-e5-small"
-DEFAULT_MODEL_DIR = HERE / "models" / RUNTIME_MODEL
+# models/ lives at the repo root (this script is in src/), and is mounted at
+# ``/app/models`` in the embed container (HERE = ``/app/src`` there); parent resolves
+# both. EMBED_MODEL_DIR overrides it in the container anyway.
+DEFAULT_MODEL_DIR = HERE.parent / "models" / RUNTIME_MODEL
 
 # e5 models require these asymmetric prefixes; the query and passage sides MUST use
 # the matching one. Derived from the model name so a non-e5 swap needs no prefix.

@@ -37,4 +37,4 @@ fi
 
 echo "Done. models/${MODEL_REPO} ready (mounted read-only into the embed container)."
 echo "Next: docker compose -f docker/docker-compose.yml up -d --build   (starts the embed service), or"
-echo "      uv run embed-rcp.py --limit 60   (OPTIONAL: pre-bake vectors offline to warm the backlog)"
+echo "      uv run src/embed-rcp.py --limit 60   (OPTIONAL: pre-bake vectors offline to warm the backlog)"

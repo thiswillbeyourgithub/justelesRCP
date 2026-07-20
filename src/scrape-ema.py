@@ -61,8 +61,11 @@ import click
 import httpx
 from loguru import logger
 
+# HERE = this script's dir (``src/``), used to import sibling scripts by path below.
+# data/ hangs off the repo root (HERE's parent).
 HERE = Path(__file__).resolve().parent
-DATA = HERE / "data"
+ROOT = HERE.parent
+DATA = ROOT / "data"
 EU_OVERLAY_DIR = DATA / "eu"
 EMA_MANIFEST_PATH = DATA / ".scrape-ema-manifest.json"
 ANSM_MANIFEST_PATH = DATA / ".scrape-manifest.json"  # source of the ema_pdf links

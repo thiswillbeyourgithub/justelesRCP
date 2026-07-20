@@ -17,9 +17,11 @@ WORKDIR /app
 # The service imports build.py, scrape-rcp.py and (for the EMA /eu/ lane)
 # scrape-ema.py + ema_pdf.py by path, and renders pages from the RCP template, so
 # all of those plus src/rcp.html must be in the image. build.py and scrape-rcp.py
-# both import the shared bdpm.py helper module, so it ships too. Everything else
-# (data, dist) is bind-mounted at runtime by compose.
-COPY build.py scrape-rcp.py scrape-ema.py ema_pdf.py refresh-service.py bdpm.py ./
+# both import the shared bdpm.py helper module, so it ships too. These sources live
+# in src/ in the repo; we COPY them into ./src/ so the container mirrors the repo
+# layout (build.py's ROOT = its parent's parent = /app, with data/ + dist/ mounted at
+# /app/data + /app/dist). Everything else (data, dist) is bind-mounted by compose.
+COPY src/build.py src/scrape-rcp.py src/scrape-ema.py src/ema_pdf.py src/refresh-service.py src/bdpm.py ./src/
 COPY src/rcp.html ./src/rcp.html
 
 # Read-only rootfs at runtime: don't try to write .pyc; log unbuffered so lines
@@ -40,4 +42,4 @@ LABEL git.sha=$GIT_SHA
 EXPOSE 8460
 # Listen on all interfaces so Caddy (same compose network) can reach it; it is
 # NOT published to the host (see compose: no ports:), only reachable via the proxy.
-CMD ["python", "refresh-service.py", "--host", "0.0.0.0", "--port", "8460"]
+CMD ["python", "src/refresh-service.py", "--host", "0.0.0.0", "--port", "8460"]

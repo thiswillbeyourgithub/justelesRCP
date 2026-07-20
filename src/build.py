@@ -52,9 +52,13 @@ from lxml import html as lxml_html
 
 import bdpm  # shared, pure-stdlib BDPM tokenising + frequency scoring
 
-__version__ = "0.40.0"  # single source of truth; bump patch/minor per change
+__version__ = "0.40.1"  # single source of truth; bump patch/minor per change
 
-ROOT = Path(__file__).parent
+# This script lives in ``src/`` (alongside the frontend templates it renders), so the
+# repo root is its parent's parent; data/, src/ and dist/ all hang off that root. In the
+# refresh/embed containers the file sits at ``/app/src/build.py`` with data/ + dist/
+# mounted at ``/app/data`` + ``/app/dist``, so the same parent.parent anchoring holds.
+ROOT = Path(__file__).resolve().parent.parent
 DATA = ROOT / "data"
 SRC = ROOT / "src"
 DIST = ROOT / "dist"

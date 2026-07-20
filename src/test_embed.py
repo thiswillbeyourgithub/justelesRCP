@@ -594,7 +594,8 @@ _RCP_TEMPLATE_SLOTS = (
 def _render_one_rcp(d):
     """Render a minimal RCP page in a temp DIST, returning (row, html). Sets the
     module globals render_record reads (normally primed by the pool worker)."""
-    tpl = (Path(__file__).parent / "src" / "rcp.html").read_text()
+    # This test now lives in src/ alongside rcp.html (a sibling), same dir as build.py.
+    tpl = (Path(__file__).parent / "rcp.html").read_text()
     raw = ('<html><body><div id="textDocument">'
            '<p class="AmmAnnexeTitre1">1. DENOMINATION DU MEDICAMENT</p>'
            '<p>DOLIPRANE 1000 mg, comprime. Contient du paracetamol.</p>'

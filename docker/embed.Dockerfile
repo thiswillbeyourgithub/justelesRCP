@@ -24,8 +24,10 @@ WORKDIR /app
 # compress / write_vec_json) and onnx_embed.py (the warm encoder) by path. build.py
 # imports the shared bdpm.py, and renders nothing here but reads src/rcp.html lazily
 # in code paths we don't hit; ship it anyway for parity/safety with the refresh
-# image. Everything else (data, dist, models) is bind-mounted at runtime by compose.
-COPY build.py bdpm.py onnx_embed.py embed-service.py ./
+# image. These sources live in src/ in the repo; we COPY them into ./src/ so the
+# container mirrors the repo layout (build.py's ROOT = parent's parent = /app, with
+# data/dist/models mounted at /app/...). Everything else is bind-mounted by compose.
+COPY src/build.py src/bdpm.py src/onnx_embed.py src/embed-service.py ./src/
 COPY src/rcp.html ./src/rcp.html
 
 # Read-only rootfs at runtime: don't try to write .pyc; log unbuffered so lines reach
@@ -42,4 +44,4 @@ LABEL git.sha=$GIT_SHA
 EXPOSE 8461
 # Listen on all interfaces so Caddy (same compose network) can reach it; it is NOT
 # published to the host (see compose: no ports:), only reachable via the proxy.
-CMD ["python", "embed-service.py", "--host", "0.0.0.0", "--port", "8461"]
+CMD ["python", "src/embed-service.py", "--host", "0.0.0.0", "--port", "8461"]

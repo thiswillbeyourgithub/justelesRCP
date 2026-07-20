@@ -67,4 +67,4 @@ for f in CIS_bdpm CIS_COMPO_bdpm CIS_GENER_bdpm; do
   fi
 done
 
-echo "Done. Now run: uv run build.py"
+echo "Done. Now run: uv run src/build.py"

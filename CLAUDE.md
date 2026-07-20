@@ -28,11 +28,28 @@ version-only bump does not invalidate the incremental-build cache (below).
 
 ## Architecture (the important part)
 
+**Repository layout:** ALL Python lives in `src/` (the same directory as the
+frontend templates/assets it renders), NOT the repo root: `src/build.py`,
+`src/bdpm.py`, `src/ema_pdf.py`, `src/onnx_embed.py`, `src/scrape-rcp.py`,
+`src/scrape-ema.py`, `src/refresh-service.py`, `src/embed-service.py`,
+`src/embed-rcp.py`, plus the tests `src/test_embed.py` / `src/test_ema_seed.py`.
+They stay siblings so `import bdpm` and the importlib-by-path service imports keep
+resolving; each anchors the repo root as `Path(__file__).resolve().parent.parent`
+(so `data/`, `src/`, `dist/`, `models/` hang off it). Invoke them as `uv run
+src/<script>.py`. The refresh/embed Docker images COPY these into `/app/src/` so the
+container mirrors the repo (same `parent.parent` anchoring; data/dist mounted at
+`/app/...`). The shell helpers (`download-data.sh`, `download-model.sh`,
+`reset-scrape-data.sh`) and `deploy.sh` stay at the repo root. Note: elsewhere in
+this file the scripts are still referred to by their bare name (`build.py`, etc.);
+they all live under `src/`. When editing, keep this in sync with `docker/*.Dockerfile`
+(the `COPY src/*.py ./src/` lines + `CMD ["python", "src/<svc>.py", ...]`) and
+`deploy.sh`'s `BAKED_SOURCES`.
+
 Two stages, cleanly separated:
 
 1. **Build** (`build.py`, a `uv` PEP 723 script): reads the source data from
    `./data`, cleans each RCP's ANSM HTML, and writes a fully static site to
-   `./dist`. Run with `uv run build.py`. This is where all the work happens.
+   `./dist`. Run with `uv run src/build.py`. This is where all the work happens.
 2. **Serve** (`docker compose up`): Caddy serves `./dist` read-only. No dynamic
    code, no database.
 
@@ -818,13 +835,13 @@ Key facts that aren't obvious from a single file:
                           #  gitignored) for SERVER-SIDE per-drug semantic search (mounted read-only
                           #  into the embed container; no longer served to browsers). Skip it and the
                           #  "Recherche sémantique dans ce RCP" box just degrades to "indisponible".
-uv run scrape-rcp.py --limit 60   # OPTIONAL manual/one-time bulk scrape into data/rcp/ overlay
+uv run src/scrape-rcp.py --limit 60   # OPTIONAL manual/one-time bulk scrape into data/rcp/ overlay
                                   # (the refresh service's perpetual crawler now does routine
                                   #  freshening; use this for a first --all seed or an ad-hoc batch)
                                   # env: RCP_OVERLAY_GZIP (gzip overlays, default on),
                                   # RCP_SCRAPE_RATE_SECONDS (base gap between fetches);
                                   # logs a progress bar + ETA and the trigger (user/timer)
-uv run scrape-ema.py --limit 60   # OPTIONAL bulk scrape of EMA product-information PDFs into
+uv run src/scrape-ema.py --limit 60   # OPTIONAL bulk scrape of EMA product-information PDFs into
                                   # data/eu/ overlays (converted to HTML by ema_pdf.py). Reads the
                                   # ema_pdf links scrape-rcp.py harvested; own manifest
                                   # data/.scrape-ema-manifest.json. The refresh service's EMA crawler
@@ -836,18 +853,18 @@ uv run scrape-ema.py --limit 60   # OPTIONAL bulk scrape of EMA product-informat
                                   # own EPAR-documents JSON dump (brand-joined, ~97% of auth-groups)
                                   # so a first seed needs no prior per-CIS ANSM harvest; --ema-json
                                   # <file> uses a local dump, --dry-run reports the plan and exits.
-uv run embed-rcp.py --limit 60    # OPTIONAL offline pre-bake of the semantic-search vectors (warms
+uv run src/embed-rcp.py --limit 60    # OPTIONAL offline pre-bake of the semantic-search vectors (warms
                                   # the backlog before a first deploy). Reuses the SAME warm encoder
                                   # (onnx_embed) + one-page core (build.embed_page_to_vec) the embed
                                   # service uses, over build.iter_overlay_raw (CRAWLED overlays only,
                                   # --no-eu for RCP only), writing dist/<rcp|eu>/<slug>.vec.json
                                   # DIRECTLY with the same src_hash. No manifest (content-hash gated).
-                                  # Needs ./download-model.sh's model + a prior `uv run build.py`.
-uv run build.py           # build ./dist from ./data (overlay wins over the 2022 CSV; a data/eu
+                                  # Needs ./download-model.sh's model + a prior `uv run src/build.py`.
+uv run src/build.py           # build ./dist from ./data (overlay wins over the 2022 CSV; a data/eu
                           #  overlay makes /eu/<cis> a full converted page instead of a stub). Does NOT
                           #  bake vectors anymore: the embed service / embed-rcp.py write .vec.json
                           #  directly; build.py only prunes orphan .vec.json when a slug is dropped.
-uv run refresh-service.py # optional: run the refresh API on :8460 (behind Caddy /api/*)
+uv run src/refresh-service.py # optional: run the refresh API on :8460 (behind Caddy /api/*)
                           # runs TWO perpetual frequency-ordered crawlers (ANSM + EMA /eu/) +
                           #  on-demand button/auto refreshes for both; pings the embed service
                           #  (EMBED_NOTIFY_URL) after each fresh overlay so it re-embeds the page
@@ -856,7 +873,7 @@ uv run refresh-service.py # optional: run the refresh API on :8460 (behind Caddy
                           # REFRESH_EMA_RATE_SECONDS (300) + REFRESH_EMA_CRAWL_TTL_DAYS (180);
                           # REFRESH_LOG_LEVEL (INFO, health never logged);
                           # GET /api/stats returns crawl counters + crawl (ANSM) + crawl_eu gauges
-uv run embed-service.py   # optional: warm SERVER-SIDE embedder on :8461 (behind Caddy /api/sem/*)
+uv run src/embed-service.py   # optional: warm SERVER-SIDE embedder on :8461 (behind Caddy /api/sem/*)
                           # keeps the ONNX encoder warm; embeds the reader's query on request
                           #  (no browser model) + (re-)embeds each CRAWLED page's sections in the
                           #  background, writing dist/<rcp|eu>/<slug>.vec.json (never the 2022 baseline)
@@ -876,7 +893,7 @@ docker compose -f docker/docker-compose.yml up --build # after changing Caddyfil
                                                        # a plain `up` reuses the old image and ships stale code
 ```
 
-To rebuild after a data refresh: re-run `download-data.sh` then `uv run build.py`;
+To rebuild after a data refresh: re-run `download-data.sh` then `uv run src/build.py`;
 the build is incremental (only changed drugs are re-rendered; see the
 `.build-manifest.json` note above), so a rebuild on unchanged data is fast.
 Restart is not needed (Caddy reads the mounted dir live), but a
@@ -980,8 +997,9 @@ Restart is not needed (Caddy reads the mounted dir live), but a
   (~260M) and the semantic-search `models/` (~120M, mounted read-only at runtime, NOT
   COPYd); without it every `up --build` ships ~1GB+ to the daemon and can fail the
   build on a small VPS ("no space left on device"), leaving no containers. The refresh
-  Dockerfile bakes `build.py` / `scrape-rcp.py` / `scrape-ema.py` / `ema_pdf.py` /
-  `refresh-service.py` / `bdpm.py` / `src/rcp.html`, and pip-installs `pymupdf` (fitz)
+  Dockerfile bakes `src/build.py` / `src/scrape-rcp.py` / `src/scrape-ema.py` /
+  `src/ema_pdf.py` / `src/refresh-service.py` / `src/bdpm.py` / `src/rcp.html` (COPYd
+  into `/app/src/`), and pip-installs `pymupdf` (fitz)
   alongside the other deps because `ema_pdf.py` needs it for the EMA PDF conversion.
 - **The embed service is a THIRD, separately-hardened container** (compose `embed`,
   `docker/embed.Dockerfile`), same posture as `refresh` (`read_only: true`,
@@ -999,8 +1017,9 @@ Restart is not needed (Caddy reads the mounted dir live), but a
   a normal deploy from wiping the live index). To regenerate them on purpose after a
   segmentation change (see `_CHUNK_FORMAT_VERSION`), `deploy.sh --re-embed` deletes the
   VPS sidecars so the reconcile sweep re-embeds every crawled page; do NOT re-add
-  `*.vec.json` to the rsync mirror. The Dockerfile bakes `build.py` / `bdpm.py` / `onnx_embed.py` /
-  `embed-service.py` / `src/rcp.html` and pip-installs `onnxruntime` + `tokenizers`
+  `*.vec.json` to the rsync mirror. The Dockerfile bakes `src/build.py` / `src/bdpm.py` /
+  `src/onnx_embed.py` / `src/embed-service.py` / `src/rcp.html` (COPYd into `/app/src/`)
+  and pip-installs `onnxruntime` + `tokenizers`
   (NOT torch, so ~300 Mo not ~2 Go). It is fully optional: `up web refresh` omits it
   and the search box degrades to "indisponible". PRIVACY: it embeds the reader's query
   same-origin but logs NO query content (counts/latency only) and drops it right after
