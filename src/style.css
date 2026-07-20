@@ -78,6 +78,9 @@ a:hover { text-decoration: underline; }
   padding: 12vh 1.2rem 2rem; text-align: center;
 }
 .hero h1 { font-size: 2.6rem; margin: 0 0 .3rem; letter-spacing: -.02em; }
+/* Author byline directly under the home title (the credit the reader sees first);
+   the same "Olivier Cornelis" link is repeated small in every page footer (.credit). */
+.hero .byline { color: var(--muted); margin: 0 0 1.2rem; font-size: 1rem; }
 .tag { color: var(--muted); margin: 0 0 2rem; }
 .searchbox { position: relative; text-align: left; }
 #q {
@@ -441,6 +444,8 @@ a:hover { text-decoration: underline; }
   color: var(--muted); font-size: .8rem; border-top: 1px solid var(--line);
 }
 .foot p { margin: 0; }
+/* "par Olivier Cornelis" credit line, mirrored from the home byline into every footer. */
+.foot .credit { margin-top: .4rem; }
 .foot .ver { margin-top: .4rem; opacity: .6; font-size: .75rem; }
 
 /* --- guided tour (tour.js) --- */
