@@ -1,18 +1,48 @@
 /* justelesRCP - one small stylesheet, no external fonts, no framework. */
 :root {
+  color-scheme: light;
+  /* Light palette (the default). */
   --bg: #ffffff;
   --fg: #1a1c20;
   --muted: #5b616e;
   --accent: #0b6bcb;
   --line: #e4e7ec;
   --card: #f7f8fa;
+  /* Dark palette values, defined ONCE here and remapped onto the active vars by the
+     two dark triggers below (OS preference OR the explicit toggle). Keeping the colour
+     literals in a single place avoids duplicating them; only the short remap block is
+     repeated, which a @media query and an attribute selector cannot share in plain CSS. */
+  --d-bg: #14161a;
+  --d-fg: #e7e9ee;
+  --d-muted: #9aa2b1;
+  --d-accent: #6db3ff;
+  --d-line: #2a2e37;
+  --d-card: #1c1f26;
+  /* Figure images (EMA diagrams, molecular structures...) get a white pad behind them
+     ONLY in dark mode, so transparent PNGs authored for a white page stay readable; a
+     no-op in light mode. Flipped to white + padding by the dark triggers below. */
+  --fig-img-bg: transparent;
+  --fig-img-pad: 0;
   --maxw: 46rem;
 }
+/* Dark mode via EITHER trigger, both sharing the --d-* palette + the dark image pad:
+   (a) the OS prefers dark and the reader has NOT forced light via the toggle, or
+   (b) the reader explicitly chose dark. theme.js sets/removes data-theme; "auto" (no
+   attribute) leaves the OS media query in charge. color-scheme flips so native form
+   controls + scrollbars follow the theme too. */
 @media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #14161a; --fg: #e7e9ee; --muted: #9aa2b1;
-    --accent: #6db3ff; --line: #2a2e37; --card: #1c1f26;
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: var(--d-bg); --fg: var(--d-fg); --muted: var(--d-muted);
+    --accent: var(--d-accent); --line: var(--d-line); --card: var(--d-card);
+    --fig-img-bg: #ffffff; --fig-img-pad: .5rem;
   }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: var(--d-bg); --fg: var(--d-fg); --muted: var(--d-muted);
+  --accent: var(--d-accent); --line: var(--d-line); --card: var(--d-card);
+  --fig-img-bg: #ffffff; --fig-img-pad: .5rem;
 }
 * { box-sizing: border-box; }
 /* Smooth in-page jumps; scroll-padding keeps section titles clear of the
@@ -391,7 +421,13 @@ a:hover { text-decoration: underline; }
 .rcp .ema-annexe > summary:hover { color: var(--accent); }
 .rcp .ema-annexe[id], .rcp .ema-annexe > summary[id] { scroll-margin-top: 4rem; }
 .rcp figure { margin: 1rem 0; text-align: center; }
-.rcp figure img { max-width: 100%; height: auto; }
+/* White pad behind figures in dark mode (vars flip in the dark triggers at the top of
+   this file), so transparent EMA PNGs stay legible; no-op in light mode. cursor:zoom-in
+   hints that a click opens the image full-size (lightbox.js). */
+.rcp figure img {
+  max-width: 100%; height: auto; cursor: zoom-in;
+  background: var(--fig-img-bg); padding: var(--fig-img-pad); border-radius: .3rem;
+}
 /* Nested ToC entries: on RCP pages the numbered subsections (4.1, 4.2...)
    under their top-level section, and on full /eu/ pages the SmPC's sections under
    their annex group. The descendant selector indents any further-nested level too
@@ -463,4 +499,21 @@ a:hover { text-decoration: underline; }
   .tour-spotlight { transition: none; }
   .tour-pulse { animation: none; outline: 2px solid var(--accent); }
   .tour-card.tour-anim { animation: none; }
+}
+
+/* --- theme toggle (theme.js) --- */
+/* Cycles auto -> light -> dark. Injected into the top navigation where present, else
+   a fixed top-right control on the sidebar-less landing page. The glyph reflects the
+   current mode (sun/moon/half-disc); the choice persists in localStorage. */
+.theme-toggle {
+  font: inherit; line-height: 1; cursor: pointer;
+  border: 1px solid var(--line); border-radius: .5rem;
+  background: var(--card); color: var(--fg);
+  padding: .3rem .55rem; font-size: 1rem;
+}
+.theme-toggle:hover { border-color: var(--accent); color: var(--accent); }
+.theme-toggle-nav { margin-left: .6rem; vertical-align: middle; }
+.theme-toggle-fixed {
+  position: fixed; top: .7rem; right: .7rem; z-index: 20;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, .18);
 }
