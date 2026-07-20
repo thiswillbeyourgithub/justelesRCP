@@ -5,7 +5,11 @@
   --bg: #ffffff;
   --fg: #1a1c20;
   --muted: #5b616e;
-  --accent: #0b6bcb;
+  --accent: #8a5cf0;
+  /* Same hue as --accent, as an "R G B" triple so rgb(var(--accent-rgb) / a) can
+     derive translucent variants (tour glow/pulse) from the one source colour. Keep
+     it in sync with --accent (CSS cannot extract the channels from a hex var). */
+  --accent-rgb: 138 92 240;
   --line: #e4e7ec;
   --card: #f7f8fa;
   /* Dark palette values, defined ONCE here and remapped onto the active vars by the
@@ -15,7 +19,8 @@
   --d-bg: #14161a;
   --d-fg: #e7e9ee;
   --d-muted: #9aa2b1;
-  --d-accent: #6db3ff;
+  --d-accent: #b48bff;
+  --d-accent-rgb: 180 139 255;
   --d-line: #2a2e37;
   --d-card: #1c1f26;
   /* Figure images (EMA diagrams, molecular structures...) get a white pad behind them
@@ -34,14 +39,16 @@
   :root:not([data-theme="light"]) {
     color-scheme: dark;
     --bg: var(--d-bg); --fg: var(--d-fg); --muted: var(--d-muted);
-    --accent: var(--d-accent); --line: var(--d-line); --card: var(--d-card);
+    --accent: var(--d-accent); --accent-rgb: var(--d-accent-rgb);
+    --line: var(--d-line); --card: var(--d-card);
     --fig-img-bg: #ffffff; --fig-img-pad: .5rem;
   }
 }
 :root[data-theme="dark"] {
   color-scheme: dark;
   --bg: var(--d-bg); --fg: var(--d-fg); --muted: var(--d-muted);
-  --accent: var(--d-accent); --line: var(--d-line); --card: var(--d-card);
+  --accent: var(--d-accent); --accent-rgb: var(--d-accent-rgb);
+  --line: var(--d-line); --card: var(--d-card);
   --fig-img-bg: #ffffff; --fig-img-pad: .5rem;
 }
 * { box-sizing: border-box; }
@@ -497,8 +504,8 @@ a:hover { text-decoration: underline; }
 /* Pulsing ring drawn on the semantic-search result the reader should click. */
 .tour-pulse { border-radius: 8px; animation: tour-pulse 1.3s ease-in-out infinite; }
 @keyframes tour-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(11, 107, 203, .55); }
-  50% { box-shadow: 0 0 0 6px rgba(11, 107, 203, 0); }
+  0%, 100% { box-shadow: 0 0 0 0 rgb(var(--accent-rgb) / .55); }
+  50% { box-shadow: 0 0 0 6px rgb(var(--accent-rgb) / 0); }
 }
 @media (prefers-reduced-motion: reduce) {
   .tour-spotlight { transition: none; }
