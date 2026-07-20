@@ -680,7 +680,10 @@ Key facts that aren't obvious from a single file:
   surviving ranked passage (`.semsearch-hit`) but does NOT auto-jump: `current` stays
   `-1` and the reader picks a passage (click a result, or step the nav bar / Enter),
   which promotes it to `.semsearch-current` and scrolls to it (`setCurrent(i, true)` is
-  the ONLY scroll path; `rank()` never scrolls). It is injected right AFTER the ToC (so
+  the ONLY scroll path; `rank()` never scrolls). Clicking a result ALSO collapses the
+  whole `.semsearch` box first (so the hit in the drug text is unobstructed and the
+  smooth scroll lands on a settled layout); prev/next call `setCurrent` directly and
+  keep the box open. It is injected right AFTER the ToC (so
   the reading column reads pills -> Sommaire -> search) and is `position: sticky` (like
   the ToC), so a reader can search a long RCP without scrolling back up; its offset
   (`top: 7.2rem` on all viewports now the sidebar is gone) stacks under the sticky top

@@ -686,7 +686,15 @@
       snip.className = "semsearch-snippet";
       snip.textContent = displayText(hit);
       a.append(title, snip);
-      a.addEventListener("click", () => setCurrent(i, true));
+      // Clicking a result collapses the whole box first, THEN scrolls to the passage:
+      // closing settles the layout (the panel above the content disappears) before the
+      // smooth scroll, and it gets the results panel out of the reader's way so the hit
+      // in the drug text is unobstructed. Prev/next nav call setCurrent() directly (they
+      // must keep the box open to stay usable), so only a result CLICK collapses it.
+      a.addEventListener("click", () => {
+        box.open = false;
+        setCurrent(i, true);
+      });
       li.append(a);
       results.append(li);
       prevSec = hit.sec;
