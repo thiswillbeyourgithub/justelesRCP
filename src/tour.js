@@ -5,7 +5,7 @@
  * animated). It runs across TWO pages and hands state over the navigation between them:
  *   HOME phase  (on the landing page, body.home): a welcome popup, then TWO steps that
  *               demonstrate the drug search: (1) the search field, then (2) the name
- *               "olanzapine" typed out live, a specific result highlighted, and every
+ *               "quétiapine" typed out live, a specific result highlighted, and every
  *               click OUTSIDE the search box forbidden so the reader stays on rails. It
  *               then navigates to a concrete drug page.
  *   RCP phase   (on ONE specific quetiapine page): walks the reader through the
@@ -68,6 +68,8 @@
   var targets = [];     // elements the current step spotlights
   var raf = 0;          // throttles reposition on scroll/resize
   var perStepCleanup = null; // teardown for a step's ad-hoc listeners/observers/timers
+  var revealPending = false; // while true, keep the spotlight faded out (mid step-scroll)
+  var scrollGen = 0;         // invalidates a stale scroll-settle callback when the step changes
 
   function ensureOverlay() {
     if (spot) return;
@@ -90,6 +92,26 @@
   function scheduleReposition() {
     if (raf) return;
     raf = window.requestAnimationFrame(function () { raf = 0; reposition(); });
+  }
+
+  // Run cb once the smooth-scroll started by showStep has settled: poll the scroll offset
+  // per frame and fire when it stops changing for a few frames (or a hard cap, so it always
+  // fires even if no scroll was needed or the browser janks). Used to hold the spotlight
+  // hidden until the page is stationary, then fade it in.
+  function afterScrollSettles(cb) {
+    var lastY = window.pageYOffset || 0, stable = 0, frames = 0, moved = false;
+    function tick() {
+      if (!spot) return; // torn down
+      var y = window.pageYOffset || 0;
+      if (Math.abs(y - lastY) <= 1) { stable++; } else { moved = true; stable = 0; }
+      lastY = y;
+      frames++;
+      // Settle once movement has stopped, or after a short grace when nothing moved at all
+      // (target already in view), or a hard ~1s cap.
+      if ((moved && stable >= 3) || (!moved && frames >= 4) || frames >= 60) { cb(); return; }
+      window.requestAnimationFrame(tick);
+    }
+    window.requestAnimationFrame(tick);
   }
 
   function unionRect(els) {
@@ -115,11 +137,14 @@
     var rect = targets.length ? unionRect(targets) : null;
     if (rect) {
       var pad = 8;
-      spot.classList.remove("tour-hidden");
+      // Position the spotlight even while it is still hidden (revealPending), so that once
+      // the scroll settles it just fades in at its final resting place instead of gliding
+      // across the page. Lift the fade-out only when the step is no longer mid-scroll.
       spot.style.top = (rect.top - pad) + "px";
       spot.style.left = (rect.left - pad) + "px";
       spot.style.width = (rect.width + pad * 2) + "px";
       spot.style.height = (rect.height + pad * 2) + "px";
+      if (!revealPending) spot.classList.remove("tour-hidden");
       placeCard({ top: rect.top - pad, left: rect.left - pad,
                   width: rect.width + pad * 2, height: rect.height + pad * 2 });
     } else {
@@ -212,14 +237,27 @@
   function showStep(spec) {
     ensureOverlay();
     if (backdrop) { backdrop.remove(); backdrop = null; }
+    var gen = ++scrollGen; // any pending scroll-settle callback from the previous step is now stale
     targets = (spec.targets || []).filter(Boolean);
     var refs = renderCard(spec);
     if (targets.length) {
+      // Keep the spotlight faded out while we scroll the target into view, and reveal it
+      // only once the scroll has settled: the rect fading in on a stationary page reads as
+      // smoother + more intentional than chasing the target across a moving one. The card is
+      // placed right away (reposition below) so it is readable during the scroll.
+      revealPending = true;
+      spot.classList.add("tour-hidden");
+      reposition();
       try { targets[0].scrollIntoView({ block: "center", behavior: "smooth" }); } catch (e) {}
+      afterScrollSettles(function () {
+        if (gen !== scrollGen) return; // superseded by a newer step
+        revealPending = false;
+        reposition();
+      });
+    } else {
+      revealPending = false;
+      reposition();
     }
-    reposition();
-    // Redraw once the smooth-scroll / any <details> opening has settled.
-    window.setTimeout(reposition, 380);
     if (spec.onEnter) spec.onEnter(refs);
     return refs;
   }
@@ -227,6 +265,8 @@
   // Centered modal (welcome / end): full backdrop, no spotlight.
   function showModal(spec) {
     ensureOverlay();
+    ++scrollGen;               // invalidate any pending scroll-settle reveal from a prior step
+    revealPending = false;
     spot.classList.add("tour-hidden");
     targets = [];
     if (!backdrop) { backdrop = el("div", "tour-backdrop"); document.body.appendChild(backdrop); }
@@ -315,7 +355,10 @@
     if (input) {
       input.value = "";
       fire(input, "input");
-      try { input.focus(); } catch (e) {}
+      // Do NOT focus the field: on mobile that pops up the on-screen keyboard, which covers
+      // the tour. The demo types into it programmatically (no focus needed); blur it in case
+      // the landing page's autofocus already grabbed it.
+      try { input.blur(); } catch (e) {}
     }
     showStep({
       step: 1, total: TOTAL,
@@ -328,7 +371,7 @@
     });
   }
 
-  // Step 2: type "olanzapine" live, highlight a result, and forbid clicking anywhere
+  // Step 2: type "quétiapine" live, highlight a result, and forbid clicking anywhere
   // except the search box / a result / the tour card.
   function homeSearch() {
     var input = qs("#q");
@@ -337,7 +380,7 @@
     showStep({
       step: 2, total: TOTAL,
       title: "Rechercher un médicament",
-      body: "Tapez le nom d'un médicament (ici « olanzapine ») : les résultats " +
+      body: "Tapez le nom d'un médicament (ici « quétiapine ») : les résultats " +
             "apparaissent au fur et à mesure. Cliquez le résultat mis en évidence " +
             "pour ouvrir une fiche. Nous continuons sur un exemple concret.",
       targets: [box, results],
@@ -355,7 +398,7 @@
       reposition();
     }
     // Type the name gradually; results render progressively as each input event fires.
-    add(typeInto(input, "olanzapine", 95, pulseFirst));
+    add(typeInto(input, "quétiapine", 95, pulseFirst));
     // Keep the first result pulsing even as the list re-renders while typing / after the
     // index finishes loading.
     if (results) {
@@ -365,7 +408,8 @@
       pulseFirst();
     }
     // Forbid clicking elsewhere. A click on a result continues the tour on the concrete
-    // example page (NOT olanzapine's page, which would drop off the tour rails).
+    // example page (the fixed quétiapine example, NOT whichever result was clicked, which
+    // could drop off the tour rails).
     function guard(ev) {
       var t = ev.target;
       if (card && card.contains(t)) return;                 // card buttons work normally

@@ -790,8 +790,9 @@ Key facts that aren't obvious from a single file:
   compressed like any client asset). It is a **9-step** tour running across TWO pages
   via a sessionStorage handoff (`RESUME_KEY = jlrcp_tour`, value `rcp` going forward,
   `home` going back): a **HOME phase** on the landing page (a welcome popup, then step
-  1 `homeSearchBox` spotlighting the empty `#q` field, then step 2 `homeSearch` which
-  types "olanzapine" letter-by-letter into `#q`, pulses the FIRST `#results` link, and
+  1 `homeSearchBox` spotlighting the empty `#q` field (WITHOUT focusing it, so mobile
+  keyboards stay down), then step 2 `homeSearch` which
+  types "quétiapine" letter-by-letter into `#q`, pulses the FIRST `#results` link, and
   installs a capturing document click-guard that forbids clicking anything but the
   search box / a result / the card, a result click routing to the example page) then
   navigates to **one hardcoded quetiapine page** (CIS `60078765`) where the **RCP
@@ -809,7 +810,10 @@ Key facts that aren't obvious from a single file:
   the `home` handoff) and a top-right **close cross** (the only "skip"; there is no
   separate skip button). Each step change re-triggers a `.tour-anim` fade/rise on the
   card (centered modals are placed in PIXELS, not a translate transform, so the
-  animation's `transform` is free); the spotlight glides via its CSS transition.
+  animation's `transform` is free); the spotlight stays faded out while the step scrolls
+  its target into view (`afterScrollSettles` polls the scroll offset, gated by `revealPending`
+  + a `scrollGen` token) and only fades in once the page is stationary, so the rect appears
+  at rest instead of chasing the target across a moving page.
   Triggers: auto on first landing visit (`localStorage['jlrcp_tour_seen']`), `?tour=1`
   on the landing page (always), or `?tour=rcp` directly on the quetiapine page. It
   drives the closure-encapsulated semantic search purely via the DOM (set `.open`, set
