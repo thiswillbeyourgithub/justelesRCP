@@ -427,6 +427,13 @@ a:hover { text-decoration: underline; }
   box-shadow: 0 12px 40px rgba(0, 0, 0, .35);
   padding: 1rem 1.1rem 1.1rem; pointer-events: auto;
 }
+/* Each step change re-triggers this (tour.js toggles .tour-anim), so the card fades +
+   rises smoothly. Centering is done in pixels (not translate) so `transform` is free. */
+.tour-card.tour-anim { animation: tour-card-in .26s cubic-bezier(.2, .7, .3, 1); }
+@keyframes tour-card-in {
+  from { opacity: 0; transform: translateY(8px) scale(.985); }
+  to   { opacity: 1; transform: none; }
+}
 .tour-close {
   position: absolute; top: .35rem; right: .5rem; border: 0; background: none;
   color: var(--muted); font-size: 1.4rem; line-height: 1; cursor: pointer; padding: .1rem .3rem;
@@ -437,7 +444,8 @@ a:hover { text-decoration: underline; }
 .tour-title { margin: 0 0 .45rem; font-size: 1.05rem; padding-right: 1.2rem; }
 .tour-body { margin: 0; font-size: .92rem; line-height: 1.45; color: var(--fg); }
 .tour-status { margin: .6rem 0 0; font-size: .82rem; color: var(--muted); font-style: italic; }
-.tour-actions { display: flex; flex-wrap: wrap; gap: .5rem; justify-content: flex-end; margin-top: .9rem; }
+/* space-between so "Precedent" sits at the left and the primary action at the right. */
+.tour-actions { display: flex; flex-wrap: wrap; gap: .5rem; justify-content: space-between; margin-top: .9rem; }
 .tour-btn {
   border: 1px solid var(--line); border-radius: 8px; padding: .4rem .8rem;
   font-size: .88rem; cursor: pointer; background: var(--card); color: var(--fg);
@@ -454,4 +462,5 @@ a:hover { text-decoration: underline; }
 @media (prefers-reduced-motion: reduce) {
   .tour-spotlight { transition: none; }
   .tour-pulse { animation: none; outline: 2px solid var(--accent); }
+  .tour-card.tour-anim { animation: none; }
 }
