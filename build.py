@@ -52,7 +52,7 @@ from lxml import html as lxml_html
 
 import bdpm  # shared, pure-stdlib BDPM tokenising + frequency scoring
 
-__version__ = "0.36.2"  # single source of truth; bump patch/minor per change
+__version__ = "0.36.3"  # single source of truth; bump patch/minor per change
 
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
@@ -2035,6 +2035,7 @@ def render_record(item: tuple[str, str, str]) -> dict[str, str] | None:
         + _jsonld(_drug_jsonld(name, cis, description, path, reviewed=ansm))
         + _jsonld(crumb_ld)
     )
+    refs = _ref_links_html(cis, name)  # reused: top of page ({{ASOF}}) + bottom ({{MORE_BOTTOM}})
     page = (
         _TPL.replace("{{TITLE}}", _esc(name))
         .replace("{{DESCRIPTION}}", _esc(description))
@@ -2049,10 +2050,11 @@ def render_record(item: tuple[str, str, str]) -> dict[str, str] | None:
                 ANSM_PAGE_URL.format(cis=cis),
                 "Ouvrir la source officielle",
             ))
-            + _ref_links_html(cis, name),
+            + refs,
         )
         .replace("{{CONTENT}}", cleaned)
         .replace("{{XREF}}", _xref_html(xref_links))
+        .replace("{{MORE_BOTTOM}}", refs)
     )
     out = DIST / "rcp" / f"{slug}.html"
     out.write_text(page, encoding="utf-8")
@@ -2381,12 +2383,13 @@ def render_eu_page(cis: str, overlay_html: str, meta: tuple[str, str, str] | Non
     name, eu, holder = meta
     slug = f"{cis}-{slugify(name)}"
     pdf_url = _eu_pdf_url(overlay_html, name, pdf_fallback)
+    refs = _ref_links_html(cis, name, include_ema=False)  # top ({{ASOF}}) + bottom ({{MORE_BOTTOM}})
     asof = _asof_html(_eu_date(overlay_html), _eu_fetched(overlay_html) or _eu_date(overlay_html)) \
         + _official_source_html(
             _source_button(pdf_url, "Consulter le RCP officiel (PDF) sur le site de l'EMA →"),
             _source_button(_ema_search_url(name), "Recherche EMA →"),
         ) \
-        + _ref_links_html(cis, name, include_ema=False)
+        + refs
     path = f"/eu/{slug}"
     description = _eu_description(name, full=True)
     # A full /eu/ page carries the real converted EMA SmPC/notice, so it IS indexable
@@ -2412,6 +2415,7 @@ def render_eu_page(cis: str, overlay_html: str, meta: tuple[str, str, str] | Non
         .replace("{{ASOF}}", asof)
         .replace("{{CONTENT}}", _eu_full_content(name, eu, holder, overlay_html))
         .replace("{{XREF}}", "")
+        .replace("{{MORE_BOTTOM}}", refs)
     )
     out = DIST / "eu" / f"{slug}.html"
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -2521,6 +2525,7 @@ def _render_stub(cis: str) -> dict:
             .replace("{{ASOF}}", _ref_links_html(cis, name, include_ema=False))
             .replace("{{CONTENT}}", content)
             .replace("{{XREF}}", "")
+            .replace("{{MORE_BOTTOM}}", "")  # stub is thin; no bottom duplicate
         )
         out.write_text(page, encoding="utf-8")
         compress(out)

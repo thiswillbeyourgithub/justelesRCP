@@ -394,7 +394,7 @@ Key facts that aren't obvious from a single file:
   It shares the `.official-link` button style with the stub's EMA button (and, once
   relocated, with the refresh button via `.rcp-refresh .official-link`).
 - **Every page has an external-reference pill row** (`_ref_links_html`, injected
-  into the same `{{ASOF}}` slot): an **"En savoir plus"** bounding box
+  into the same `{{ASOF}}` slot AND duplicated at the bottom): an **"En savoir plus"** bounding box
   (`.rcp-more` + `.rcp-more-title`) wrapping a centered `.rcp-refs` row of small
   `.ref-pill` buttons to **BDPM** (this drug's official record, `ANSM_PAGE_URL`
   keyed by CIS), then **HAS**, **EMA**, **CRAT** and **Vidal**, all full-text
@@ -414,10 +414,15 @@ Key facts that aren't obvious from a single file:
   is a process-wide global (`_SUBSTANCES`, primed by `_init_worker` for pool
   workers, set in `main()` for build_stubs/render_eu_page, and by the refresh
   service at startup) and is folded into `_global_key` (it feeds the pills but is
-  NOT in `_record_hash`, so a composition change must bust the whole cache). Keep
+  NOT in `_record_hash`, so a composition change must bust the whole cache). The
+  SAME block is rendered a second time at the very BOTTOM of `/rcp/` + full `/eu/`
+  pages (after "Médicaments liés"), via a separate `{{MORE_BOTTOM}}` slot: each
+  render path computes the block once and reuses the string for both `{{ASOF}}` (top)
+  and `{{MORE_BOTTOM}}` (bottom); thin `/eu/` stubs fill `{{MORE_BOTTOM}}` empty. Keep
   the contract in sync across
   `load_substances`/`_ref_links_html`/`_init_worker`/`_global_key` (build.py), the
-  `{{ASOF}}` slot in `src/rcp.html`, `.rcp-more`/`.rcp-more-title`/`.rcp-refs`/
+  `{{ASOF}}` + `{{MORE_BOTTOM}}` slots in `src/rcp.html`,
+  `.rcp-more`/`.rcp-more-title`/`.rcp-refs`/
   `.ref-pill` in `style.css`, and the refresh service's `_init_worker` call.
 - **`/a-propos` is a static About page** (`src/a-propos.html`, shipped as a
   static asset): what the site is, the author, a privacy/hosting note, and a
