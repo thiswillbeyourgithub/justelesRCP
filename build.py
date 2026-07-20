@@ -52,7 +52,7 @@ from lxml import html as lxml_html
 
 import bdpm  # shared, pure-stdlib BDPM tokenising + frequency scoring
 
-__version__ = "0.36.4"  # single source of truth; bump patch/minor per change
+__version__ = "0.37.0"  # single source of truth; bump patch/minor per change
 
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
@@ -2798,6 +2798,7 @@ def main() -> None:
         "dev-banner.js",
         "toc.js",
         "rcp-semsearch.js",
+        "tour.js",  # guided product tour (landing + one drug page); loaded by index.html + rcp.html
         "logo.svg",  # the site logo (favicon + README); SVG text, so it compresses well
     )
     # index.html + a-propos.html are hand-written static pages carrying a {{HEAD}}

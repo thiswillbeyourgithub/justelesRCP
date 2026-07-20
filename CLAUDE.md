@@ -767,6 +767,33 @@ Key facts that aren't obvious from a single file:
   (once per opened search session, `{resultats: <count>}`) and `recherche-rcp-nav`
   (`{sens: "precedent"|"suivant"}` per prev/next click). Keep that skip + the two
   events in sync across `src/app-init.js` and `src/rcp-semsearch.js`.
+- **A guided product tour onboards new visitors** (`src/tour.js`, a small
+  dependency-free spotlight/card driver; loaded on `src/index.html` + `src/rcp.html`,
+  registered in `build.py`'s `static_assets` tuple so it is copied + `.gz`/`.br`
+  compressed like any client asset). It runs across TWO pages via a sessionStorage
+  handoff (`jlrcp_tour=rcp`): a **HOME phase** on the landing page (a welcome popup +
+  one step that live-demos the drug search by auto-typing "olanzapine") then navigates
+  to **one hardcoded quetiapine page** (CIS `60078765`) where the **RCP phase** walks
+  the reader through the freshness/refresh/source/"En savoir plus" card (`.rcp-asof` +
+  `.rcp-more`), the Sommaire (`.toc`), the semantic search (it opens `.semsearch`,
+  types the real query « Impact des repas sur la biodisponibilité », waits for the
+  hit whose snippet contains "repas riche en graisses", and lets the reader click it,
+  which collapses the box and scrolls), and finally "Médicaments liés"
+  (`.drug-xref-list`). Triggers: auto on first landing visit
+  (`localStorage['jlrcp_tour_seen']`), `?tour=1` on the landing page (always), or
+  `?tour=rcp` directly on the quetiapine page. It drives the closure-encapsulated
+  semantic search purely via the DOM (set `.open`, set `.semsearch-input.value` +
+  dispatch `input`, observe `.semsearch-results`), so it needs no new API there; the
+  embed service may be slow/absent, so the semantic step has an ~18s "Passer cette
+  étape" fallback. Relaunch entry points: a landing-page `.browse-link`, a landing
+  footer link, and the `?tour=1` URL. It is CSP-safe (same-origin script, no inline
+  handlers/eval, no external assets; only reads the guarded `window.trackEvent`).
+  Keep the contract in sync across `src/tour.js`, the `<script src="/tour.js">` tags
+  in `src/index.html` + `src/rcp.html`, the `.tour-*` styles in `style.css`, the
+  `static_assets` tuple (build.py), and the target ids/classes it hooks (`#q`,
+  `.searchbox`, `#results`, `main.rcp[data-cis]`, `.rcp-asof`, `.rcp-more`, `.toc`,
+  `.semsearch`/`.semsearch-input`/`.semsearch-results`/`.semsearch-hit-link`,
+  `.drug-xref-list`).
 
 ## Commands
 

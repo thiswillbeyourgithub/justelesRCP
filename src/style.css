@@ -406,3 +406,52 @@ a:hover { text-decoration: underline; }
 }
 .foot p { margin: 0; }
 .foot .ver { margin-top: .4rem; opacity: .6; font-size: .75rem; }
+
+/* --- guided tour (tour.js) --- */
+/* The spotlight dims everything OUTSIDE its rect via a huge box-shadow, and is
+   pointer-events:none so the page stays interactive (the search box + the semantic
+   result must remain clickable during the tour). */
+.tour-spotlight {
+  position: fixed; z-index: 2147483000; border-radius: 10px;
+  box-shadow: 0 0 0 100vmax rgba(0, 0, 0, .58);
+  outline: 3px solid var(--accent); outline-offset: 0;
+  pointer-events: none; transition: top .25s ease, left .25s ease, width .25s ease, height .25s ease;
+}
+.tour-backdrop {
+  position: fixed; inset: 0; z-index: 2147483000; background: rgba(0, 0, 0, .58);
+}
+.tour-card {
+  position: fixed; z-index: 2147483001; box-sizing: border-box;
+  max-width: min(360px, 92vw); background: var(--bg); color: var(--fg);
+  border: 1px solid var(--line); border-radius: 12px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, .35);
+  padding: 1rem 1.1rem 1.1rem; pointer-events: auto;
+}
+.tour-close {
+  position: absolute; top: .35rem; right: .5rem; border: 0; background: none;
+  color: var(--muted); font-size: 1.4rem; line-height: 1; cursor: pointer; padding: .1rem .3rem;
+}
+.tour-close:hover { color: var(--fg); }
+.tour-step-num { margin: 0 0 .2rem; font-size: .72rem; letter-spacing: .04em;
+  text-transform: uppercase; color: var(--accent); font-weight: 700; }
+.tour-title { margin: 0 0 .45rem; font-size: 1.05rem; padding-right: 1.2rem; }
+.tour-body { margin: 0; font-size: .92rem; line-height: 1.45; color: var(--fg); }
+.tour-status { margin: .6rem 0 0; font-size: .82rem; color: var(--muted); font-style: italic; }
+.tour-actions { display: flex; flex-wrap: wrap; gap: .5rem; justify-content: flex-end; margin-top: .9rem; }
+.tour-btn {
+  border: 1px solid var(--line); border-radius: 8px; padding: .4rem .8rem;
+  font-size: .88rem; cursor: pointer; background: var(--card); color: var(--fg);
+}
+.tour-btn.ghost:hover { border-color: var(--accent); }
+.tour-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+.tour-btn.primary:hover { filter: brightness(1.08); }
+/* Pulsing ring drawn on the semantic-search result the reader should click. */
+.tour-pulse { border-radius: 8px; animation: tour-pulse 1.3s ease-in-out infinite; }
+@keyframes tour-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(11, 107, 203, .55); }
+  50% { box-shadow: 0 0 0 6px rgba(11, 107, 203, 0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tour-spotlight { transition: none; }
+  .tour-pulse { animation: none; outline: 2px solid var(--accent); }
+}

@@ -22,6 +22,10 @@ slow, for-profit medicine sites.
 - Instant search over ~15,600 medicines, plus crawlable A-Z browse pages
   built for search engines (sitemap, canonical links, structured data and a
   breadcrumb on every page).
+- Built-in guided tour: on a first visit (or via the "Visite guidée" footer link,
+  or the `?tour=1` URL), an interactive walkthrough introduces the search, then, on
+  a concrete example, the update dates, the official source, the table of contents,
+  the semantic search and the cross-drug links.
 - **Natural-language search inside an RCP**: ask a question like "can I take it
   while pregnant?" and the page surfaces the passages that answer the *meaning*
   of your question, not just the exact words. Your question is analysed on our
