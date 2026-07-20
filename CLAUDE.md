@@ -179,8 +179,14 @@ Key facts that aren't obvious from a single file:
   (renamed slugs, dropped CIS) are pruned by slug set. A `_global_key` (hash of
   `build.py`'s source MINUS the `__version__` line, plus the RCP template) busts
   the whole cache when build logic or the template changes, so any real code
-  edit forces a full rebuild while a version-only bump does not. Full build is
-  ~3 min; an unchanged-data rebuild reuses everything in ~35 s.
+  edit forces a full rebuild while a version-only bump does not. Both render
+  stages fan out over a `multiprocessing.Pool` behind a `%`/ETA `tqdm` bar: the
+  RCP loop (`render_record`, primed by `_init_worker`) and, since v0.36.2, the
+  `/eu/` loop (`_render_stub`, primed per worker by `_init_stub_worker`), which
+  was the serial long pole once a batch of EMA overlays lands (each full
+  converted SmPC page is brotli-heavy). A from-scratch full rebuild (all RCP
+  pages plus ~2.3k full converted `/eu/` pages) is ~12 min on ~11 workers (RCP
+  ~3.5 min, `/eu/` ~9 min); an unchanged-data rebuild reuses everything in ~35 s.
 - **RCP freshness is an overlay, not a live server.** The bulk `data/CIS_RCP.csv`
   is a frozen 2 May 2022 snapshot (the only bulk RCP *HTML* dump in existence;
   the official BDPM download is daily-fresh but metadata-only). `scrape-rcp.py`
@@ -486,7 +492,10 @@ Key facts that aren't obvious from a single file:
   `/api/refresh/<cis>`; the refresh service's EMA lane resolves the PDF (own,
   sibling, or harvested live off the ANSM page) and converts it, and the button's
   poll reloads into the now-full page. Keep the stub contract in sync across
-  `build_stubs`/`load_cap_meta`/`_stub_content`/`_load_ema_links`/`resolve_eu`/
+  `build_stubs` (which now fans its per-CIS body out over a `Pool`: that body is
+  `_render_stub`, primed per worker by `_init_stub_worker`, so a change to how a
+  stub or full page renders goes there, not in an inline loop)/`load_cap_meta`/
+  `_stub_content`/`_load_ema_links`/`resolve_eu`/
   `auth_groups` (build.py) and `extract_ema_pdf` + the manifest `ema_pdf` field
   (scrape-rcp.py), the `{{HEADEXTRA}}` slot in `src/rcp.html`, the `eu`-flag branch
   in `src/search.js`, the `.rcp-stub` button gate in `src/app-init.js`, and

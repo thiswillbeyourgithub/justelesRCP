@@ -52,7 +52,7 @@ from lxml import html as lxml_html
 
 import bdpm  # shared, pure-stdlib BDPM tokenising + frequency scoring
 
-__version__ = "0.36.1"  # single source of truth; bump patch/minor per change
+__version__ = "0.36.2"  # single source of truth; bump patch/minor per change
 
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
@@ -2420,6 +2420,116 @@ def render_eu_page(cis: str, overlay_html: str, meta: tuple[str, str, str] | Non
     return {"cis": cis, "name": name, "slug": slug, "eu": 1}
 
 
+# --- /eu/ page rendering pool ------------------------------------------------
+# build_stubs parallelizes exactly like the RCP stage (render_record): the /eu/
+# set is ~2.3k pages and a full converted SmPC page is brotli-heavy, so a serial
+# loop was the build's slowest stage once a batch of EMA overlays lands (each ~a
+# few seconds). These module-level globals are primed per worker by
+# _init_stub_worker (read-only, pickled once at pool start); _render_stub does the
+# pure per-CIS work, byte-for-byte what the old inline loop did.
+_EU_CAP: dict[str, tuple[str, str, str]] = {}
+_EU_LINKS: dict[str, str] = {}
+_EU_GROUPS: dict[str, list[str]] = {}
+_EU_PAGE_TOKENS: set[str] = set()
+_EU_COMPO: dict[str, set[str]] = {}
+_EU_TPL = ""
+_EU_PREV: dict = {}
+_EU_MEMO: dict[str, str] = {}
+
+
+def _init_stub_worker(cap, ema_links, groups, page_tokens, compo, tpl, prev_records) -> None:
+    global _EU_CAP, _EU_LINKS, _EU_GROUPS, _EU_PAGE_TOKENS, _EU_COMPO, _EU_TPL, _EU_PREV, _EU_MEMO
+    _EU_CAP, _EU_LINKS, _EU_GROUPS = cap, ema_links, groups
+    _EU_PAGE_TOKENS, _EU_COMPO, _EU_TPL, _EU_PREV = page_tokens, compo, tpl, prev_records
+    _EU_MEMO = {}  # per-worker overlay-read memo (a group's siblings in one worker share it)
+
+
+def _render_stub(cis: str) -> dict:
+    """Worker: (re)render one /eu/ page (full converted SmPC or lightweight stub),
+    or reuse its cached output, returning the manifest/index facts for the main
+    process to collect. Kept byte-for-byte identical to the body build_stubs used
+    to run inline, so the incremental cache and page output are unchanged: only the
+    parallelism is new."""
+    name, eu, holder = _EU_CAP[cis]
+    slug = f"{cis}-{slugify(name)}"
+    out = DIST / "eu" / f"{slug}.html"
+    # If this drug's EMA PDF has been fetched + converted (its own overlay OR a
+    # sibling presentation's, since they share one PDF), render the full converted
+    # SmPC/notice on-site (render_eu_page); otherwise a lightweight stub that only
+    # points out. resolve_eu also yields the best PDF link (own, else a sibling's)
+    # so even a stub points at the real doc, not a search.
+    overlay, link = resolve_eu(cis, _EU_CAP, _EU_GROUPS, _EU_LINKS, _EU_MEMO)
+    full = bool(overlay.strip())
+    if full:
+        # The whole converted doc drives the output, so the cache key is the overlay
+        # itself (a re-scrape changes it) plus the metadata rendered around it. The
+        # "full" tag busts the cache if a page flips stub<->full. pdf_url is resolved
+        # the SAME way render_eu_page does, so key and rendered page stay in step.
+        pdf_url = _eu_pdf_url(overlay, name, link)
+        h = hashlib.sha256(
+            "\x00".join(("full", overlay, name, eu, holder, pdf_url)).encode("utf-8")
+        ).hexdigest()
+    else:
+        # Lightweight stub: no EMA text on-site yet, just a pointer out, plus a
+        # same-substance generic link when one actually renders here. Intersect the
+        # stub's active-substance tokens (COMPO col 3) with tokens present in real
+        # page names, dropping salts/short words.
+        hits = {
+            t for t in _EU_COMPO.get(cis, set())
+            if len(t) >= _XREF_MIN_LEN and t not in _XREF_STOP
+        } & _EU_PAGE_TOKENS
+        # Longest token, breaking ties alphabetically. The alphabetical tiebreak is
+        # load-bearing: `hits` is a set whose iteration order varies between runs
+        # (hash randomization), so max(..., key=len) alone would pick a different
+        # term on ties each build, churning the incremental cache.
+        generic = max(hits, key=lambda t: (len(t), t)).lower() if hits else None
+        content = _stub_content(name, eu, holder, generic, link)
+        h = hashlib.sha256(("stub\x00" + content).encode("utf-8")).hexdigest()
+
+    prev = _EU_PREV.get(cis)
+    reused = bool(
+        prev and prev.get("h") == h and out.exists()
+        and out.with_suffix(".html.gz").exists()
+        and out.with_suffix(".html.br").exists()
+    )
+    if not reused and full:
+        render_eu_page(cis, overlay, (name, eu, holder), _EU_TPL, link)
+    elif not reused:
+        page = (
+            _EU_TPL.replace("{{TITLE}}", _esc(name))
+            .replace("{{DESCRIPTION}}", _esc(_eu_description(name, full=False)))
+            # A bare stub is thin (just a pointer out), so it stays noindex; it still
+            # carries a self-canonical (so any inbound link resolves to one URL) +
+            # social tags (so a shared stub link still unfurls).
+            .replace(
+                "{{HEADEXTRA}}",
+                _canonical_link(f"/eu/{slug}")
+                + _social_meta(
+                    f"{name} - RCP", _eu_description(name, full=False), f"/eu/{slug}",
+                )
+                + '<meta name="robots" content="noindex">',
+            )
+            # Visible fil d'Ariane for consistency with RCP/full-eu pages; no
+            # BreadcrumbList JSON-LD (the stub is noindex, so structured data on it
+            # would go unused).
+            .replace(
+                "{{BREADCRUMB}}",
+                _breadcrumb([("Accueil", "/"), (name, f"/eu/{slug}")])[0],
+            )
+            .replace("{{CIS}}", _esc(cis))
+            .replace("{{TOC}}", "")
+            .replace("{{ASOF}}", _ref_links_html(cis, name, include_ema=False))
+            .replace("{{CONTENT}}", content)
+            .replace("{{XREF}}", "")
+        )
+        out.write_text(page, encoding="utf-8")
+        compress(out)
+    return {
+        "cis": cis, "name": name, "slug": slug, "full": full, "reused": reused, "h": h,
+        "asof": (_eu_fetched(overlay) or _eu_date(overlay)) if full else "",
+    }
+
+
 def build_stubs(
     real_index: list[dict[str, str]], page_tpl: str, prev_records: dict
 ) -> tuple[list[dict], dict, int, int]:
@@ -2441,9 +2551,9 @@ def build_stubs(
     # shares ONE EMA PDF, so a presentation with no overlay/link of its own borrows a
     # sibling's (resolve_eu). This is what makes e.g. ABILIFY MAINTENA 300 mg render
     # the same full converted page as 400 mg the moment either sibling is scraped,
-    # instead of staying a bare stub. The overlay-read memo is shared across the loop.
+    # instead of staying a bare stub. The overlay-read memo is per render worker
+    # (_init_stub_worker), so siblings landing in one worker still share a read.
     groups = auth_groups(cap)
-    overlay_memo: dict[str, str] = {}
     eu_dir = DIST / "eu"
 
     def _prune(keep: set[str]) -> None:
@@ -2476,94 +2586,34 @@ def build_stubs(
     stub_index: list[dict] = []
     stub_records: dict = {}
     reused = 0
-    for cis in stub_cis:
-        name, eu, holder = cap[cis]
-        slug = f"{cis}-{slugify(name)}"
-        out = eu_dir / f"{slug}.html"
-        # If this drug's EMA PDF has been fetched + converted (its own overlay OR a
-        # sibling presentation's, since they share one PDF), render the full
-        # converted SmPC/notice on-site (render_eu_page); otherwise a lightweight
-        # stub that only points out. resolve_eu also yields the best PDF link (own,
-        # else a sibling's) so even a stub points at the real doc, not a search.
-        # Overlays live in EU_OVERLAY_DIR (never RCP's); a zero-byte one decodes "".
-        overlay, link = resolve_eu(cis, cap, groups, ema_links, overlay_memo)
-        full = bool(overlay.strip())
-        if full:
-            # The whole converted doc drives the output, so the cache key is the
-            # overlay itself (a re-scrape changes it) plus the metadata rendered
-            # around it. The "full" tag busts the cache if a page flips stub<->full.
-            # pdf_url is resolved the SAME way render_eu_page does, so the key and
-            # the rendered page stay in step.
-            pdf_url = _eu_pdf_url(overlay, name, link)
-            h = hashlib.sha256(
-                "\x00".join(("full", overlay, name, eu, holder, pdf_url)).encode("utf-8")
-            ).hexdigest()
-        else:
-            # Lightweight stub: no EMA text on-site yet, just a pointer out, plus a
-            # same-substance generic link when one actually renders here. Intersect
-            # the stub's active-substance tokens (COMPO col 3) with tokens present
-            # in real page names, dropping salts/short words.
-            hits = {
-                t for t in compo.get(cis, set())
-                if len(t) >= _XREF_MIN_LEN and t not in _XREF_STOP
-            } & page_tokens
-            # Longest token, breaking ties alphabetically. The alphabetical tiebreak
-            # is load-bearing: `hits` is a set, whose iteration order varies between
-            # runs (hash randomization), so `max(..., key=len)` alone would pick a
-            # different term on ties each build, churning the incremental cache.
-            generic = max(hits, key=lambda t: (len(t), t)).lower() if hits else None
-            content = _stub_content(name, eu, holder, generic, link)
-            h = hashlib.sha256(("stub\x00" + content).encode("utf-8")).hexdigest()
-
-        prev = prev_records.get(cis)
-        if (
-            prev and prev.get("h") == h and out.exists()
-            and out.with_suffix(".html.gz").exists()
-            and out.with_suffix(".html.br").exists()
-        ):
-            reused += 1
-        elif full:
-            render_eu_page(cis, overlay, (name, eu, holder), page_tpl, link)
-        else:
-            page = (
-                page_tpl.replace("{{TITLE}}", _esc(name))
-                .replace("{{DESCRIPTION}}", _esc(_eu_description(name, full=False)))
-                # A bare stub is thin (just a pointer out), so it stays noindex; it
-                # still carries a self-canonical (so any inbound link resolves to one
-                # URL) + social tags (so a shared stub link still unfurls).
-                .replace(
-                    "{{HEADEXTRA}}",
-                    _canonical_link(f"/eu/{slug}")
-                    + _social_meta(
-                        f"{name} - RCP", _eu_description(name, full=False),
-                        f"/eu/{slug}",
-                    )
-                    + '<meta name="robots" content="noindex">',
-                )
-                # Visible fil d'Ariane for consistency with RCP/full-eu pages; no
-                # BreadcrumbList JSON-LD (the stub is noindex, so structured data on it
-                # would go unused).
-                .replace(
-                    "{{BREADCRUMB}}",
-                    _breadcrumb([("Accueil", "/"), (name, f"/eu/{slug}")])[0],
-                )
-                .replace("{{CIS}}", _esc(cis))
-                .replace("{{TOC}}", "")
-                .replace("{{ASOF}}", _ref_links_html(cis, name, include_ema=False))
-                .replace("{{CONTENT}}", content)
-                .replace("{{XREF}}", "")
-            )
-            out.write_text(page, encoding="utf-8")
-            compress(out)
-        stub_index.append({"cis": cis, "name": name, "slug": slug, "eu": 1})
-        # ``full`` (indexable full /eu/ page vs noindex stub) + ``asof`` (the EMA
-        # capture date) live only in the manifest, for write_sitemap: a full page is
-        # listed with its lastmod, a bare stub is excluded. Kept off stub_index so the
-        # client-downloaded search-index.json stays lean.
-        stub_records[cis] = {
-            "h": h, "name": name, "slug": slug, "eu": 1, "full": full,
-            "asof": (_eu_fetched(overlay) or _eu_date(overlay)) if full else "",
-        }
+    # Parallel render, mirroring the RCP stage (render_record): the /eu/ set is
+    # ~2.3k pages and a full converted SmPC page is brotli-heavy, so a serial loop
+    # was the build's slowest stage once a batch of EMA overlays lands (each ~a few
+    # seconds). The pure per-CIS body is _render_stub; here we just collect results.
+    # tqdm/Pool lazily (build_stubs runs only in a full build via main(), never in
+    # the refresh/embed containers). One bar over all pages (total known up front),
+    # advanced as each worker returns; a full page is heavier than a stub, so the
+    # rate dips when a freshly-scraped batch flips stub -> full. imap_unordered
+    # returns out of order, but the final search-index.json is re-sorted by CIS.
+    from tqdm import tqdm
+    workers = max(1, (os.cpu_count() or 2) - 1)
+    with tqdm(total=len(stub_cis), desc="  rendering /eu/ pages", unit="page") as pbar, \
+            Pool(workers, initializer=_init_stub_worker,
+                 initargs=(cap, ema_links, groups, page_tokens, compo, page_tpl,
+                           prev_records)) as pool:
+        for r in pool.imap_unordered(_render_stub, stub_cis, chunksize=8):
+            stub_index.append({"cis": r["cis"], "name": r["name"], "slug": r["slug"], "eu": 1})
+            # ``full`` (indexable full /eu/ page vs noindex stub) + ``asof`` (the EMA
+            # capture date) live only in the manifest, for write_sitemap: a full page
+            # is listed with its lastmod, a bare stub is excluded. Kept off stub_index
+            # so the client-downloaded search-index.json stays lean.
+            stub_records[r["cis"]] = {
+                "h": r["h"], "name": r["name"], "slug": r["slug"], "eu": 1,
+                "full": r["full"], "asof": r["asof"],
+            }
+            if r["reused"]:
+                reused += 1
+            pbar.update(1)
 
     _prune({e["slug"] for e in stub_index})
     return stub_index, stub_records, reused, len(stub_cis) - reused
