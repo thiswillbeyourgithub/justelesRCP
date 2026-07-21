@@ -401,13 +401,15 @@ Key facts that aren't obvious from a single file:
   no `data-rcp-asof`) keeps it just under the `.cis` line instead. Directly under the banner,
   `_official_source_html(url, label)` (injected into the same `{{ASOF}}` slot)
   renders a `.rcp-source` link to the authoritative page (ANSM `ANSM_PAGE_URL`,
-  labelled "Ouvrir la source officielle", on `/rcp/`; the EMA PDF + search on full
+  labelled "Ouvrir la source officielle", on `/rcp/`; the direct EMA PDF on full
   `/eu/` pages) so a reader who doubts our copy or spots a rendering bug can open
-  the official one. On RCP pages `app-init.js` relocates this lone `.official-link`
-  UP into the `.rcp-refresh` control (after the button, with an "ou" separator), so
-  the card reads "Rafraîchir maintenant ou Ouvrir la source officielle"; with no JS
-  it stays a standalone `.rcp-source` link below the card. `/eu/` full pages carry
-  TWO source buttons, so they are left in their own `.rcp-source` row (not paired).
+  the official one. On BOTH RCP AND full `/eu/` pages `app-init.js` relocates this
+  lone `.official-link` UP into the `.rcp-refresh` control (after the button, with an
+  "ou" separator), so the card reads "Rafraîchir maintenant ou Ouvrir la source
+  officielle"; with no JS it stays a standalone `.rcp-source` link below the card.
+  `/eu/` full pages now carry a SINGLE source button (the direct PDF): the EMA
+  *search* moved into the "En savoir plus" pill row (`include_ema=True` there), so
+  the lone PDF button is paired just like an RCP page's.
   It shares the `.official-link` button style with the stub's EMA button (and, once
   relocated, with the refresh button via `.rcp-refresh .official-link`).
 - **Every page has an external-reference pill row** (`_ref_links_html`, injected
@@ -417,8 +419,9 @@ Key facts that aren't obvious from a single file:
   keyed by CIS), then **HAS**, **EMA**, **CRAT** and **Vidal**, all full-text
   searches on the drug's active substance. **CRAT** (`CRAT_SEARCH_URL`, lecrat.fr
   WordPress `?s=` search) is the pregnancy/breastfeeding reference; Vidal stays
-  last per the product intent. On `/eu/` pages `include_ema=False` drops the EMA
-  pill (they already carry a direct EMA button). The substance query is
+  last per the product intent. The EMA pill is shown on `/eu/` pages too
+  (`include_ema=True`): it carries the EMA *search*, while the *direct* EMA PDF is a
+  separate source button paired next to "Rafraîchir maintenant". The substance query is
   `load_substances()` (CIS -> cleaned active-substance string from
   `CIS_COMPO_bdpm.txt` column 3, keeping only `SA` rows, combos space-joined). The
   cleaning (`_clean_substance`) drops the parenthetical/after-comma salt AND the
@@ -582,7 +585,8 @@ Key facts that aren't obvious from a single file:
   (`data-rcp-ansm`) and OUR fetch date the "vérifiée le" line + refresh key
   (`data-rcp-asof`); keying the refresh off the fetch date (not the ModDate)
   makes a refresh detectable even when the EMA PDF is unchanged (the common case).
-  It also bakes two source buttons (direct PDF + EMA search) and, when the overlay
+  It bakes ONE source button (the direct PDF; the EMA search is a pill in "En savoir
+  plus") that app-init.js pairs next to the refresh button, and, when the overlay
   is archive-sourced (`_eu_via_archive`), a warn-tinted note telling the reader the
   text came through a web archive. Keep the /eu/
   full-page contract in sync across `ema_pdf.convert`/`_overlay_html`

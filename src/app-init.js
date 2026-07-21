@@ -156,8 +156,9 @@
     // no-JS fallback in .rcp-source) up INTO this control, right after the button
     // with an "ou" separator, so the reader sees "Rafraîchir maintenant ou Ouvrir
     // la source officielle" inside the freshness card. Only a lone source link is
-    // paired (ANSM RCP pages); /eu/ pages carry two source buttons, left in their
-    // own row below the card. No .rcp-source (e.g. a stub) => nothing to pair.
+    // paired: both ANSM RCP pages and full /eu/ pages now carry a single source
+    // button (the direct EMA PDF on /eu/; the EMA search moved to "En savoir plus").
+    // No .rcp-source (e.g. a stub) => nothing to pair.
     const srcP = document.querySelector(".rcp-source");
     if (srcP && srcP.querySelectorAll(".official-link").length === 1) {
       const link = srcP.querySelector(".official-link");
