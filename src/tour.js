@@ -369,6 +369,35 @@
       back: welcomeModal,
       buttons: [{ label: "Suivant", primary: true, onClick: homeSearch }],
     });
+    // Step 1 is "look at the field", not "use it": forbid interacting with anything
+    // (including the field itself) so a stray tap can't focus it (popping the keyboard)
+    // or click a link and derail the tour. Step 2 is where the typing demo happens.
+    var add = setCleanup();
+    function block(ev) {
+      if (card && card.contains(ev.target)) return; // the card's own buttons keep working
+      ev.preventDefault();
+      ev.stopPropagation();
+    }
+    document.addEventListener("click", block, true);
+    add(function () { document.removeEventListener("click", block, true); });
+    if (box) {
+      // Focus fires on pointerdown (before click), so preventDefault THERE stops the field
+      // from being focused/selected. Scoped to the box, so the rest of the page still scrolls.
+      function noFocus(ev) { ev.preventDefault(); }
+      box.addEventListener("mousedown", noFocus, true);
+      box.addEventListener("touchstart", noFocus, { capture: true, passive: false });
+      add(function () {
+        box.removeEventListener("mousedown", noFocus, true);
+        box.removeEventListener("touchstart", noFocus, true);
+      });
+    }
+    if (input) {
+      // Belt and suspenders: if anything still focuses the field (tab key, autofocus race),
+      // blur it back out so the keyboard never comes up during this step.
+      function reblur() { try { input.blur(); } catch (e) {} }
+      input.addEventListener("focus", reblur);
+      add(function () { input.removeEventListener("focus", reblur); });
+    }
   }
 
   // Step 2: type "quétiapine" live, highlight a result, and forbid clicking anywhere
