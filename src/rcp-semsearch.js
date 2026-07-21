@@ -125,6 +125,17 @@
   input.setAttribute("aria-label", "Recherche sémantique dans ce RCP");
   input.setAttribute("minlength", String(MIN_CHARS));
   input.setAttribute("maxlength", String(MAX_CHARS));
+  // Explicit "Rechercher" trigger, next to the field. Encoding a query is a server
+  // round-trip (heavier since the arctic encoder), so we do NOT search per keystroke:
+  // editing hides the previous results and the reader runs the search deliberately
+  // (button or Enter), with only a long-pause auto-search as a fallback (see below).
+  const searchBtn = document.createElement("button");
+  searchBtn.type = "button";
+  searchBtn.className = "semsearch-go";
+  searchBtn.textContent = "Rechercher";
+  const inputRow = document.createElement("div");
+  inputRow.className = "semsearch-inputrow";
+  inputRow.append(input, searchBtn);
   const status = document.createElement("p");
   status.className = "semsearch-status";
   const nav = document.createElement("div");
@@ -143,7 +154,7 @@
   nav.append(prevBtn, counter, nextBtn);
   const results = document.createElement("ol");
   results.className = "semsearch-results";
-  panel.append(input, status, nav, results);
+  panel.append(inputRow, status, nav, results);
   box.append(summary, panel);
   // Sit right AFTER the Sommaire (ToC), so the vertical order reads
   // pills -> Sommaire -> search. Pages with no headings have no `.toc`: fall back
@@ -753,20 +764,40 @@
   });
 
   // --- input wiring ---------------------------------------------------------
-  // Encoding is a round-trip, so search after a short typing pause, not per key.
+  // Encoding a query is a server round-trip (heavier with the arctic encoder), so we do
+  // NOT search per keystroke. Editing the text HIDES the previous results (no stale hits
+  // under a changed question) and asks for a deliberate search: the reader presses
+  // "Rechercher" or Enter. A long-pause auto-search is only a fallback for someone who
+  // never clicks.
+  const AUTO_SEARCH_MS = 1200;
   let timer = null;
+
+  // The query text changed: drop the shown results and prompt for an explicit search.
+  function onQueryEdited() {
+    if (hits.length || highlighted.length) clearHits();
+    lastRanked = ""; // so the next Enter runs a search instead of stepping to a hit
+    const n = input.value.trim().length;
+    if (!n) setStatus("");
+    else if (n < MIN_CHARS) setStatus("Tapez au moins " + MIN_CHARS + " caractères.");
+    else setStatus("Appuyez sur « Rechercher » (ou Entrée).");
+  }
+  // Run the search now, cancelling any pending auto-search.
+  function triggerSearch() { clearTimeout(timer); runSearch(); }
+
   input.addEventListener("input", () => {
     clearTimeout(timer);
-    timer = setTimeout(runSearch, 250);
+    onQueryEdited();
+    timer = setTimeout(runSearch, AUTO_SEARCH_MS); // fallback if the reader never triggers it
   });
   input.addEventListener("keydown", (e) => {
     if (e.key !== "Enter") return;
     e.preventDefault();
-    clearTimeout(timer);
-    // Enter steps to the next hit once results exist; otherwise it forces a search.
-    if (hits.length && input.value.trim() === lastRanked) setCurrent(current + 1, true);
-    else runSearch();
+    // Enter steps to the next hit when the shown results still match the text; otherwise
+    // it runs the search (the usual case, since editing clears the hits + lastRanked).
+    if (hits.length && input.value.trim() === lastRanked) { clearTimeout(timer); setCurrent(current + 1, true); }
+    else triggerSearch();
   });
+  searchBtn.addEventListener("click", triggerSearch);
 
   // Warm the readiness path the first time the reader opens the box (never on load).
   box.addEventListener("toggle", function warm() {

@@ -589,10 +589,13 @@
     var advanced = false;
 
     // Keep nudging the full query in until a hit renders (the embed service may still be
-    // warming up / the reader may have clicked "Suivant" mid-typing).
+    // warming up / the reader may have clicked "Suivant" mid-typing). Typing no longer
+    // auto-searches (rcp-semsearch.js), so trigger the search the way a reader does: put
+    // the full query in the field, then click "Rechercher".
     function nudge() {
-      if (input && input.value !== SEM_QUERY) input.value = SEM_QUERY;
-      fire(input, "input");
+      if (input && input.value !== SEM_QUERY) { input.value = SEM_QUERY; fire(input, "input"); }
+      var go = qs(".semsearch-go", box);
+      if (go) go.click(); else fire(input, "input");
     }
     nudge();
     var nudgeTimer = window.setInterval(nudge, 1600);

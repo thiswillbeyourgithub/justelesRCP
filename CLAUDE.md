@@ -690,8 +690,14 @@ Key facts that aren't obvious from a single file:
   prunes orphan `.vec.json` when a slug is dropped. **The runtime**
   `src/rcp-semsearch.js` gates on `.rcp[data-cis]` (skips `.rcp-stub`); on first open
   it `POST`s `/api/sem/page/<cis>`, polls `GET` until `embedded`, then fetches the
-  `.vec.json`; typing (>= min chars, 250 ms debounce, `AbortController` cancels the
-  superseded embed) `POST`s the query, dequantises + ranks locally with a HYBRID score:
+  `.vec.json`. It does NOT search per keystroke (each query encode is a server
+  round-trip, heavier since the arctic swap): EDITING the query hides the previous
+  results (`onQueryEdited` -> `clearHits`) and prompts for a deliberate search; the
+  reader runs it with the **"Rechercher" button** (`.semsearch-go`) or **Enter**, with a
+  long-pause auto-search (`AUTO_SEARCH_MS`, ~1.2 s) only as a fallback for someone who
+  never clicks. Enter steps to the next hit when the shown results still match the text,
+  else it searches. A search (>= min chars, `AbortController` cancels the superseded
+  embed) `POST`s the query, dequantises + ranks locally with a HYBRID score:
   the semantic cosine PLUS a client-side lexical bonus (`lexicalScore`/`termCredit`, a
   fuzzy word match of the query's terms, accent-folded, stopwords dropped, against each
   section's own words: exact/prefix-inflection/small-edit-distance credit, mean over the
@@ -831,8 +837,9 @@ Key facts that aren't obvious from a single file:
   Triggers: auto on first landing visit (`localStorage['jlrcp_tour_seen']`), `?tour=1`
   on the landing page (always), or `?tour=rcp` directly on the quetiapine page. It
   drives the closure-encapsulated semantic search purely via the DOM (set `.open`, set
-  `.semsearch-input.value` + dispatch `input`, observe `.semsearch-results`), so it
-  needs no new API there; the embed service may be slow/absent, so the pick step (7)
+  `.semsearch-input.value` + dispatch `input`, then click the `.semsearch-go` button to
+  run the search since typing no longer auto-searches, observe `.semsearch-results`), so
+  it needs no new API there; the embed service may be slow/absent, so the pick step (7)
   has an ~18s "Passer cette étape" fallback that jumps to step 9. Relaunch entry
   points: a landing-page `.browse-link`, a landing footer link, and the `?tour=1` URL.
   It is CSP-safe (same-origin script, no inline handlers/eval, no external assets, all
@@ -841,8 +848,8 @@ Key facts that aren't obvious from a single file:
   in `src/index.html` + `src/rcp.html`, the `.tour-*` styles in `style.css` (incl.
   `.tour-anim`), the `static_assets` tuple (build.py), and the target ids/classes it
   hooks (`#q`, `.searchbox`, `#results`, `main.rcp[data-cis]`, `.rcp-asof`, `.rcp-more`,
-  `.toc`, `.semsearch`/`.semsearch-input`/`.semsearch-results`/`.semsearch-hit-link`/
-  `.semsearch-current`/`.semsearch-hit`, `.drug-xref-list`).
+  `.toc`, `.semsearch`/`.semsearch-input`/`.semsearch-go`/`.semsearch-results`/
+  `.semsearch-hit-link`/`.semsearch-current`/`.semsearch-hit`, `.drug-xref-list`).
 
 ## Commands
 

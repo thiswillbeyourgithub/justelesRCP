@@ -300,12 +300,20 @@ a:hover { text-decoration: underline; }
 }
 .semsearch-help-text[hidden] { display: none; }
 .semsearch-panel { padding: .3rem .3rem .2rem; }
+/* Field + "Rechercher" button on one row (typing no longer auto-searches). */
+.semsearch-inputrow { display: flex; gap: .4rem; align-items: stretch; }
 .semsearch-input {
-  width: 100%; box-sizing: border-box; font: inherit;
+  flex: 1 1 auto; min-width: 0; box-sizing: border-box; font: inherit;
   padding: .55rem .8rem; border: 1px solid var(--line); border-radius: .5rem;
   background: var(--bg); color: var(--fg);
 }
 .semsearch-input:focus { outline: 2px solid var(--accent); border-color: transparent; }
+.semsearch-go {
+  flex: 0 0 auto; font: inherit; font-weight: 600; cursor: pointer; white-space: nowrap;
+  padding: .55rem .9rem; border: 1px solid var(--accent); border-radius: .5rem;
+  background: var(--accent); color: #fff;
+}
+.semsearch-go:hover { filter: brightness(1.08); }
 .semsearch-status { color: var(--muted); font-size: .8rem; margin: .5rem .2rem 0; min-height: 1em; }
 /* Prev/next navigator across the ranked passages. */
 .semsearch-nav { display: flex; align-items: center; gap: .5rem; margin: .6rem .2rem .2rem; }
