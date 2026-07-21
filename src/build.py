@@ -52,7 +52,7 @@ from lxml import html as lxml_html
 
 import bdpm  # shared, pure-stdlib BDPM tokenising + frequency scoring
 
-__version__ = "0.43.6"  # single source of truth; bump patch/minor per change
+__version__ = "0.44.0"  # single source of truth; bump patch/minor per change
 
 # This script lives in ``src/`` (alongside the frontend templates it renders), so the
 # repo root is its parent's parent; data/, src/ and dist/ all hang off that root. In the
@@ -969,6 +969,13 @@ def clean_rcp(
 _SEC_CHUNK_CHARS = 500
 _SEC_SNIPPET_CHARS = 160
 _SEC_MIN_CHARS = 24
+# A chunk shorter than this is merged into an adjacent one rather than emitted alone, so
+# a stray enumeration item or a short sentence tail never becomes its own thin, diluted
+# vector: a reader prefers one longer paragraph with context over many scraps (see
+# _merge_small). Merging is bounded by _SEC_MERGE_CEIL_CHARS so a run of small pieces
+# can't grow one chunk without limit; the arctic encoder's context easily covers it.
+_SEC_MERGE_MIN_CHARS = 160
+_SEC_MERGE_CEIL_CHARS = _SEC_CHUNK_CHARS * 2
 # Pure failsafe against a pathological drug blowing the index, NOT a normal limit: at
 # ~_SEC_CHUNK_CHARS per chunk this is ~5 Mo of section text on ONE page, far past any
 # real RCP. It exists only so a broken/gigantic overlay can't emit unbounded chunks.
@@ -986,8 +993,12 @@ _SEC_MAX_CHUNKS = 10000
 # "3" = also drop the "[à compléter ultérieurement par le titulaire]" QRD placeholder;
 # "4" = sentence-grouped chunks (whole sentences up to _SEC_CHUNK_CHARS, word/letter
 # fallbacks) instead of blind word-windows, and the per-page cap raised to a failsafe;
-# "5" = drop chunk_text repeated verbatim within a page (EMA per-presentation notices).
-_CHUNK_FORMAT_VERSION = "5"
+# "5" = drop chunk_text repeated verbatim within a page (EMA per-presentation notices);
+# "6" = REVERSES "2": the section-heading PATH (top heading > subheadings) is now
+# prefixed onto each embedded chunk_text so a passage always carries its section topic
+# in the vector (the snippet stays body-only, so display/locate() are unchanged), and
+# tiny chunks are merged into neighbours (_merge_small) instead of stranded.
+_CHUNK_FORMAT_VERSION = "6"
 
 
 def quantize_int8(values) -> list[int]:
@@ -1093,6 +1104,45 @@ def _sentence_chunks(text: str, limit: int) -> list[str]:
     return chunks
 
 
+def _merge_small(chunks: list[str], min_chars: int, ceiling: int) -> list[str]:
+    """Fold any chunk shorter than ``min_chars`` into an adjacent one so no tiny
+    fragment (a stray enumeration item, a short sentence tail) is emitted as its own
+    thin vector: a reader prefers a longer paragraph with context over many diluted
+    scraps. Greedy, left to right, bounded by ``ceiling`` so a run of small pieces can't
+    grow one chunk without limit. A single small chunk (the whole section is short) is
+    kept as-is (the caller's _SEC_MIN_CHARS floor still drops a genuinely empty one)."""
+    if len(chunks) <= 1:
+        return chunks
+    out: list[str] = []
+    for ch in chunks:
+        if (out and (len(out[-1]) < min_chars or len(ch) < min_chars)
+                and len(out[-1]) + 1 + len(ch) <= ceiling):
+            out[-1] = f"{out[-1]} {ch}"
+        else:
+            out.append(ch)
+    return out
+
+
+# The section-heading nesting level from an ANSM/EMA class attribute:
+# "AmmAnnexeTitre1" -> 1 (top-level section, the sec-N anchor), "AmmAnnexeTitre2" -> 2
+# (numbered subsection like "4.2 Posologie"), deeper levels 3/4 likewise. 0 for a
+# non-heading. Used by section_chunks to build each chunk's heading-path context prefix.
+_TITRE_LEVEL_RE = re.compile(r"AmmAnnexeTitre(\d)")
+
+
+def _titre_level(cls: str) -> int:
+    m = _TITRE_LEVEL_RE.search(cls or "")
+    return int(m.group(1)) if m else 0
+
+
+def _heading_context(top_title: str, sub_path: dict[int, str]) -> str:
+    """The heading-path string prefixed onto a chunk: the top-level section title then
+    each active subheading, deepest last (e.g. "4. Données cliniques > 4.2 Posologie").
+    ``sub_path`` maps nesting level -> current subheading title."""
+    parts = [top_title] + [sub_path[lvl] for lvl in sorted(sub_path)]
+    return " > ".join(p for p in parts if p)
+
+
 def _is_filler_paragraph(text: str) -> bool:
     """True for a narrative paragraph too short/generic, or a QRD template placeholder,
     to carry searchable meaning: RCP boilerplate like "Sans objet." (not applicable), an
@@ -1159,14 +1209,19 @@ def section_chunks(raw: str, cis: str = "") -> list[tuple[str, str, str]]:
 
     Returns ``[(sec_id, snippet, chunk_text), ...]`` where ``sec_id`` is the SAME
     id render_record puts on the section heading (so a search hit scrolls to a real
-    ``#sec-N``), ``snippet`` is a short display excerpt, and ``chunk_text`` is the
-    section BODY text to embed (the model prefix, e.g. e5's "passage:", is added by
-    the caller). The heading itself is NOT embedded: a heading is navigation, not
-    content, and prefixing it dilutes every chunk's vector, so a section with no body
-    (heading only) yields no chunk. Pure stdlib+lxml, no ML dependency; imported by
-    embed-rcp.py. Each section's body is gathered from the heading's following
-    siblings up to the next top-level heading (the same walk _denomination uses)
-    and split into ~_SEC_CHUNK_CHARS windows.
+    ``#sec-N``), ``snippet`` is a short display excerpt (the body alone), and
+    ``chunk_text`` is what gets embedded: the section-heading PATH (top heading, then
+    the numbered subheadings the passage sits under, e.g. "4. Données cliniques > 4.2
+    Posologie") followed by the body text, so every vector carries its section's topic
+    even when the sentence itself never names it (a passage under "4.6 Grossesse"
+    embeds with that heading). The heading path is ONLY in ``chunk_text`` (embedded),
+    never in ``snippet`` (displayed / used by the client's locate() to find the DOM
+    paragraph), so the reader still sees the passage, not the path. The model prefix
+    (e.g. e5's "passage:") is added by the caller. A section with no body (heading
+    only) still yields no chunk (a bare path is not searchable content). Pure
+    stdlib+lxml, no ML dependency; imported by embed-rcp.py. Each section's body is
+    gathered from the heading's following siblings up to the next top-level heading,
+    segmented per subheading, and split into ~_SEC_CHUNK_CHARS windows.
     """
     try:
         doc = _parse_clean(raw)
@@ -1186,37 +1241,82 @@ def section_chunks(raw: str, cis: str = "") -> list[tuple[str, str, str]]:
     if not any(h.get("id") for h in headings):
         _build_toc(inner, depth=1)  # assigns id="sec-N"; empty-title headings get none
     chunks: list[tuple[str, str, str]] = []
-    seen: set[str] = set()  # chunk_text already emitted on THIS page (see _add)
+    seen: set[str] = set()  # body text already emitted on THIS page (dedup, see _add)
 
-    def _add(sec_id: str, body: str) -> bool:
-        """Append one (sec_id, snippet, chunk_text=body); return False once the
-        per-page cap is hit (caller stops). The heading is NOT embedded, so an empty
-        or too-short body is dropped rather than kept as a title-only chunk.
+    def _add(sec_id: str, context: str, body: str) -> bool:
+        """Append one (sec_id, snippet, chunk_text); return False once the per-page cap
+        is hit (caller stops). ``chunk_text`` is the heading-path ``context`` prefixed
+        onto the ``body`` (what gets embedded); ``snippet`` is the body ALONE (what the
+        client displays / matches against the DOM via locate()), so the path never
+        breaks passage resolution. A body shorter than _SEC_MIN_CHARS is dropped rather
+        than kept as a near-empty chunk (a bare heading path is not content).
 
-        Identical chunk_text already emitted on this page is skipped: an EMA notice
-        that repeats a section verbatim per presentation (or ANSM boilerplate) would
-        otherwise embed the SAME text twice (wasted encode) and surface the same
-        passage twice in the results. Keeping the first occurrence's sec-N is fine
-        since the text (hence the vector and the on-page passage) is identical."""
-        chunk_text = _norm_ws(body)
-        if len(chunk_text) < _SEC_MIN_CHARS:
+        Dedup is on the BODY text (not the path+body): an EMA notice that repeats a
+        section verbatim per presentation (or ANSM boilerplate) embeds the identical
+        prose ONCE, not once per copy, avoiding wasted encodes and duplicate results.
+        The first occurrence's heading context and sec-N anchor are kept (identical prose
+        under a different section is rare and, when it happens, its first home is fine)."""
+        body = _norm_ws(body)
+        if len(body) < _SEC_MIN_CHARS:
             return True
-        if chunk_text in seen:
+        if body in seen:
             return True
-        seen.add(chunk_text)
-        snippet = chunk_text[:_SEC_SNIPPET_CHARS]
+        seen.add(body)
+        chunk_text = f"{context}\n{body}" if context else body
+        snippet = body[:_SEC_SNIPPET_CHARS]
         chunks.append((sec_id, snippet, chunk_text))
         return len(chunks) < _SEC_MAX_CHUNKS
+
+    def _flush(sec_id: str, context: str,
+               narrative: list[str], table_rows: list[str]) -> bool:
+        """Emit chunks for one heading-path segment (the body accumulated under a given
+        top-heading > subheading context); return False once the cap is hit. Prose is
+        grouped on whole sentences then small chunks merged (so a section left empty by
+        filler dropping simply yields nothing); table rows are kept intact, each a
+        self-contained linearised row, only a pathological giant row being windowed."""
+        body_all = _norm_ws(
+            " ".join(p for p in narrative if not _is_filler_paragraph(p))
+        )
+        merged = _merge_small(
+            _sentence_chunks(body_all, _SEC_CHUNK_CHARS),
+            _SEC_MERGE_MIN_CHARS, _SEC_MERGE_CEIL_CHARS,
+        )
+        for body in merged:
+            if not _add(sec_id, context, body):
+                return False
+        for row in table_rows:
+            for piece in _char_windows(row, _SEC_CHUNK_CHARS) or [row]:
+                for part in ([piece] if len(piece) <= _SEC_CHUNK_CHARS
+                             else _letter_windows(piece, _SEC_CHUNK_CHARS)):
+                    if not _add(sec_id, context, part):
+                        return False
+        return True
 
     for h_el in inner.xpath(".//*[contains(@class, 'AmmAnnexeTitre1')]"):
         sec_id = h_el.get("id")
         if not sec_id:  # empty-title heading skipped by _build_toc
             continue
+        top_title = _norm_ws(h_el.text_content())
+        sub_path: dict[int, str] = {}  # nesting level -> current subheading title
         narrative: list[str] = []
         table_rows: list[str] = []  # each a self-contained linearised table row
+        capped = False
         for sib in h_el.itersiblings():
-            if "AmmAnnexeTitre1" in (sib.get("class") or ""):
-                break  # next section
+            level = _titre_level(sib.get("class") or "")
+            if level == 1:
+                break  # next top-level section
+            if level >= 2:
+                # A subheading: flush the body gathered under the CURRENT context, then
+                # switch context to this heading (its text becomes the prefix, not body).
+                if not _flush(sec_id, _heading_context(top_title, sub_path),
+                              narrative, table_rows):
+                    capped = True
+                    break
+                narrative, table_rows = [], []
+                for deeper in [lvl for lvl in sub_path if lvl >= level]:
+                    del sub_path[deeper]
+                sub_path[level] = _norm_ws(sib.text_content())
+                continue
             if sib.tag == "table":
                 rows = _linearize_table(sib)
                 if rows:
@@ -1242,24 +1342,11 @@ def section_chunks(raw: str, cis: str = "") -> list[tuple[str, str, str]]:
                 if t.getparent() is not None:
                     t.getparent().remove(t)
             narrative.append(clone.text_content())
-        body_all = _norm_ws(
-            " ".join(p for p in narrative if not _is_filler_paragraph(p))
-        )
-        # Heading-only sections (and sections left empty once filler paragraphs are
-        # dropped) yield no chunk (the heading is not embedded), so they simply drop
-        # out here. Prose is grouped on whole sentences so a chunk ends on a sentence
-        # boundary, not mid-sentence like the old word-windows.
-        for body in _sentence_chunks(body_all, _SEC_CHUNK_CHARS):
-            if not _add(sec_id, body):
-                return chunks
-        # Table rows are kept intact (never merged into the narrative chunks); only a
-        # pathological giant row is itself word/letter-windowed as a safety valve.
-        for row in table_rows:
-            for piece in _char_windows(row, _SEC_CHUNK_CHARS) or [row]:
-                for part in ([piece] if len(piece) <= _SEC_CHUNK_CHARS
-                             else _letter_windows(piece, _SEC_CHUNK_CHARS)):
-                    if not _add(sec_id, part):
-                        return chunks
+        if capped:
+            return chunks
+        if not _flush(sec_id, _heading_context(top_title, sub_path),
+                      narrative, table_rows):
+            return chunks
     return chunks
 
 

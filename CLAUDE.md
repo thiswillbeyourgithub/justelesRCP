@@ -653,9 +653,23 @@ Key facts that aren't obvious from a single file:
   linearised row-by-row (`_linearize_table`: each body row -> "header: cell; header:
   cell", kept intact) instead of `text_content()`-flattened, so posology/table rows
   stay retrievable; non-data/layout tables fall back to flat text. The section HEADING
-  is NOT embedded (it is navigation, not content, and prefixing it dilutes every
-  vector), so `chunk_text` is the section body alone and a heading-only section yields
-  no chunk; DSFR back-to-top links + their "Redirection vers le haut de page" tooltip
+  PATH IS embedded, as a CONTEXT PREFIX (v6 reversed the earlier "heading not embedded"
+  design): each `chunk_text` is `"<top heading> > <subheading> > ...\n<body>"`
+  (`_heading_context` builds the path from the `AmmAnnexeTitre1` top heading plus the
+  numbered `AmmAnnexeTitre2`/3/4 subheadings the passage sits under, `_titre_level`
+  reading the level off the class), so every vector carries its section's topic even
+  when the sentence never names it (a passage under "4.6 Grossesse" embeds with that
+  heading). The prefix is ONLY in the embedded `chunk_text`; the stored `snippet` stays
+  the body ALONE, so the client's `locate()` still matches it against the rendered DOM
+  paragraph and the reader sees the passage, not the path. Chunks are anchored to the
+  TOP-level `sec-N` (a subheading only shapes the prefix, never the anchor), and a
+  heading-only section still yields no chunk (a bare path is not content). Tiny chunks
+  are MERGED into a neighbour (`_merge_small`, below `_SEC_MERGE_MIN_CHARS`, bounded by
+  `_SEC_MERGE_CEIL_CHARS`) rather than stranded, so a stray enumeration item or a short
+  sentence tail never becomes its own thin vector (the reader prefers a longer paragraph
+  with context); table rows stay atomic. Dedup is on the BODY text, so identical prose
+  repeated on a page (EMA per-presentation notices) embeds once. DSFR back-to-top links
+  + their "Redirection vers le haut de page" tooltip
   spans (fresh-scrape chrome) are stripped in `_STRIP_XPATH` so they never reach a
   chunk; and filler narrative paragraphs (`_is_filler_paragraph`: exactly "Sans objet",
   the "[à compléter ultérieurement par le titulaire]" QRD placeholder, `<= 5` chars, or
@@ -752,7 +766,8 @@ Key facts that aren't obvious from a single file:
   `.vec.json` with the SAME `src_hash`, so offline and online vectors never disagree.
   `onnx_embed.RUNTIME_MODEL` (server) and the model `scripts/download-model.sh` fetches MUST
   stay the same weights (query and passage vectors must match). Keep the contract in
-  sync across `section_chunks`/`quantize_int8`/`raw_hash`/`iter_overlay_paths`/
+  sync across `section_chunks`/`_heading_context`/`_titre_level`/`_merge_small`/
+  `quantize_int8`/`raw_hash`/`iter_overlay_paths`/
   `iter_overlay_raw`/`dist_page_for`/`read_vec_meta`/`vec_is_fresh`/`vec_payload`/
   `write_vec_json`/`embed_page_to_vec` (+ the shared `OVERLAY_LANES`/`CIS_RE`)
   (build.py), `onnx_embed.py`, `embed-service.py`, `embed-rcp.py`,

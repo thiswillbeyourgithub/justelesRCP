@@ -82,13 +82,19 @@ def test_section_chunks_align_with_toc():
     joined = {sid: " ".join(c for s, _, c in chunks if s == sid) for sid in chunk_ids}
     assert "paracetamol" in joined["sec-0"].lower()
     assert "grossesse" in joined["sec-1"].lower()
-    # The heading is NOT embedded: chunk_text is the body alone, never the title.
-    assert not joined["sec-1"].lower().startswith("4.6 fertilite")
-    assert "fertilite" not in joined["sec-1"].lower()
-    assert joined["sec-1"].lower().startswith("le paracetamol")
-    # snippets are non-empty and bounded.
-    for _, snippet, _ in chunks:
+    # The heading PATH is now prefixed onto chunk_text (v6): each chunk starts with its
+    # section title, then the body. So the heading text IS embedded (as context).
+    assert joined["sec-1"].lower().startswith("4.6 fertilite")
+    assert "fertilite" in joined["sec-1"].lower()
+    assert "le paracetamol" in joined["sec-1"].lower()  # body follows the path
+    # ...but the SNIPPET stays body-only, so the client's locate() still matches it
+    # against the DOM paragraph (the heading text is never in a rendered <p>).
+    for sec_id, snippet, chunk_text in chunks:
         assert 0 < len(snippet) <= build._SEC_SNIPPET_CHARS
+        assert "fertilite" not in snippet.lower()
+        assert "denomination" not in snippet.lower()
+        # chunk_text = "<path>\n<body>"; the snippet is exactly the body's head.
+        assert chunk_text.split("\n", 1)[-1].startswith(snippet)
     print("ok  test_section_chunks_align_with_toc")
 
 
@@ -105,9 +111,55 @@ def test_heading_only_section_yields_no_chunk():
     # sec-0 (heading only) drops out; sec-1 (has a body) stays.
     assert ids == {"sec-1"}, ids
     text = " ".join(c for _, _, c in chunks).lower()
-    assert "pharmacodynamiques" not in text and "pharmacocinetiques" not in text, text
+    # 5.1 has no body -> no chunk -> its heading is never even a context prefix.
+    assert "pharmacodynamiques" not in text, text
+    # 5.2 DOES have a body, so its heading is now the prefix of that chunk (v6), and the
+    # body follows it.
+    assert "pharmacocinetiques" in text, text
     assert "absorbe rapidement" in text, text
     print("ok  test_heading_only_section_yields_no_chunk")
+
+
+def test_heading_path_context_prefix():
+    # v6: each chunk_text is prefixed with its section-heading PATH (top heading, then
+    # the numbered subheadings it sits under), so a passage carries its topic even when
+    # the sentence never names it. The subheading text is the PREFIX, not body, and the
+    # anchor stays the TOP-level sec-N (a subheading never shifts the anchor).
+    sample = """<div id="textDocument">
+      <p class="AmmAnnexeTitre1">4. DONNEES CLINIQUES</p>
+      <p class="AmmAnnexeTitre2">4.2 Posologie et mode d'administration</p>
+      <p>La dose habituelle est de cinq cents milligrammes deux fois par jour chez l'adulte.</p>
+      <p class="AmmAnnexeTitre2">4.6 Grossesse et allaitement</p>
+      <p>Ce medicament est deconseille pendant toute la duree de la grossesse envisagee.</p>
+    </div>"""
+    chunks = build.section_chunks(sample)
+    # Both bodies live under the ONE top-level section, so both anchor to sec-0.
+    assert {sid for sid, _, _ in chunks} == {"sec-0"}, chunks
+    by_body = {snip[:12]: text for _, snip, text in chunks}
+    poso = next(t for t in by_body.values() if "cinq cents" in t)
+    gross = next(t for t in by_body.values() if "deconseille" in t)
+    # The path is "top > subheading", deepest last, ahead of the body (after a newline).
+    assert poso.startswith("4. DONNEES CLINIQUES > 4.2 Posologie et mode d'administration\n"), poso
+    assert gross.startswith("4. DONNEES CLINIQUES > 4.6 Grossesse et allaitement\n"), gross
+    # The snippet is body-only (no path), so the client's locate() still matches the DOM.
+    for _, snippet, _ in chunks:
+        assert not snippet.startswith("4."), snippet
+    print("ok  test_heading_path_context_prefix")
+
+
+def test_merge_small_chunks():
+    # A tiny tail / stray fragment is folded into a neighbour, never emitted alone, but a
+    # lone short chunk (a genuinely short section) is kept; large chunks are left intact.
+    assert build._merge_small(["x" * 400, "y" * 20], 160, 1000) == ["x" * 400 + " " + "y" * 20]
+    assert build._merge_small(["short"], 160, 1000) == ["short"]  # lone small kept
+    big = ["a" * 400, "b" * 400]
+    assert build._merge_small(big, 160, 1000) == big  # both big -> untouched
+    # The ceiling bounds a merge: a small piece that would overflow is NOT merged.
+    assert build._merge_small(["a" * 900, "b" * 150], 160, 1000) == ["a" * 900, "b" * 150]
+    # Consecutive small pieces coalesce up to the ceiling.
+    assert build._merge_small(["a" * 50, "b" * 50, "c" * 50], 160, 1000) == \
+        ["a" * 50 + " " + "b" * 50 + " " + "c" * 50]
+    print("ok  test_merge_small_chunks")
 
 
 def test_dsfr_backtotop_chrome_stripped():
@@ -536,7 +588,9 @@ def test_duplicate_chunks_within_page_dropped():
     chunks = build.section_chunks(sample)
     texts = [c for _, _, c in chunks]
     assert len(texts) == len(set(texts)), texts  # no duplicate chunk_text on the page
-    assert sum(1 for t in texts if t.startswith("Ce medicament contient")) == 1, texts
+    # Dedup is on the BODY, so the repeated prose is embedded ONCE (chunk_text now carries
+    # a heading-path prefix, so match the body inside it, not a startswith).
+    assert sum(1 for t in texts if "Ce medicament contient" in t) == 1, texts
     print("ok  test_duplicate_chunks_within_page_dropped")
 
 
@@ -776,6 +830,8 @@ if __name__ == "__main__":
     test_quantize_roundtrip()
     test_section_chunks_align_with_toc()
     test_heading_only_section_yields_no_chunk()
+    test_heading_path_context_prefix()
+    test_merge_small_chunks()
     test_dsfr_backtotop_chrome_stripped()
     test_filler_paragraphs_dropped()
     test_empty_and_untitled()
