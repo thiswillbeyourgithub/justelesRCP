@@ -478,7 +478,7 @@ EMBEDDER: Embedder | None = None  # set in main(), read by _Handler
 @click.option("--model-dir", default=str(onnx_embed.DEFAULT_MODEL_DIR), show_default=True,
               envvar="EMBED_MODEL_DIR",
               help="Directory of the ONNX model + tokenizer (env EMBED_MODEL_DIR). "
-                   "Mounted read-only from ./models by download-model.sh.")
+                   "Mounted read-only from ./models by scripts/download-model.sh.")
 @click.option("--intra-threads", type=int, default=4, show_default=True,
               envvar="EMBED_INTRA_THREADS",
               help="onnxruntime intra-op threads (env EMBED_INTRA_THREADS). Query embeds "

@@ -2,7 +2,7 @@
 # Fetch the source datasets into ./data (gitignored). Two public BDPM
 # ("Base de données publique des médicaments") sources on the official sites.
 set -euo pipefail
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."  # anchor at the repo root (this script lives in scripts/)
 mkdir -p data
 
 # 1. RCP dump (Code_CIS <TAB> RCP_html). Large (~1GB uncompressed).

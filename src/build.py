@@ -11,10 +11,10 @@
 Pipeline (id + raw ANSM html) -> (id + cleaned, reskinned static page):
 
   data/CIS_RCP.csv   TSV: Code_CIS <TAB> RCP_html (CSV-quoted, multi-line);
-                     frozen 2022 baseline dump (see download-data.sh)
+                     frozen 2022 baseline dump (see scripts/download-data.sh)
   data/rcp/<cis>.html  optional freshness overlay from scrape-rcp.py; wins over
                      the baseline cell for that CIS (empty file = "no RCP")
-  data/CIS_bdpm.txt  official BDPM CIS -> drug name mapping (see download-data.sh)
+  data/CIS_bdpm.txt  official BDPM CIS -> drug name mapping (see scripts/download-data.sh)
         |
         v
   dist/
@@ -52,7 +52,7 @@ from lxml import html as lxml_html
 
 import bdpm  # shared, pure-stdlib BDPM tokenising + frequency scoring
 
-__version__ = "0.43.3"  # single source of truth; bump patch/minor per change
+__version__ = "0.43.4"  # single source of truth; bump patch/minor per change
 
 # This script lives in ``src/`` (alongside the frontend templates it renders), so the
 # repo root is its parent's parent; data/, src/ and dist/ all hang off that root. In the
@@ -2640,7 +2640,7 @@ def main() -> None:
     # Either input source suffices: the 2022 baseline CSV or a scraped overlay
     # dir (scrape-rcp.py can run standalone without the bulk dump present).
     if not CSV_PATH.exists() and not RCP_OVERLAY_DIR.is_dir():
-        sys.exit(f"missing {CSV_PATH} and {RCP_OVERLAY_DIR} (see README / download-data.sh)")
+        sys.exit(f"missing {CSV_PATH} and {RCP_OVERLAY_DIR} (see README / scripts/download-data.sh)")
 
     print(f"build justelesRCP v{__version__}")
     names = load_names()

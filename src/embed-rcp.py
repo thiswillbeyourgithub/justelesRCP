@@ -66,7 +66,7 @@ onnx_embed = _load_module("onnx_embed.py", "onnx_embed")  # warm ONNX encoder (n
               help="Also embed full /eu/ (EMA) pages, not just ANSM RCP pages.")
 @click.option("--model-dir", default=str(onnx_embed.DEFAULT_MODEL_DIR), show_default=True,
               envvar="EMBED_MODEL_DIR",
-              help="Directory of the ONNX model + tokenizer (run ./download-model.sh).")
+              help="Directory of the ONNX model + tokenizer (run ./scripts/download-model.sh).")
 @click.option("--intra-threads", type=int, default=4, show_default=True,
               help="onnxruntime intra-op threads for the passage encode.")
 @click.option("--force", is_flag=True,

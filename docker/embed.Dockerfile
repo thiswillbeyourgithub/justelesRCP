@@ -15,7 +15,7 @@ FROM python:3.12-slim
 # tokenizers run the int8 e5-small encoder WITHOUT torch (a ~300 MB image, not ~2 GB);
 # lxml + brotli are pulled in via build.py (section_chunks parses HTML, compress()
 # writes the .br sibling). The model itself is NOT baked: it is mounted read-only from
-# the host ./models at runtime (download-model.sh fetches it), so it stays out of the
+# the host ./models at runtime (scripts/download-model.sh fetches it), so it stays out of the
 # image and out of the .dockerignore-excluded build context.
 RUN pip install --no-cache-dir onnxruntime tokenizers numpy "lxml>=5.0" "brotli>=1.1" loguru click
 

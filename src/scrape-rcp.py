@@ -355,7 +355,7 @@ def build_queue(
     ``force`` returns every candidate regardless of the manifest.
     """
     if not BDPM_PATH.exists():
-        raise SystemExit(f"missing {BDPM_PATH} (run download-data.sh first)")
+        raise SystemExit(f"missing {BDPM_PATH} (run scripts/download-data.sh first)")
     catalog = bdpm.read_catalog(BDPM_PATH)
     # Order the queue by frequency score (falling back to CIS_bdpm file order
     # when no list is given): popular drugs get refreshed first.
@@ -367,7 +367,7 @@ def build_queue(
         ordered = bdpm.order_by_score(catalog, scores)
         if not COMPO_PATH.exists():
             logger.warning(
-                "{} absent: matching on drug names only (re-run download-data.sh "
+                "{} absent: matching on drug names only (re-run scripts/download-data.sh "
                 "to add the substance/generic join)", COMPO_PATH.name,
             )
         logger.info(

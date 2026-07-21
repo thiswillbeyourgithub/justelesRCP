@@ -48,8 +48,10 @@ resolving; each anchors the repo root as `Path(__file__).resolve().parent.parent
 (so `data/`, `src/`, `dist/`, `models/` hang off it). Invoke them as `uv run
 src/<script>.py`. The refresh/embed Docker images COPY these into `/app/src/` so the
 container mirrors the repo (same `parent.parent` anchoring; data/dist mounted at
-`/app/...`). The shell helpers (`download-data.sh`, `download-model.sh`,
-`reset-scrape-data.sh`) and `deploy.sh` stay at the repo root. Note: elsewhere in
+`/app/...`). The committed shell helpers (`download-data.sh`, `download-model.sh`) live
+under `scripts/` (invoke them as `./scripts/download-*.sh`, they anchor the repo root via
+`cd "$(dirname "$0")/.."`); the two gitignored helpers (`reset-scrape-data.sh` and
+`deploy.sh`) stay at the repo root. Note: elsewhere in
 this file the scripts are still referred to by their bare name (`build.py`, etc.);
 they all live under `src/`. When editing, keep this in sync with `docker/*.Dockerfile`
 (the `COPY src/*.py ./src/` lines + `CMD ["python", "src/<svc>.py", ...]`) and
@@ -608,7 +610,7 @@ Key facts that aren't obvious from a single file:
   fetched only by `scrape-ema.py` or the refresh service's EMA lane.
 - **Per-drug semantic search runs SERVER-SIDE, on crawled data only, optional**
   (`onnx_embed.py` + `embed-service.py` + `src/rcp-semsearch.js`; `embed-rcp.py` +
-  `download-model.sh` are the offline pre-bake). Each RCP / full `/eu/` page has a
+  `scripts/download-model.sh` are the offline pre-bake). Each RCP / full `/eu/` page has a
   "Recherche sémantique dans ce RCP" box (the summary is worded to signal it is a
   MEANING-based search, and a "?" badge `.semsearch-help` in the summary toggles a
   one-line `.semsearch-help-text` explaining to phrase a question, not keywords; its
@@ -660,7 +662,7 @@ Key facts that aren't obvious from a single file:
   and MRL width: arctic-l-v2.0 = **CLS-pool -> L2, query-only `query: ` prefix (NO passage
   prefix), Matryoshka-truncated to 256 dims** (truncate THEN normalise once), verified
   against the repo config + ONNX graph (inputs `input_ids`/`attention_mask` only, output
-  `token_embeddings`). Swapping `RUNTIME_MODEL` (+ the matching `download-model.sh` fetch)
+  `token_embeddings`). Swapping `RUNTIME_MODEL` (+ the matching `scripts/download-model.sh` fetch)
   re-embeds the whole catalog (`read_vec_meta` gates on the model name). The prior model
   was e5-small (mean-pool, `query:`/`passage:` prefixes, 384 dims). `build.quantize_int8`
   (symmetric `q=round(v*127)`, dequant `q/127`) is the ONE canonical formula, mirrored
@@ -740,14 +742,14 @@ Key facts that aren't obvious from a single file:
   the backlog before a first deploy) reuses the SAME `onnx_embed.Encoder` and
   `build.embed_page_to_vec` over `build.iter_overlay_raw()`, writing the SAME
   `.vec.json` with the SAME `src_hash`, so offline and online vectors never disagree.
-  `onnx_embed.RUNTIME_MODEL` (server) and the model `download-model.sh` fetches MUST
+  `onnx_embed.RUNTIME_MODEL` (server) and the model `scripts/download-model.sh` fetches MUST
   stay the same weights (query and passage vectors must match). Keep the contract in
   sync across `section_chunks`/`quantize_int8`/`raw_hash`/`iter_overlay_paths`/
   `iter_overlay_raw`/`dist_page_for`/`read_vec_meta`/`vec_is_fresh`/`vec_payload`/
   `write_vec_json`/`embed_page_to_vec` (+ the shared `OVERLAY_LANES`/`CIS_RE`)
   (build.py), `onnx_embed.py`, `embed-service.py`, `embed-rcp.py`,
   `src/rcp-semsearch.js`, the `<script>` in `src/rcp.html`, `.semsearch*` in
-  `style.css`, `download-model.sh`, the `/api/sem/*` route + strict CSP in
+  `style.css`, `scripts/download-model.sh`, the `/api/sem/*` route + strict CSP in
   `docker/Caddyfile`, and the `embed` service in `docker/docker-compose.yml` +
   `docker/embed.Dockerfile`. `test_embed.py` covers the pure pieces (int8 round-trip
   bound, `section_chunks` `sec-N` alignment, `vec_payload`/`read_vec_meta` round-trip,
@@ -861,9 +863,9 @@ Key facts that aren't obvious from a single file:
 ## Commands
 
 ```bash
-./download-data.sh        # fetch + auto-extract the frozen 2022 data/CIS_RCP.csv (zip), and
+./scripts/download-data.sh        # fetch + auto-extract the frozen 2022 data/CIS_RCP.csv (zip), and
                           #  refresh data/CIS_bdpm.txt (+ COMPO/GENER) from the LIVE daily BDPM feed
-./download-model.sh       # OPTIONAL: fetch the arctic-embed-l-v2.0 int8 ONNX + tokenizer into
+./scripts/download-model.sh       # OPTIONAL: fetch the arctic-embed-l-v2.0 int8 ONNX + tokenizer into
                           #  ./models (~570 Mo, gitignored) for SERVER-SIDE per-drug semantic search
                           #  (mounted read-only
                           #  into the embed container; no longer served to browsers). Skip it and the
@@ -892,7 +894,7 @@ uv run src/embed-rcp.py --limit 60    # OPTIONAL offline pre-bake of the semanti
                                   # service uses, over build.iter_overlay_raw (CRAWLED overlays only,
                                   # --no-eu for RCP only), writing dist/<rcp|eu>/<slug>.vec.json
                                   # DIRECTLY with the same src_hash. No manifest (content-hash gated).
-                                  # Needs ./download-model.sh's model + a prior `uv run src/build.py`.
+                                  # Needs ./scripts/download-model.sh's model + a prior `uv run src/build.py`.
 uv run src/build.py           # build ./dist from ./data (overlay wins over the 2022 CSV; a data/eu
                           #  overlay makes /eu/<cis> a full converted page instead of a stub). Does NOT
                           #  bake vectors anymore: the embed service / embed-rcp.py write .vec.json
@@ -926,7 +928,7 @@ docker compose -f docker/docker-compose.yml up --build # after changing Caddyfil
                                                        # a plain `up` reuses the old image and ships stale code
 ```
 
-To rebuild after a data refresh: re-run `download-data.sh` then `uv run src/build.py`;
+To rebuild after a data refresh: re-run `scripts/download-data.sh` then `uv run src/build.py`;
 the build is incremental (only changed drugs are re-rendered; see the
 `.build-manifest.json` note above), so a rebuild on unchanged data is fast.
 Restart is not needed (Caddy reads the mounted dir live), but a

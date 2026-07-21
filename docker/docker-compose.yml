@@ -191,7 +191,7 @@ services:
     env_file:
       - .env
     volumes:
-      # Read-only: the warm encoder model + tokenizer (download-model.sh fetches it
+      # Read-only: the warm encoder model + tokenizer (scripts/download-model.sh fetches it
       # into ./models). Mounted, not baked, so it stays out of the image / build
       # context; EMBED_MODEL_DIR defaults to /app/models/Xenova/multilingual-e5-small.
       - ../models:/app/models:ro

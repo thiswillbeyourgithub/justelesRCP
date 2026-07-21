@@ -44,9 +44,9 @@ HERE = Path(__file__).resolve().parent
 
 # The runtime model. MUST match the vectors baked into every .vec.json (a query vector
 # and the passage vectors have to come from the same weights), and the model
-# download-model.sh fetches. Changing it re-embeds the whole catalog (build.read_vec_meta
+# scripts/download-model.sh fetches. Changing it re-embeds the whole catalog (build.read_vec_meta
 # gates on this name). Mounted read-only into the container from ./models by
-# download-model.sh; NOT served to browsers.
+# scripts/download-model.sh; NOT served to browsers.
 RUNTIME_MODEL = "Snowflake/snowflake-arctic-embed-l-v2.0"
 # models/ lives at the repo root (this script is in src/), and is mounted at
 # ``/app/models`` in the embed container (HERE = ``/app/src`` there); parent resolves
@@ -56,7 +56,7 @@ DEFAULT_MODEL_DIR = HERE.parent / "models" / RUNTIME_MODEL
 
 def _profile(model_name: str) -> dict:
     """Per-model runtime recipe, keyed by a substring of the name so a swap only touches
-    RUNTIME_MODEL (+ the matching download-model.sh fetch). Fields:
+    RUNTIME_MODEL (+ the matching scripts/download-model.sh fetch). Fields:
       onnx    : the int8 ONNX file under <model_dir>/onnx/ to load
       pooling : "cls" (first token; arctic-embed v2.0 / XLM-R lineage) or "mean" (e5)
       query   : prefix prepended to a QUERY before tokenising
@@ -101,7 +101,7 @@ class Encoder:
         tok_path = model_dir / "tokenizer.json"
         if not onnx_path.is_file() or not tok_path.is_file():
             raise FileNotFoundError(
-                f"model not found under {model_dir} (run ./download-model.sh): "
+                f"model not found under {model_dir} (run ./scripts/download-model.sh): "
                 f"need onnx/{prof['onnx']} + tokenizer.json"
             )
         opts = ort.SessionOptions()
@@ -234,7 +234,7 @@ class Encoder:
 
 
 if __name__ == "__main__":
-    # Tiny self-test / latency probe (needs ./download-model.sh's model).
+    # Tiny self-test / latency probe (needs ./scripts/download-model.sh's model).
     import time
 
     enc = Encoder(intra_threads=1)

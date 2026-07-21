@@ -13,7 +13,7 @@
 # the baked passage vectors and the runtime query vector must come from the same
 # weights.
 set -euo pipefail
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."  # anchor at the repo root (this script lives in scripts/)
 
 # Keep MODEL_REPO + ONNX_FILE in sync with onnx_embed._profile (the file it loads under
 # onnx/): arctic-embed-l-v2.0 -> onnx/model_int8.onnx.
