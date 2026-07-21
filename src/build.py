@@ -52,7 +52,7 @@ from lxml import html as lxml_html
 
 import bdpm  # shared, pure-stdlib BDPM tokenising + frequency scoring
 
-__version__ = "0.43.5"  # single source of truth; bump patch/minor per change
+__version__ = "0.43.6"  # single source of truth; bump patch/minor per change
 
 # This script lives in ``src/`` (alongside the frontend templates it renders), so the
 # repo root is its parent's parent; data/, src/ and dist/ all hang off that root. In the
@@ -2788,6 +2788,15 @@ def main() -> None:
     # arbitrary order); a stable file avoids needless recompression churn and rsync
     # transfers on unchanged data. Browse (below) gets the real RCP pages only.
     search_rows = sorted(index + stub_index, key=lambda e: e["cis"])
+    # Enrich each row with its active-substance (DCI) string so client-side search can
+    # match a drug by substance, not only its brand name (e.g. "acétylcystéine" ->
+    # HIDONAC), and show the DCI under the name. From _SUBSTANCES (the same cleaned
+    # CIS_COMPO map the pill row uses). Skipped when the DCI is already contained in the
+    # name (redundant), keeping search-index.json lean; absent when composition unknown.
+    for e in search_rows:
+        sub = _SUBSTANCES.get(e["cis"], "")
+        if sub and _sort_key(sub) not in _sort_key(e["name"]):
+            e["sub"] = sub
     idx_json = json.dumps(search_rows, ensure_ascii=False, separators=(",", ":"))
     (DIST / "search-index.json").write_text(idx_json, encoding="utf-8")
     # The version is served at runtime (window.__APP_VERSION__) and injected into

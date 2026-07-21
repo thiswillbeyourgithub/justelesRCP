@@ -6,6 +6,7 @@
   const status = document.getElementById("status");
   let index = [];
   let norm = []; // parallel array of normalized names for matching
+  let normSub = []; // parallel array of normalized substance (DCI) strings, "" if none
   let active = -1;
 
   // Deep link: /?q=term prefills the box so another page can link straight to a
@@ -21,6 +22,7 @@
     .then((data) => {
       index = data;
       norm = data.map((e) => normalize(e.name));
+      normSub = data.map((e) => (e.sub ? normalize(e.sub) : ""));
       status.textContent = index.length.toLocaleString("fr") + " médicaments indexés.";
       if (q.value) render();
     })
@@ -30,14 +32,20 @@
     const t = normalize(term).trim();
     if (!t) return [];
     const out = [];
-    for (let i = 0; i < norm.length && out.length < 30; i++) {
-      if (norm[i].includes(t)) out.push(index[i]);
+    // Match the brand name OR the active substance (DCI), so a search on the substance
+    // (e.g. "acetylcysteine") surfaces every brand carrying it, not just names.
+    for (let i = 0; i < norm.length && out.length < 40; i++) {
+      if (norm[i].includes(t) || normSub[i].includes(t)) out.push(index[i]);
     }
-    // Prefix matches first.
+    // Name matches first (a brand hit beats a substance-only hit), then name-prefix,
+    // then shorter names.
     out.sort((a, b) => {
-      const ap = normalize(a.name).startsWith(t) ? 0 : 1;
-      const bp = normalize(b.name).startsWith(t) ? 0 : 1;
-      return ap - bp || a.name.length - b.name.length;
+      const an = normalize(a.name), bn = normalize(b.name);
+      const am = an.includes(t) ? 0 : 1;
+      const bm = bn.includes(t) ? 0 : 1;
+      const ap = an.startsWith(t) ? 0 : 1;
+      const bp = bn.startsWith(t) ? 0 : 1;
+      return am - bm || ap - bp || a.name.length - b.name.length;
     });
     return out.slice(0, 15);
   }
@@ -52,7 +60,18 @@
       // Most hits are RCP pages (/rcp/); EU-authorization stubs (h.eu) live under
       // /eu/ so they stay out of the RCP link graph. Both resolve via Caddy.
       a.href = (h.eu ? "/eu/" : "/rcp/") + h.slug;
-      a.textContent = h.name;
+      const name = document.createElement("span");
+      name.className = "result-name";
+      name.textContent = h.name;
+      a.appendChild(name);
+      // Show the active substance (DCI) under the brand so the reader sees what they
+      // searched / can learn the substance to search exhaustively.
+      if (h.sub) {
+        const sub = document.createElement("span");
+        sub.className = "result-sub";
+        sub.textContent = h.sub;
+        a.appendChild(sub);
+      }
       li.appendChild(a);
       results.appendChild(li);
     }

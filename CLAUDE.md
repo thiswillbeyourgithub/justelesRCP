@@ -77,7 +77,9 @@ data/eu/<cis>.html[.gz]    EMA SmPC converted from the PDF (scrape-ema.py + ema_
       v
 dist/rcp/<cis>-<slug>.html   one cleaned page per drug (slug from drug name),
                              with a sidebar table of contents (ToC) of sections
-dist/search-index.json       [{cis,name,slug}] consumed by client-side search
+dist/search-index.json       [{cis,name,slug[,sub]}] consumed by client-side search
+                             (sub = active-substance/DCI string, present when known and
+                             not already in the name, so search matches by substance too)
                              (+ {cis,name,slug,eu:1} rows for /eu/ pages below)
 dist/eu/<cis>-<slug>.html    EU-authorization page for a centrally-authorized drug
                              whose RCP lives at the EMA (empty ANSM cell): a full
@@ -114,9 +116,15 @@ Key facts that aren't obvious from a single file:
   by `write_browse()` in `build.py`. Names are bucketed by accent-folded first
   letter; non-alpha names go under `#` (`/browse/num`).
 - **Search is 100% client-side.** `src/search.js` fetches `search-index.json`
-  (~15k name entries) once and does substring matching in the browser. There is
-  no search API. Full-text search over RCP *content* is intentionally NOT
-  supported (that was the tradeoff for a zero-runtime static architecture).
+  (~15k entries) once and does substring matching in the browser, against BOTH the
+  brand name AND the active-substance/DCI string (the optional `sub` field, from the
+  same cleaned `CIS_COMPO` map `load_substances` builds), so a search on the substance
+  (e.g. "acétylcystéine" -> HIDONAC) surfaces every brand carrying it; a name hit ranks
+  above a substance-only hit, and each result shows its DCI under the name
+  (`.result-sub`). There is no search API. Full-text search over RCP *content* is
+  intentionally NOT supported (that was the tradeoff for a zero-runtime static
+  architecture). Keep the `sub` contract in sync across the search-index enrichment
+  (build.py), `search.js`, and `.result-sub`/`.result-name` in `style.css`.
 - **Names come from `CIS_bdpm.txt`**, falling back to the `AmmDenomination`
   parsed from the RCP HTML when the mapping is missing. See `load_names()`.
 - **Cross-drug backlinks link one RCP to another.** `build_xref_index()` builds,
