@@ -46,12 +46,14 @@ EMA once it recovers).
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 import html
 import importlib.util
 import json
 import os
 import random
+import re
 import time
 import unicodedata
 import urllib.parse
@@ -110,6 +112,34 @@ def ema_links(ansm_manifest: dict) -> dict[str, str]:
         if url:
             out[cis] = url
     return out
+
+
+_EMA_PDF_ATTR_RE = re.compile(rb'data-ema-pdf="([^"]+)"')
+
+
+def _overlay_pdf_url(cis: str) -> str | None:
+    """The EMA PDF URL baked into an already-converted overlay (its ``data-ema-pdf``).
+
+    Lets ``--only`` re-fetch a CIS whose ``ema_pdf`` link is absent from the ANSM
+    manifest because it was first fetched via a SIBLING's link (build.resolve_eu
+    group-sharing). The overlay is self-describing (render_eu_page bakes the source
+    URL), so its own page can be refreshed in place from that baked URL without any
+    dependency on the harvested link map. Returns None if there is no overlay / no
+    baked URL."""
+    for suffix in (".html", ".html.gz"):
+        path = EU_OVERLAY_DIR / f"{cis}{suffix}"
+        if not path.is_file():
+            continue
+        try:
+            raw = path.read_bytes()
+            if suffix.endswith(".gz"):
+                raw = gzip.decompress(raw)
+        except Exception:
+            return None
+        match = _EMA_PDF_ATTR_RE.search(raw)
+        if match:
+            return html.unescape(match.group(1).decode("utf-8", "replace"))
+    return None
 
 
 # --- Bulk-seeding ema_pdf links from the EMA's own EPAR-documents JSON dump ------
@@ -464,13 +494,28 @@ def main(limit, fetch_all, only, local_file, local_cis, local_src, local_via_arc
         targets = due if fetch_all else due[:limit]
         logger.info("retrying {} Internet-Archive-sourced CIS against the live EMA", len(targets))
     elif only:
-        targets = [c for c in dict.fromkeys(only) if c in links]
-        missing = [c for c in only if c not in links]
-        if missing:
-            logger.warning("{} requested CIS have no ema_pdf link (skipped): {}", len(missing), missing[:10])
+        # Explicit CIS: keep them all for now; the URL resolution below covers both a
+        # harvested link AND (for a borrow CIS) its overlay's baked data-ema-pdf.
+        targets = list(dict.fromkeys(only))
     else:
         due = build_order(ttl_days, force=force, frequency=freq, links=links, ema_manifest=ema_manifest)
         targets = due if fetch_all else due[:limit]
+
+    # Resolve each target to its EMA PDF URL: the harvested ANSM link, else (an --only
+    # CIS that borrows a sibling's link under build.resolve_eu group-sharing) the URL
+    # baked into its own already-converted overlay. Drop any that resolve to neither.
+    # The due/retry paths only ever hold linked CIS, so _overlay_pdf_url is never even
+    # called there (links.get short-circuits) and this is a no-op for them.
+    url_of: dict[str, str] = {}
+    for c in targets:
+        u = links.get(c) or _overlay_pdf_url(c)
+        if u:
+            url_of[c] = u
+    unresolved = [c for c in targets if c not in url_of]
+    if unresolved:
+        logger.warning("{} requested CIS have no ema_pdf link or overlay (skipped): {}",
+                       len(unresolved), unresolved[:10])
+    targets = [c for c in targets if c in url_of]
 
     if not targets:
         logger.info("nothing due; done")
@@ -483,7 +528,7 @@ def main(limit, fetch_all, only, local_file, local_cis, local_src, local_via_arc
     start = time.monotonic()
     with httpx.Client(follow_redirects=True, timeout=60.0, headers={"User-Agent": USER_AGENT}) as client:
         for i, cis in enumerate(targets, 1):
-            entry = process_one(client, cis, links[cis], gzip_overlay)
+            entry = process_one(client, cis, url_of[cis], gzip_overlay)
             ema_manifest[cis] = entry
             status = entry["status"]
             if status == "ok":

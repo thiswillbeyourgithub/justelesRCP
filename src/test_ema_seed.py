@@ -84,8 +84,35 @@ def test_match_brand_word_boundary():
     print("ok  test_match_brand_word_boundary")
 
 
+def test_overlay_pdf_url_reads_baked_link():
+    # --only must be able to re-fetch a CIS that borrows a sibling's link: it falls
+    # back to the data-ema-pdf URL baked into the CIS's own converted overlay. Cover
+    # both storage formats (plain + gzip) and the miss cases.
+    import gzip as _gz
+    import tempfile
+    from pathlib import Path as _P
+    with tempfile.TemporaryDirectory() as d:
+        orig = sema.EU_OVERLAY_DIR
+        sema.EU_OVERLAY_DIR = _P(d)
+        try:
+            url = "https://www.ema.europa.eu/fr/documents/product-information/x_fr.pdf"
+            (_P(d) / "111.html").write_text(
+                f'<div id="textDocument" data-ema-pdf="{url}">body</div>', encoding="utf-8")
+            (_P(d) / "222.html.gz").write_bytes(_gz.compress(
+                f'<div data-ema-pdf="{url}">g</div>'.encode("utf-8")))
+            (_P(d) / "333.html").write_text("<div>no attr here</div>", encoding="utf-8")
+            assert sema._overlay_pdf_url("111") == url          # plain
+            assert sema._overlay_pdf_url("222") == url          # gzip
+            assert sema._overlay_pdf_url("333") is None         # overlay without the attr
+            assert sema._overlay_pdf_url("999") is None         # no overlay at all
+        finally:
+            sema.EU_OVERLAY_DIR = orig
+    print("ok  test_overlay_pdf_url_reads_baked_link")
+
+
 if __name__ == "__main__":
     test_parse_tolerates_runon_records()
     test_pi_index_prefers_french_and_filters_type()
     test_match_brand_word_boundary()
+    test_overlay_pdf_url_reads_baked_link()
     print("\nAll tests passed.")
