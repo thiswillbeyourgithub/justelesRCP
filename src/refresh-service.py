@@ -396,21 +396,16 @@ class Refresher:
         (the drug left BDPM), distinct from "never scraped" (no overlay at all -> the
         page still shows whatever the build baked, e.g. the 2022 baseline).
 
-        Read straight off the overlay FILE (not the manifest 'status', which older
-        entries recorded as 'ok' even when empty), reusing build's own overlay
-        helpers so it matches exactly what the build sees. So the button can be told
-        the honest truth ('we checked; ANSM no longer publishes this') and stop
-        pretending a reload will ever show something new. EU CIS are never 'archived'
-        here (their absence of an ANSM RCP is by design; they live under /eu/)."""
+        Delegates the mechanical zero-byte test to build.rcp_archived (the SAME
+        canonical helper render_record and the search-index ``ret`` tag key off, so
+        the button, the page banner and the [RETIRÉ] search tag never disagree),
+        adding the EU guard: EU CIS are never 'archived' here (their absence of an
+        ANSM RCP is by design; they live under /eu/). So the button can be told the
+        honest truth ('we checked; ANSM no longer publishes this') and stop pretending
+        a reload will ever show something new."""
         if self._is_eu(cis):
             return False
-        path = build._overlay_path(cis)
-        if path is None:
-            return False
-        try:
-            return build._read_overlay(path).strip() == ""
-        except OSError:
-            return False
+        return build.rcp_archived(cis)
 
     def status_of(self, cis: str) -> dict:
         """The button's poll payload: capture date, whether a fetch is queued, and
@@ -887,7 +882,13 @@ class Refresher:
         # EROFS on the read-only /app/data) no longer leaves the page stuck on
         # its old capture date, which is exactly the bug this ordering fixes.
         if rcp == "":
-            self._record(cis, source, "empty", "no RCP (empty overlay)")
+            # ANSM published no RCP: the drug was delisted from BDPM. We can't
+            # re-render the archived page here (that falls back to the 2022 baseline
+            # CSV, which this container doesn't mount); the page keeps its last render
+            # until the next full build bakes the "retiré" banner, and meanwhile the
+            # button reads the honest state live via /api/status (archived:true). Log
+            # it unmistakably so a delisting is visible in the container logs.
+            self._record(cis, source, "empty", "délisté de BDPM (aucun RCP; page à marquer retirée)")
         else:
             row = build.render_record((cis, rcp, asof))
             if row is None:

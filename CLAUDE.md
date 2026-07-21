@@ -77,9 +77,10 @@ data/eu/<cis>.html[.gz]    EMA SmPC converted from the PDF (scrape-ema.py + ema_
       v
 dist/rcp/<cis>-<slug>.html   one cleaned page per drug (slug from drug name),
                              with a sidebar table of contents (ToC) of sections
-dist/search-index.json       [{cis,name,slug[,sub]}] consumed by client-side search
+dist/search-index.json       [{cis,name,slug[,sub][,ret]}] consumed by client-side search
                              (sub = active-substance/DCI string, present when known and
-                             not already in the name, so search matches by substance too)
+                             not already in the name, so search matches by substance too;
+                             ret:1 = drug delisted from BDPM, search.js appends " [RETIRÉ]")
                              (+ {cis,name,slug,eu:1} rows for /eu/ pages below)
 dist/eu/<cis>-<slug>.html    EU-authorization page for a centrally-authorized drug
                              whose RCP lives at the EMA (empty ANSM cell): a full
@@ -121,10 +122,13 @@ Key facts that aren't obvious from a single file:
   same cleaned `CIS_COMPO` map `load_substances` builds), so a search on the substance
   (e.g. "acétylcystéine" -> HIDONAC) surfaces every brand carrying it; a name hit ranks
   above a substance-only hit, and each result shows its DCI under the name
-  (`.result-sub`). There is no search API. Full-text search over RCP *content* is
+  (`.result-sub`). A row for a drug delisted from BDPM carries `ret:1` (see the
+  archived bullet) and `search.js` appends a `.result-retired` " [RETIRÉ]" to its name.
+  There is no search API. Full-text search over RCP *content* is
   intentionally NOT supported (that was the tradeoff for a zero-runtime static
-  architecture). Keep the `sub` contract in sync across the search-index enrichment
-  (build.py), `search.js`, and `.result-sub`/`.result-name` in `style.css`.
+  architecture). Keep the `sub`/`ret` contract in sync across the search-index
+  enrichment (build.py), `search.js`, and `.result-sub`/`.result-name`/
+  `.result-retired` in `style.css`.
 - **Names come from `CIS_bdpm.txt`**, falling back to the `AmmDenomination`
   parsed from the RCP HTML when the mapping is missing. See `load_names()`.
 - **Cross-drug backlinks link one RCP to another.** `build_xref_index()` builds,
@@ -239,7 +243,10 @@ Key facts that aren't obvious from a single file:
   `build.py` reads either transparently (`_overlay_path`/`_read_overlay`, newest
   wins if both coexist), so the flag only trades disk/rsync size for
   greppability. `records()` prefers the overlay over the baseline CSV cell (a
-  *zero-byte* overlay means "scraped, no RCP" and is skipped, not fallen back).
+  *zero-byte* overlay means "scraped, no RCP": the drug was delisted from BDPM. If
+  the frozen 2022 baseline cell still has the RCP, `iter_rcp_raw` KEEPS serving that
+  text as an ARCHIVED page rather than dropping it to a 404, see the archived bullet
+  below; only when the baseline is empty too is the page truly skipped).
   On a page with no RCP body (an EMA-centrally-authorized drug), `extract_ema_pdf`
   also harvests the real EMA `product-information` `_fr.pdf` href the ANSM page
   links to and stores it in the manifest as `ema_pdf`; `build_stubs` uses it to
@@ -300,25 +307,45 @@ Key facts that aren't obvious from a single file:
   (`{asof, pending, archived}`), `GET /api/stats` (crawl counters + `crawl` gauge), `POST
   /api/refresh/<cis>[?src=user|auto]` (returns `{status: fresh|queued|busy, asof, archived}`). It is
   same-origin, so the strict `connect-src 'self'` CSP covers the button's fetches.
-  **Honest feedback for a delisted drug (`archived`).** A drug WITHDRAWN from BDPM
-  (e.g. its ANSM `/medicament/<cis>/extrait` now says "Le médicament demandé n'existe
-  pas") is scraped to a zero-byte overlay ("scraped, no RCP"), so its page keeps
-  rendering the 2022 baseline and its capture date NEVER moves. The status/refresh
-  responses carry `archived` (Refresher `_rcp_archived`: the ANSM overlay exists AND is
-  empty, read straight off the FILE via `build._overlay_path`/`_read_overlay` so it is
-  right even for old manifest entries that recorded `status:"ok"`; EU CIS are never
-  archived). `src/app-init.js` keys the button off `archived`, NOT a
-  page-asof-vs-manifest-asof compare that can never converge for such a drug (the old
-  bug: it reload-looped forever showing the same 2022 copy). On `archived` it shows a
-  standing `.msg-note` "L'ANSM ne publie plus de RCP … (retiré de la base). Nous
-  affichons notre dernière copie (<mois année>)." and never reloads. **Persistent
-  feedback:** the last outcome per CIS is stored in `localStorage` (`jlrcp_maj_<cis>`,
-  self-pruning after 3 days) and re-shown on load (a `pending` refresh resumes its
-  poll, an `updated` shows a one-shot "vérifié à l'instant" after the reload, a
-  `retired` re-shows the note), so a reader who reloads no longer loses the feedback.
-  Keep the `archived` field + the `jlrcp_maj_` outcome vocabulary in sync across
-  `status_of`/`_rcp_archived`/`request` (refresh-service.py), the button state machine
-  in `src/app-init.js`, and `.rcp-refresh .msg.msg-note` in `style.css`.
+  **Honest feedback for a delisted drug (`archived`/retiré).** A drug WITHDRAWN from
+  BDPM (e.g. its ANSM `/medicament/<cis>/extrait` now says "Le médicament demandé
+  n'existe pas") is scraped to a zero-byte overlay ("scraped, no RCP"). The single
+  canonical test is **`build.rcp_archived(cis)`** (the ANSM overlay exists AND is
+  zero-byte, via cheap `st_size`; a zero-byte `.html.gz` is size 0 too), shared by ALL
+  three consumers so they never disagree: the page render, the search tag, and the
+  refresh service (whose `_rcp_archived` just adds the EU guard, since an EU drug also
+  has an empty ANSM RCP but renders under `/eu/`). It manifests in THREE places:
+  (1) **The page is rendered as archived.** `iter_rcp_raw` falls the delisted drug
+  back to the frozen 2022 baseline cell (asof stays `BASELINE_DATE`) instead of
+  dropping it, and `render_record` bakes a warn-tinted `.rcp-retired` banner
+  (`_retired_banner_html`, "Médicament retiré … copie d'archive de 2022 …") at the top
+  of the `{{ASOF}}` slot. `archived` is folded into `_record_hash` so a drug that
+  FLIPS to delisted re-renders (it keeps the SAME baseline raw + asof, so only the flag
+  changes; without it the incremental cache would reuse the old non-archived page).
+  (2) **Search shows `[RETIRÉ]`.** `main()` tags the index row with `ret:1`
+  (from the `archived_cis` set gathered while streaming records, so no extra FS pass;
+  EU stub rows can't be archived, empty baseline), and `src/search.js` appends a
+  `.result-retired` " [RETIRÉ]" to the name.
+  (3) **Live button feedback.** The status/refresh responses carry `archived`, and
+  `src/app-init.js` keys the button off it, NOT a page-asof-vs-manifest-asof compare
+  that can never converge for such a drug (the old bug: it reload-looped forever
+  showing the same 2022 copy). On `archived` it shows a standing `.msg-note` and never
+  reloads; it ALSO treats a page already carrying the baked `.rcp-retired` banner as
+  `bakedRetired` to skip the pointless >1yr auto-refetch. NOTE the refresh container
+  does NOT mount the baseline CSV, so it CANNOT itself re-render the archived page (that
+  needs the 2022 cell); on an empty scrape it only writes the zero-byte overlay + logs
+  the delisting, and the baked banner/`[RETIRÉ]` appear at the next full `build.py`,
+  the live `archived` feedback covering the gap. **Persistent feedback:** the last
+  outcome per CIS is stored in `localStorage` (`jlrcp_maj_<cis>`, self-pruning after 3
+  days) and re-shown on load (a `pending` refresh resumes its poll, an `updated` shows
+  a one-shot "vérifié à l'instant" after the reload, a `retired` re-shows the note), so
+  a reader who reloads no longer loses the feedback.
+  Keep the archived contract in sync across `rcp_archived`/`iter_rcp_raw`/
+  `_record_hash`/`_retired_banner_html`/`render_record`/the `ret` tag in `main()`
+  (build.py), `status_of`/`_rcp_archived`/`request`/`_process_ansm` (refresh-service.py),
+  the button state machine + `bakedRetired` in `src/app-init.js`, the `ret` branch in
+  `src/search.js`, and `.rcp-retired`/`.result-retired`/`.rcp-refresh .msg.msg-note` in
+  `style.css`.
   If the service is absent, `/api/*` just 502s and the button degrades gracefully,
   so static-only deploys omit it entirely. Both `build.py` and `scrape-rcp.py`
   guard `__main__`, so importing them must stay import-safe (no side effects at

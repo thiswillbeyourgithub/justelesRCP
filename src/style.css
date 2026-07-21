@@ -109,6 +109,9 @@ a:hover { text-decoration: underline; }
 /* Active substance (DCI) under the brand name: muted, smaller; text-transform none so
    the BDPM uppercase substance is shown as-is. */
 .result-sub { display: block; font-size: .78rem; color: var(--muted); margin-top: .1rem; }
+/* "[RETIRÉ]" suffix on a delisted drug's search result (search.js, ret:1 rows): small,
+   warn-tinted, so the reader sees at a glance the page is our archived 2022 copy. */
+.result-retired { color: #b45309; font-size: .82em; font-weight: 600; }
 .status { color: var(--muted); font-size: .85rem; margin-top: 1.2rem; }
 .browse-link { margin-top: 1.6rem; font-size: .95rem; }
 
@@ -224,6 +227,17 @@ a:hover { text-decoration: underline; }
 .rcp-checked { display: block; margin-top: .3rem; font-size: .9em; opacity: .75; }
 .rcp-asof.stale { border-color: #b45309; border-left-color: #b45309; }
 .rcp-warn { display: block; margin-top: .5rem; color: #b45309; font-weight: 600; }
+/* Delisted-drug banner (build.py _retired_banner_html), baked at the very top of a
+   page whose live ANSM RCP has vanished (zero-byte overlay): the drug is no longer
+   marketed and what follows is our frozen 2022 archive. Warn-tinted and heavier than
+   the muted freshness card so it reads as a real caveat, not routine metadata. Its
+   presence is also how app-init.js detects the archived state on load. */
+.rcp-retired {
+  margin: 0 0 1.2rem; padding: .7rem .9rem; font-size: .9rem; line-height: 1.5;
+  color: var(--fg); background: var(--card);
+  border: 1px solid #b45309; border-left: 4px solid #b45309; border-radius: .4rem;
+}
+.rcp-retired strong { color: #b45309; }
 /* Link to the authoritative source page (ANSM on /rcp/, EMA on /eu/); shares the
    .official-link button look with the /eu/ stub's EMA button below. */
 .rcp-source { margin: -.6rem 0 1.5rem; }

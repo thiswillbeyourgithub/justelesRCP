@@ -63,6 +63,14 @@
       const name = document.createElement("span");
       name.className = "result-name";
       name.textContent = h.name;
+      // Delisted drug (zero-byte overlay -> build.py tagged the row ret:1): flag it
+      // so the reader knows the page is our archived 2022 copy, not a live product.
+      if (h.ret) {
+        const tag = document.createElement("span");
+        tag.className = "result-retired";
+        tag.textContent = " [RETIRÉ]";
+        name.appendChild(tag);
+      }
       a.appendChild(name);
       // Show the active substance (DCI) under the brand so the reader sees what they
       // searched / can learn the substance to search exhaustively.

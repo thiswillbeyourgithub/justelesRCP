@@ -52,7 +52,7 @@ from lxml import html as lxml_html
 
 import bdpm  # shared, pure-stdlib BDPM tokenising + frequency scoring
 
-__version__ = "0.45.0"  # single source of truth; bump patch/minor per change
+__version__ = "0.46.0"  # single source of truth; bump patch/minor per change
 
 # This script lives in ``src/`` (alongside the frontend templates it renders), so the
 # repo root is its parent's parent; data/, src/ and dist/ all hang off that root. In the
@@ -179,15 +179,21 @@ def _global_key(
     return h.hexdigest()
 
 
-def _record_hash(raw: str, mapped_name: str, asof: str) -> str:
-    """Per-record cache key: the raw ANSM HTML, the CIS->name mapping value, and
-    the "as of" date baked into the page's freshness banner.
+def _record_hash(raw: str, mapped_name: str, asof: str, archived: bool = False) -> str:
+    """Per-record cache key: the raw ANSM HTML, the CIS->name mapping value, the
+    "as of" date baked into the page's freshness banner, and whether the drug is
+    archived (delisted).
 
-    The rendered page is a pure function of (raw, mapped_name, asof, template,
-    code); template/code are folded into the global key, so these three suffice
-    here. asof is included so a re-scrape that refreshes the date without changing
-    the HTML still re-renders the page with the new date. The parsed denomination
-    is derived from raw, so it needs no separate input.
+    The rendered page is a pure function of (raw, mapped_name, asof, archived,
+    template, code); template/code are folded into the global key, so these four
+    suffice here. asof is included so a re-scrape that refreshes the date without
+    changing the HTML still re-renders the page with the new date. archived is
+    included because a drug that gets delisted keeps serving the SAME baseline raw
+    at the SAME BASELINE_DATE asof (iter_rcp_raw falls back to the 2022 cell), so
+    only the archived flag changes; without it the retired banner would never
+    appear (the record would look unchanged and reuse the cached non-archived
+    page). The parsed denomination is derived from raw, so it needs no separate
+    input.
     """
     h = hashlib.sha256()
     h.update(raw.encode("utf-8"))
@@ -195,6 +201,8 @@ def _record_hash(raw: str, mapped_name: str, asof: str) -> str:
     h.update(mapped_name.encode("utf-8"))
     h.update(b"\0")
     h.update(asof.encode("utf-8"))
+    h.update(b"\0")
+    h.update(b"1" if archived else b"0")
     return h.hexdigest()
 
 
@@ -312,16 +320,20 @@ def _load_ema_links() -> dict[str, str]:
     return links
 
 
-def _overlay_path(cis: str, overlay_dir: Path = RCP_OVERLAY_DIR) -> Path | None:
+def _overlay_path(cis: str, overlay_dir: Path | None = None) -> Path | None:
     """Return the overlay file for a CIS, or None if none exists.
 
     scrape-rcp.py stores each overlay either plain (``<cis>.html``) or gzipped
     (``<cis>.html.gz``), depending on RCP_OVERLAY_GZIP at scrape time, and keeps
     only one of the two. We read whichever is present transparently; if both
     somehow coexist (format flipped mid-cache), the newest by mtime wins.
-    ``overlay_dir`` defaults to the ANSM overlays; build_stubs passes
-    EU_OVERLAY_DIR for the converted EMA overlays.
+    ``overlay_dir`` defaults to the ANSM overlays (resolved at CALL time from the
+    module global, so a runtime override / test monkeypatch of RCP_OVERLAY_DIR is
+    honored: a default argument would freeze the original at def time); build_stubs
+    passes EU_OVERLAY_DIR for the converted EMA overlays.
     """
+    if overlay_dir is None:
+        overlay_dir = RCP_OVERLAY_DIR
     cands = [
         p for p in (overlay_dir / f"{cis}.html.gz", overlay_dir / f"{cis}.html")
         if p.exists()
@@ -356,6 +368,30 @@ def _overlay_date(cis: str) -> str:
         return date.fromtimestamp(path.stat().st_mtime).isoformat()
     except OSError:
         return ""
+
+
+def rcp_archived(cis: str) -> bool:
+    """True when this CIS has a ZERO-BYTE ANSM overlay: it was re-scraped and the
+    live ANSM site no longer publishes an RCP, i.e. the drug was delisted/retired
+    from BDPM. The page then falls back to serving the frozen 2022 baseline text,
+    flagged as archived: a "retired" banner on the page (_retired_banner_html) and
+    a [RETIRÉ] tag in the search results (the ``ret`` flag on its index row).
+
+    This is the mechanical zero-byte test only (cheap ``st_size``; a zero-byte
+    ``.html.gz`` is size 0 too, since we never gzip an empty overlay). A centrally
+    authorized EU drug also has an empty ANSM RCP, but its baseline CSV cell is
+    empty as well, so it renders under /eu/ and never reaches an RCP render/search
+    row; callers that may be handed an EU CIS (the refresh service) still guard on
+    _is_eu first. Shared by render_record, the search-index ``ret`` enrichment, and
+    the refresh service's status endpoint so all three agree on what "archived" is.
+    """
+    path = _overlay_path(cis)
+    if path is None:
+        return False
+    try:
+        return path.stat().st_size == 0
+    except OSError:
+        return False
 
 
 def _baseline_present_cis() -> set[str]:
@@ -475,6 +511,17 @@ def iter_rcp_raw(scrape_dates: dict[str, str] | None = None, stats: dict | None 
                 seen.add(cis)
                 overlay = _overlay(cis)
                 if overlay is None:
+                    raw, asof = row[1], BASELINE_DATE
+                elif not overlay.strip():
+                    # Empty overlay = "scraped, no RCP" (the drug was delisted from
+                    # BDPM). If the 2022 baseline still carries the text, KEEP serving
+                    # it as an ARCHIVED page (render_record bakes the retired banner
+                    # off rcp_archived(cis), keyed on this same zero-byte overlay); the
+                    # asof stays BASELINE_DATE since that stale 2022 copy is what shows.
+                    # Only truly drop the page when there is no baseline text either.
+                    if not row[1].strip():
+                        _bump_empty()
+                        continue
                     raw, asof = row[1], BASELINE_DATE
                 else:
                     raw, asof = overlay, scrape_dates.get(cis) or _overlay_date(cis)
@@ -1976,6 +2023,26 @@ def _asof_html(ansm: str, asof: str) -> str:
     )
 
 
+def _retired_banner_html(cis: str) -> str:
+    """Warn banner for an ARCHIVED (delisted) drug, injected at the very top of the
+    {{ASOF}} slot on a page whose live ANSM RCP has vanished (rcp_archived(cis)).
+
+    Honest about what the reader is looking at: the drug is no longer marketed in
+    France, so the ANSM no longer publishes its RCP, and what follows is our frozen
+    2022 archive copy kept for reference. It links the official ANSM fiche (which now
+    shows the delisting) so the reader can confirm. Its '.rcp-retired' class is ALSO
+    how app-init.js detects the archived state on load without an /api round-trip."""
+    return (
+        '<p class="rcp-retired" role="note">'
+        "<strong>Médicament retiré.</strong> Ce médicament n'est plus commercialisé "
+        "en France&nbsp;: l'ANSM ne publie plus son RCP. Le texte ci-dessous est notre "
+        "copie d'archive de 2022, conservée à titre de référence et non mise à jour. "
+        f'<a href="{_esc(ANSM_PAGE_URL.format(cis=cis))}" target="_blank" '
+        'rel="noopener">Vérifier sur la fiche ANSM</a>.'
+        "</p>"
+    )
+
+
 def _source_button(url: str, label: str) -> str:
     """One '.official-link' button (external link to an authoritative source)."""
     return (
@@ -2129,6 +2196,10 @@ def render_record(item: tuple[str, str, str]) -> dict[str, str] | None:
         + _jsonld(crumb_ld)
     )
     refs = _ref_links_html(cis, name)  # reused: top of page ({{ASOF}}) + bottom ({{MORE_BOTTOM}})
+    # A zero-byte ANSM overlay means the drug was delisted (see rcp_archived): we
+    # keep serving the 2022 baseline text but headline it with a retired banner.
+    archived = rcp_archived(cis)
+    retired = _retired_banner_html(cis) if archived else ""
     page = (
         _TPL.replace("{{TITLE}}", _esc(name))
         .replace("{{DESCRIPTION}}", _esc(description))
@@ -2138,7 +2209,8 @@ def render_record(item: tuple[str, str, str]) -> dict[str, str] | None:
         .replace("{{TOC}}", _toc_html(toc))
         .replace(
             "{{ASOF}}",
-            _asof_html(ansm, asof)
+            retired
+            + _asof_html(ansm, asof)
             + _official_source_html(_source_button(
                 ANSM_PAGE_URL.format(cis=cis),
                 "Ouvrir la source officielle",
@@ -2153,7 +2225,9 @@ def render_record(item: tuple[str, str, str]) -> dict[str, str] | None:
     out.write_text(page, encoding="utf-8")
     compress(out)
     # ``asof`` rides back only for the manifest (sitemap <lastmod>); main() strips it
-    # before it can reach the client-downloaded search-index.json.
+    # before it can reach the client-downloaded search-index.json. The archived state
+    # is NOT returned: main() gathers it in misses() (covering cache hits too, which
+    # never call this) to tag the search row's ``ret`` flag.
     return {"cis": cis, "name": name, "slug": slug, "asof": asof}
 
 
@@ -2765,6 +2839,7 @@ def main() -> None:
     index: list[dict[str, str]] = []
     new_records: dict[str, dict[str, str]] = {}
     miss_hashes: dict[str, str] = {}  # cis -> record hash for pages we (re)render
+    archived_cis: set[str] = set()  # delisted drugs (zero-byte overlay) -> [RETIRÉ] tag
     skipped_empty = 0
     reused = 0
 
@@ -2798,7 +2873,10 @@ def main() -> None:
         """
         nonlocal reused
         for cis, raw, asof in records():
-            rec_hash = _record_hash(raw, names.get(cis, ""), asof)
+            archived = rcp_archived(cis)  # zero-byte overlay = drug delisted from BDPM
+            if archived:
+                archived_cis.add(cis)
+            rec_hash = _record_hash(raw, names.get(cis, ""), asof, archived)
             hit = prev_records.get(cis)
             if hit and hit.get("h") == rec_hash and output_ok(hit["slug"]):
                 index.append({"cis": cis, "name": hit["name"], "slug": hit["slug"]})
@@ -2880,10 +2958,16 @@ def main() -> None:
     # HIDONAC), and show the DCI under the name. From _SUBSTANCES (the same cleaned
     # CIS_COMPO map the pill row uses). Skipped when the DCI is already contained in the
     # name (redundant), keeping search-index.json lean; absent when composition unknown.
+    # Tag delisted (archived) RCP rows with ``ret`` so search.js appends " [RETIRÉ]"
+    # to the name: the drug is no longer marketed, we only serve the 2022 archive.
+    # archived_cis was gathered while streaming records (hits + misses), so this needs
+    # no extra filesystem pass; EU stub rows (eu:1) can't be here (empty baseline).
     for e in search_rows:
         sub = _SUBSTANCES.get(e["cis"], "")
         if sub and _sort_key(sub) not in _sort_key(e["name"]):
             e["sub"] = sub
+        if e["cis"] in archived_cis:
+            e["ret"] = 1
     idx_json = json.dumps(search_rows, ensure_ascii=False, separators=(",", ":"))
     (DIST / "search-index.json").write_text(idx_json, encoding="utf-8")
     # The version is served at runtime (window.__APP_VERSION__) and injected into

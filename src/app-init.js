@@ -360,7 +360,13 @@
     // retiré (re-fetching a delisted RCP is pointless), but still LEARN the retiré
     // state from the response so an old delisted page shows the honest note on load
     // without a click.
-    const knownRetired = stored && stored.o === "retired";
+    // A page baked as archived (a full build after the drug was delisted) carries
+    // the server-rendered .rcp-retired banner, which already states the withdrawal.
+    // Treat that as "known retired" so we skip the pointless >1yr auto-refetch of a
+    // delisted RCP and don't stack a second note on top of the baked banner; a manual
+    // click still re-checks and confirms via showRetired if it's still gone.
+    const bakedRetired = !!document.querySelector(".rcp-retired");
+    const knownRetired = bakedRetired || (stored && stored.o === "retired");
     if (!knownRetired && Number.isFinite(ageDays) && ageDays > 365) {
       refresh(cis, "auto")
         .then((r) => r.json())

@@ -823,6 +823,86 @@ def test_load_cap_meta_excludes_decentralised():
     print("ok  test_load_cap_meta_excludes_decentralised")
 
 
+def test_rcp_archived_detects_zero_byte_overlay():
+    # rcp_archived is the single canonical "is this drug delisted?" test: a zero-byte
+    # ANSM overlay ("scraped, no RCP") means the drug left BDPM. A non-empty overlay
+    # or no overlay at all is NOT archived. Shared by render_record (the retired
+    # banner), the search-index ret tag, and the refresh service, so they never
+    # disagree; this pins the mechanical zero-byte contract.
+    with tempfile.TemporaryDirectory() as d:
+        rcp = Path(d) / "rcp"; rcp.mkdir()
+        (rcp / "22222222.html").write_text("")              # zero-byte -> archived
+        (rcp / "44444444.html").write_text("<div>x</div>")  # has an RCP -> not archived
+        saved = build.RCP_OVERLAY_DIR
+        build.RCP_OVERLAY_DIR = rcp
+        try:
+            assert build.rcp_archived("22222222") is True
+            assert build.rcp_archived("44444444") is False
+            assert build.rcp_archived("11111111") is False  # no overlay at all
+        finally:
+            build.RCP_OVERLAY_DIR = saved
+    print("ok  test_rcp_archived_detects_zero_byte_overlay")
+
+
+def test_iter_rcp_raw_serves_delisted_baseline():
+    # The delisting bug fix: when a drug is re-scraped and the ANSM no longer
+    # publishes its RCP (zero-byte overlay), we must KEEP serving the 2022 baseline
+    # text (flagged archived) rather than dropping the page to a 404. Only when the
+    # baseline is ALSO empty is the page truly skipped.
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        rcp = d / "rcp"; rcp.mkdir()
+        csv_path = d / "CIS_RCP.csv"
+        rows = [
+            "Code_CIS\tRCP_html",
+            "11111111\t<div id=\"textDocument\">baseline one</div>",   # normal (no overlay)
+            "22222222\t<div id=\"textDocument\">baseline two</div>",   # delisted -> archived
+            "33333333\t",                                              # empty baseline + delisted
+            "44444444\t<div id=\"textDocument\">baseline four</div>",  # live overlay wins
+        ]
+        csv_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+        (rcp / "22222222.html").write_text("")                                 # zero-byte sentinel
+        (rcp / "33333333.html").write_text("")                                 # zero-byte sentinel
+        (rcp / "44444444.html").write_text("<div id=\"textDocument\">fresh four</div>")
+        saved_csv, saved_dir = build.CSV_PATH, build.RCP_OVERLAY_DIR
+        build.CSV_PATH = csv_path
+        build.RCP_OVERLAY_DIR = rcp
+        try:
+            stats = {"empty": 0}
+            out = {cis: (raw, asof) for cis, raw, asof
+                   in build.iter_rcp_raw(scrape_dates={}, stats=stats)}
+            archived = {cis: build.rcp_archived(cis) for cis in out}
+        finally:
+            build.CSV_PATH, build.RCP_OVERLAY_DIR = saved_csv, saved_dir
+        # The delisted drug with a surviving baseline is STILL rendered, from the
+        # 2022 baseline, at BASELINE_DATE, and flagged archived.
+        assert "22222222" in out, "delisted drug with a baseline must not vanish"
+        assert "baseline two" in out["22222222"][0]
+        assert out["22222222"][1] == build.BASELINE_DATE
+        assert archived["22222222"] is True
+        # A normal baseline drug: served, not archived.
+        assert "baseline one" in out["11111111"][0] and archived["11111111"] is False
+        # A live overlay still wins over the baseline (unchanged behaviour).
+        assert "fresh four" in out["44444444"][0] and archived["44444444"] is False
+        # Delisted AND no baseline text -> genuinely dropped (counted empty).
+        assert "33333333" not in out and stats["empty"] == 1
+    print("ok  test_iter_rcp_raw_serves_delisted_baseline")
+
+
+def test_record_hash_changes_when_archived():
+    # A drug that gets delisted keeps serving the SAME baseline raw at the SAME
+    # BASELINE_DATE asof, so ONLY the archived flag changes. The record hash must
+    # fold it in, else the incremental cache would treat the record as unchanged and
+    # reuse the old NON-archived page, and the retired banner would never appear.
+    raw, name, asof = "<div id='textDocument'>x</div>", "DRUG", build.BASELINE_DATE
+    assert build._record_hash(raw, name, asof, False) != \
+        build._record_hash(raw, name, asof, True)
+    # Default arg keeps the historical (non-archived) hash stable.
+    assert build._record_hash(raw, name, asof) == \
+        build._record_hash(raw, name, asof, False)
+    print("ok  test_record_hash_changes_when_archived")
+
+
 if __name__ == "__main__":
     test_load_cap_meta_excludes_decentralised()
     test_clean_substance_strips_salt_hydrate()
@@ -852,4 +932,7 @@ if __name__ == "__main__":
     test_robots_points_at_sitemap()
     test_rcp_page_has_canonical_and_no_leftover_slots()
     test_jsonld_escapes_script_breakout_and_website_searchaction()
+    test_rcp_archived_detects_zero_byte_overlay()
+    test_iter_rcp_raw_serves_delisted_baseline()
+    test_record_hash_changes_when_archived()
     print("\nAll tests passed.")
