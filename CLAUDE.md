@@ -18,6 +18,16 @@ code, comments, and developer docs are in English. `README.md` is the French
 readme and `README.en.md` is its English translation. They are cross-linked and
 MUST be kept in sync: whenever you edit one, update the other accordingly.
 
+**Page parity (RCP vs EMA):** an `/eu/` (EMA) full page IS an RCP, just sourced
+at the EMA instead of the ANSM. The two page types MUST stay almost identical:
+same freshness banner, same "Ouvrir la source officielle" source button, same
+"En savoir plus" pill row, same ToC, same semantic search, same refresh control.
+So when a change is requested WITHOUT naming the page type, apply it to BOTH by
+default (`render_record` for `/rcp/` AND `render_eu_page` for full `/eu/`). Only
+diverge where the data genuinely forces it (e.g. the EMA source button targets
+the direct PDF, and a bare `/eu/` stub has no freshness card). If a requested
+change truly should hit only one type, the request will say so explicitly.
+
 **Versioning:** the project version is `__version__` in `build.py` (single
 source of truth, printed at build start). There are no git tags; bump it
 patch/minor per change. The version is NOT baked into page HTML: `build.py`

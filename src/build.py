@@ -52,7 +52,7 @@ from lxml import html as lxml_html
 
 import bdpm  # shared, pure-stdlib BDPM tokenising + frequency scoring
 
-__version__ = "0.42.8"  # single source of truth; bump patch/minor per change
+__version__ = "0.42.9"  # single source of truth; bump patch/minor per change
 
 # This script lives in ``src/`` (alongside the frontend templates it renders), so the
 # repo root is its parent's parent; data/, src/ and dist/ all hang off that root. In the
@@ -2397,7 +2397,9 @@ def render_eu_page(cis: str, overlay_html: str, meta: tuple[str, str, str] | Non
     refs = _ref_links_html(cis, name, include_ema=True)  # top ({{ASOF}}) + bottom ({{MORE_BOTTOM}})
     asof = _asof_html(_eu_date(overlay_html), _eu_fetched(overlay_html) or _eu_date(overlay_html)) \
         + _official_source_html(
-            _source_button(pdf_url, "Consulter le RCP officiel (PDF) sur le site de l'EMA →"),
+            # Same label as an /rcp/ page: an EMA page IS an RCP, just sourced at the
+            # EMA, so its source button reads identically (the target is the direct PDF).
+            _source_button(pdf_url, "Ouvrir la source officielle"),
         ) \
         + refs
     path = f"/eu/{slug}"
