@@ -683,13 +683,21 @@
     if (document.body && document.body.classList.contains("home")) {
       var back = false;
       try { back = sessionStorage.getItem(RESUME_KEY) === "home"; } catch (e) {}
+      var seen = null;
+      try { seen = localStorage.getItem(SEEN_KEY); } catch (e) {}
+      // The landing page autofocuses #q, which pops the on-screen keyboard on mobile.
+      // When a tour is about to run, blur the field right away so the keyboard does not
+      // cover the tour (the demo types into it programmatically, no focus needed). This
+      // catches the "?tour=1" navigation, which reloads the page and re-fires autofocus.
+      if (back || tourParam === "1" || !seen) {
+        var q = qs("#q");
+        if (q) { try { q.blur(); } catch (e) {} }
+      }
       if (back) {
         try { sessionStorage.removeItem(RESUME_KEY); } catch (e) {}
         homeSearch(); // resumed by "Precedent" from the first RCP step
         return;
       }
-      var seen = null;
-      try { seen = localStorage.getItem(SEEN_KEY); } catch (e) {}
       if (tourParam === "1" || !seen) startHome();
     }
   }
