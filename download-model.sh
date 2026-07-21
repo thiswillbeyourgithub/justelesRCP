@@ -3,9 +3,9 @@
 # model now runs SERVER-SIDE (embed-service.py keeps it warm and embeds queries +
 # page passages); it is NO LONGER shipped to the browser, so this script only pulls
 # the model + tokenizer (no transformers.js / onnxruntime-web browser wasm anymore).
-# ./models is gitignored and ~120 MB (like ./data); the embed container mounts it
-# read-only. Nothing is served to browsers from here, so the strict CSP needs no
-# 'wasm-unsafe-eval' relaxation.
+# ./models is gitignored and ~570 MB (the arctic int8 weights; like ./data); the embed
+# container mounts it read-only. Nothing is served to browsers from here, so the strict
+# CSP needs no 'wasm-unsafe-eval' relaxation.
 #
 # OPTIONAL: skip it and the "Rechercher dans ce RCP" box degrades to a graceful
 # "indisponible" note. Re-run any time; it skips files already present. Keep
@@ -15,24 +15,28 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-MODEL_REPO="Xenova/multilingual-e5-small"
+# Keep MODEL_REPO + ONNX_FILE in sync with onnx_embed._profile (the file it loads under
+# onnx/): arctic-embed-l-v2.0 -> onnx/model_int8.onnx.
+MODEL_REPO="Snowflake/snowflake-arctic-embed-l-v2.0"
+ONNX_FILE="model_int8.onnx"
 HF_BASE="https://huggingface.co/${MODEL_REPO}/resolve/main"
 
 mkdir -p "models/${MODEL_REPO}/onnx"
 
-# The int8-quantised model_quantized.onnx is the ~120 MB payload; the JSON files
-# (config + tokenizer) are tiny. onnx_embed.Encoder loads onnx/model_quantized.onnx
-# + tokenizer.json directly (onnxruntime + tokenizers, no torch). Each file is
-# checked INDIVIDUALLY so a re-run after a partial download self-heals.
-for f in config.json tokenizer.json tokenizer_config.json special_tokens_map.json; do
+# The int8-quantised ${ONNX_FILE} is the ~570 MB payload; config.json + tokenizer.json
+# are tiny (the fast tokenizer.json is self-contained, so no separate tokenizer_config /
+# special_tokens_map is needed). onnx_embed.Encoder loads onnx/${ONNX_FILE} +
+# tokenizer.json directly (onnxruntime + tokenizers, no torch). Each file is checked
+# INDIVIDUALLY so a re-run after a partial download self-heals.
+for f in config.json tokenizer.json; do
   if [ ! -f "models/${MODEL_REPO}/$f" ]; then
     echo "Downloading ${MODEL_REPO}/$f ..."
     wget -O "models/${MODEL_REPO}/$f" "${HF_BASE}/$f"
   fi
 done
-if [ ! -f "models/${MODEL_REPO}/onnx/model_quantized.onnx" ]; then
-  echo "Downloading ${MODEL_REPO}/onnx/model_quantized.onnx (~120 MB, one time)..."
-  wget -O "models/${MODEL_REPO}/onnx/model_quantized.onnx" "${HF_BASE}/onnx/model_quantized.onnx"
+if [ ! -f "models/${MODEL_REPO}/onnx/${ONNX_FILE}" ]; then
+  echo "Downloading ${MODEL_REPO}/onnx/${ONNX_FILE} (~570 MB, one time)..."
+  wget -O "models/${MODEL_REPO}/onnx/${ONNX_FILE}" "${HF_BASE}/onnx/${ONNX_FILE}"
 fi
 
 echo "Done. models/${MODEL_REPO} ready (mounted read-only into the embed container)."

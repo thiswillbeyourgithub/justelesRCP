@@ -20,10 +20,10 @@ semantic search:
 
 Deliberately depends on ``onnxruntime`` + ``tokenizers`` ONLY (NOT torch /
 sentence-transformers): that is the difference between a ~300 MB and a ~2 GB image,
-and it lets the hardened, read-only runtime container stay tiny. It runs the same
-int8 ``Xenova/multilingual-e5-small`` ONNX weights the browser used, so query and
-passage vectors share one backend (better parity than the previous ST-baked-passage
-/ ONNX-query split).
+and it lets the hardened, read-only runtime container stay tiny. It runs the int8
+``Snowflake/snowflake-arctic-embed-l-v2.0`` ONNX weights (CLS-pooled, L2-normalised,
+MRL-truncated to 256 dims), driven by a per-model recipe (``_profile``) so the query
+and passage sides always share one backend + one set of weights.
 
 Pure + import-safe (``__main__`` guard); no filesystem writes, no network.
 """
@@ -42,27 +42,42 @@ from tokenizers import Tokenizer
 
 HERE = Path(__file__).resolve().parent
 
-# The runtime model. MUST match embed-rcp.py's DEFAULT_MODEL family and the vectors
-# baked into every .vec.json (a query vector and the passage vectors have to come
-# from the same weights). Mounted read-only into the container from ./models by
-# download-model.sh; NOT served to browsers anymore.
-RUNTIME_MODEL = "Xenova/multilingual-e5-small"
+# The runtime model. MUST match the vectors baked into every .vec.json (a query vector
+# and the passage vectors have to come from the same weights), and the model
+# download-model.sh fetches. Changing it re-embeds the whole catalog (build.read_vec_meta
+# gates on this name). Mounted read-only into the container from ./models by
+# download-model.sh; NOT served to browsers.
+RUNTIME_MODEL = "Snowflake/snowflake-arctic-embed-l-v2.0"
 # models/ lives at the repo root (this script is in src/), and is mounted at
 # ``/app/models`` in the embed container (HERE = ``/app/src`` there); parent resolves
 # both. EMBED_MODEL_DIR overrides it in the container anyway.
 DEFAULT_MODEL_DIR = HERE.parent / "models" / RUNTIME_MODEL
 
-# e5 models require these asymmetric prefixes; the query and passage sides MUST use
-# the matching one. Derived from the model name so a non-e5 swap needs no prefix.
-_QUERY_PREFIX = "query: "
-_PASSAGE_PREFIX = "passage: "
 
+def _profile(model_name: str) -> dict:
+    """Per-model runtime recipe, keyed by a substring of the name so a swap only touches
+    RUNTIME_MODEL (+ the matching download-model.sh fetch). Fields:
+      onnx    : the int8 ONNX file under <model_dir>/onnx/ to load
+      pooling : "cls" (first token; arctic-embed v2.0 / XLM-R lineage) or "mean" (e5)
+      query   : prefix prepended to a QUERY before tokenising
+      passage : prefix prepended to a DOCUMENT/passage (arctic: NONE; e5: "passage: ")
+      out_dim : Matryoshka (MRL) truncation length, or None to keep the full width
 
-def _prefixes(model_name: str) -> tuple[str, str]:
-    """(query_prefix, passage_prefix). e5 wants them; most models use none."""
-    if "e5" in model_name.lower():
-        return _QUERY_PREFIX, _PASSAGE_PREFIX
-    return "", ""
+    arctic-embed-l-v2.0: CLS-pool -> L2-normalise, query-only "query: " prefix, MRL to
+    256 (truncate THEN normalise once; the ST pipeline's pre-truncation normalise is a
+    mathematical no-op). Verified against the repo's 1_Pooling/config.json +
+    config_sentence_transformers.json + the ONNX graph (inputs input_ids/attention_mask
+    only, output token_embeddings [B,L,1024])."""
+    n = model_name.lower()
+    if "arctic-embed" in n:
+        return {"onnx": "model_int8.onnx", "pooling": "cls",
+                "query": "query: ", "passage": "", "out_dim": 256}
+    if "e5" in n:
+        return {"onnx": "model_quantized.onnx", "pooling": "mean",
+                "query": "query: ", "passage": "passage: ", "out_dim": None}
+    # Unknown model: safe defaults (mean pool, no prefixes, full width, common ONNX name).
+    return {"onnx": "model_quantized.onnx", "pooling": "mean",
+            "query": "", "passage": "", "out_dim": None}
 
 
 class Encoder:
@@ -81,12 +96,13 @@ class Encoder:
         query_ttl: float = 60.0,
     ) -> None:
         model_dir = Path(model_dir)
-        onnx_path = model_dir / "onnx" / "model_quantized.onnx"
+        prof = _profile(model_name)
+        onnx_path = model_dir / "onnx" / prof["onnx"]
         tok_path = model_dir / "tokenizer.json"
         if not onnx_path.is_file() or not tok_path.is_file():
             raise FileNotFoundError(
                 f"model not found under {model_dir} (run ./download-model.sh): "
-                f"need onnx/model_quantized.onnx + tokenizer.json"
+                f"need onnx/{prof['onnx']} + tokenizer.json"
             )
         opts = ort.SessionOptions()
         opts.intra_op_num_threads = max(1, int(intra_threads))
@@ -95,17 +111,30 @@ class Encoder:
             str(onnx_path), opts, providers=["CPUExecutionProvider"]
         )
         self._input_names = {i.name for i in self.session.get_inputs()}
+        # The ONNX may expose several outputs (arctic-l-v2.0 exposes token_embeddings
+        # [B,L,H] AND a pre-pooled sentence_embedding [B,H]); we pool in-code, so target
+        # the 3-D token-embeddings output (fallback: the first output).
+        outs = self.session.get_outputs()
+        self._token_output = outs[0].name
+        for o in outs:
+            if o.shape is not None and len(o.shape) == 3:
+                self._token_output = o.name
+                break
         self.tokenizer = Tokenizer.from_file(str(tok_path))
         self.model_name = model_name
-        self.query_prefix, self.passage_prefix = _prefixes(model_name)
-        # Hidden size from config.json (fallback 384 = e5-small); confirmed on 1st run.
-        self.dim = 384
-        cfg = model_dir / "config.json"
-        if cfg.is_file():
-            try:
-                self.dim = int(json.loads(cfg.read_text())["hidden_size"])
-            except Exception:
-                pass
+        self.pooling = prof["pooling"]
+        self.query_prefix, self.passage_prefix = prof["query"], prof["passage"]
+        self._out_dim = prof["out_dim"]
+        # Served vector width: the MRL truncation length if set (arctic -> 256), else the
+        # model's hidden size from config.json (fallback 384). Re-confirmed on 1st encode.
+        self.dim = self._out_dim or 384
+        if not self._out_dim:
+            cfg = model_dir / "config.json"
+            if cfg.is_file():
+                try:
+                    self.dim = int(json.loads(cfg.read_text())["hidden_size"])
+                except Exception:
+                    pass
         # Bounded, TIME-LIMITED LRU of query-HASH -> (vector, expiry), so repeated/edited
         # queries (common as the reader types) recompute nothing. Keyed by a hash of the
         # query text, NOT the text itself, so no plaintext query is ever retained in the
@@ -124,10 +153,10 @@ class Encoder:
     def encode(
         self, texts: list[str], prefix: str = "", batch_size: int = 32, max_len: int = 192
     ) -> np.ndarray:
-        """Embed texts -> float32 (N, dim), mean-pooled over the attention mask and
-        L2-normalised (so cosine == dot product). ``prefix`` is prepended to each
-        text (pass ``self.passage_prefix`` for documents, ``self.query_prefix`` for
-        queries). Empty input -> (0, dim)."""
+        """Embed texts -> float32 (N, dim): pooled per the model (CLS for arctic, mean for
+        e5), optionally MRL-truncated (arctic -> 256), then L2-normalised (so cosine == dot
+        product). ``prefix`` is prepended to each text (pass ``self.passage_prefix`` for
+        documents, ``self.query_prefix`` for queries). Empty input -> (0, dim)."""
         if not texts:
             return np.zeros((0, self.dim), dtype=np.float32)
         out: list[np.ndarray] = []
@@ -144,11 +173,16 @@ class Encoder:
             feed = {"input_ids": input_ids, "attention_mask": attention}
             if "token_type_ids" in self._input_names:
                 feed["token_type_ids"] = np.zeros_like(input_ids)
-            hidden = self.session.run(None, feed)[0]  # (B, L, dim)
-            mask = attention[:, :, None].astype(np.float32)
-            summed = (hidden * mask).sum(axis=1)
-            counts = np.clip(mask.sum(axis=1), 1e-9, None)
-            vecs = summed / counts
+            hidden = self.session.run([self._token_output], feed)[0]  # (B, L, H)
+            if self.pooling == "cls":
+                vecs = hidden[:, 0, :]  # first token (<s> = CLS): arctic-embed v2.0
+            else:
+                mask = attention[:, :, None].astype(np.float32)
+                summed = (hidden * mask).sum(axis=1)
+                counts = np.clip(mask.sum(axis=1), 1e-9, None)
+                vecs = summed / counts  # mean-pool over the attention mask: e5
+            if self._out_dim and vecs.shape[1] > self._out_dim:
+                vecs = vecs[:, : self._out_dim]  # MRL: truncate BEFORE normalising
             norms = np.clip(np.linalg.norm(vecs, axis=1, keepdims=True), 1e-12, None)
             out.append((vecs / norms).astype(np.float32))
         result = np.vstack(out)

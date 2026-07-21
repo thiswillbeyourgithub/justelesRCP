@@ -652,10 +652,17 @@ Key facts that aren't obvious from a single file:
   `<= 2` words) are dropped before the section body is assembled (table rows are exempt). `_CHUNK_FORMAT_VERSION` (folded into `raw_hash`/`src_hash`) busts
   every `.vec.json` when this segmentation changes, since the raw overlay is untouched.
   **The warm encoder** (`onnx_embed.Encoder`) loads the int8
-  `Xenova/multilingual-e5-small` ONNX weights + tokenizer ONCE with
-  `onnxruntime` + `tokenizers` ONLY (NO torch: a ~300 Mo image, not ~2 Go), e5
-  `query:`/`passage:` prefixes, mean-pool + L2, and is shared by the query path and
-  the background page path (`session.run` is thread-safe). `build.quantize_int8`
+  `Snowflake/snowflake-arctic-embed-l-v2.0` ONNX weights (`onnx/model_int8.onnx`) +
+  tokenizer ONCE with `onnxruntime` + `tokenizers` ONLY (NO torch: a ~300 Mo image, not
+  ~2 Go; the weights are ~570 Mo, mounted read-only), and is shared by the query path and
+  the background page path (`session.run` is thread-safe). A per-model recipe
+  (`onnx_embed._profile`, keyed on `RUNTIME_MODEL`) picks the ONNX file, pooling, prefixes
+  and MRL width: arctic-l-v2.0 = **CLS-pool -> L2, query-only `query: ` prefix (NO passage
+  prefix), Matryoshka-truncated to 256 dims** (truncate THEN normalise once), verified
+  against the repo config + ONNX graph (inputs `input_ids`/`attention_mask` only, output
+  `token_embeddings`). Swapping `RUNTIME_MODEL` (+ the matching `download-model.sh` fetch)
+  re-embeds the whole catalog (`read_vec_meta` gates on the model name). The prior model
+  was e5-small (mean-pool, `query:`/`passage:` prefixes, 384 dims). `build.quantize_int8`
   (symmetric `q=round(v*127)`, dequant `q/127`) is the ONE canonical formula, mirrored
   in JS `decodeVec`. **The embed service** (`embed-service.py`, behind Caddy's
   same-origin `/api/sem/*`, mirrors `refresh-service.py`: `ThreadingHTTPServer`,
@@ -856,8 +863,9 @@ Key facts that aren't obvious from a single file:
 ```bash
 ./download-data.sh        # fetch + auto-extract the frozen 2022 data/CIS_RCP.csv (zip), and
                           #  refresh data/CIS_bdpm.txt (+ COMPO/GENER) from the LIVE daily BDPM feed
-./download-model.sh       # OPTIONAL: fetch the ONNX encoder + tokenizer into ./models (~120 Mo,
-                          #  gitignored) for SERVER-SIDE per-drug semantic search (mounted read-only
+./download-model.sh       # OPTIONAL: fetch the arctic-embed-l-v2.0 int8 ONNX + tokenizer into
+                          #  ./models (~570 Mo, gitignored) for SERVER-SIDE per-drug semantic search
+                          #  (mounted read-only
                           #  into the embed container; no longer served to browsers). Skip it and the
                           #  "Recherche sémantique dans ce RCP" box just degrades to "indisponible".
 uv run src/scrape-rcp.py --limit 60   # OPTIONAL manual/one-time bulk scrape into data/rcp/ overlay
