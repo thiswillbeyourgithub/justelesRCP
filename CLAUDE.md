@@ -1048,8 +1048,13 @@ Restart is not needed (Caddy reads the mounted dir live), but a
   them (`deploy.sh`'s main rsync `--exclude='*.vec.json*'` both skips shipping an
   empty/stale local copy AND, since rsync protects excluded paths from `--delete`, keeps
   a normal deploy from wiping the live index). To regenerate them on purpose after a
-  segmentation change (see `_CHUNK_FORMAT_VERSION`), `deploy.sh --re-embed` deletes the
-  VPS sidecars so the reconcile sweep re-embeds every crawled page; do NOT re-add
+  segmentation change (see `_CHUNK_FORMAT_VERSION`) OR a model swap (see
+  `onnx_embed.RUNTIME_MODEL`), there are TWO paths: `deploy.sh --re-embed` deletes the
+  VPS sidecars so the embed service's reconcile sweep re-embeds every crawled page on the
+  VPS (grinds through ~15k pages there), OR `deploy.sh --push-vectors` ships vectors
+  pre-baked LOCALLY (`uv run src/embed-rcp.py`, same weights so identical vectors) UP to
+  the VPS via a dedicated additive rsync (the model-gated reconcile self-heals any page
+  you did not bake). Both are gitignored deploy.sh modes; either way, do NOT re-add
   `*.vec.json` to the rsync mirror. The Dockerfile bakes `src/build.py` / `src/bdpm.py` /
   `src/onnx_embed.py` / `src/embed-service.py` / `src/rcp.html` (COPYd into `/app/src/`)
   and pip-installs `onnxruntime` + `tokenizers`
