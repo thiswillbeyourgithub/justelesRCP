@@ -620,7 +620,7 @@
       // above/below it and never covers the click target.
       targets = [hit];
       window.clearInterval(nudgeTimer);
-      if (refs.status) refs.status.textContent = "Cliquez le résultat mis en évidence ↓";
+      if (refs.status) refs.status.textContent = "Cliquez le résultat mis en évidence";
       if (!spotted) {
         spotted = true;
         try { hit.scrollIntoView({ block: "center", behavior: "smooth" }); } catch (e) {}
