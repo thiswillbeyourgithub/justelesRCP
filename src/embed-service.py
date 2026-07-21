@@ -361,12 +361,20 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _send(self, code: int, payload: dict) -> None:
         body = json.dumps(payload).encode("utf-8")
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            # The client hung up before we finished writing: it navigated away, or the
+            # frontend's AbortController cancelled a superseded /embed request (common,
+            # since editing the query cancels the in-flight encode). There is nobody to
+            # send to, so this is routine, not a fault: drop the connection instead of
+            # letting it bubble up to socketserver as a per-request traceback.
+            self.close_connection = True
 
     def log_message(self, fmt: str, *args) -> None:
         # Healthcheck fires every 30s forever; never log it. Everything else is DEBUG,
@@ -470,6 +478,23 @@ class _Handler(BaseHTTPRequestHandler):
 EMBEDDER: Embedder | None = None  # set in main(), read by _Handler
 
 
+class _QuietHTTPServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer that treats a client hangup as routine, not an error.
+
+    A reader who navigates away, or whose superseded /embed request the frontend's
+    AbortController cancels, drops the connection mid-exchange. The default
+    handle_error then dumps a BrokenPipeError/ConnectionResetError traceback per
+    hangup (noise, not a fault). _send already swallows the write side; this also
+    covers a reset while READING the request body. Log it at DEBUG and move on."""
+
+    def handle_error(self, request, client_address) -> None:
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (BrokenPipeError, ConnectionResetError)):
+            logger.debug("client {} hung up mid-request", client_address)
+            return
+        super().handle_error(request, client_address)
+
+
 @click.command(context_settings={"help_option_names": ["-h", "--help"]})
 @click.option("--host", default="127.0.0.1", show_default=True, envvar="EMBED_HOST",
               help="Bind address (env EMBED_HOST). Use 0.0.0.0 behind the Caddy proxy.")
@@ -569,7 +594,7 @@ def main(host, port, model_dir, intra_threads, min_query_chars, max_query_chars,
                 "min/max query chars={}/{})", host, port, onnx_embed.RUNTIME_MODEL,
                 "on" if backlog else "off", reconcile_seconds,
                 min_query_chars, max_query_chars)
-    ThreadingHTTPServer((host, port), _Handler).serve_forever()
+    _QuietHTTPServer((host, port), _Handler).serve_forever()
 
 
 if __name__ == "__main__":

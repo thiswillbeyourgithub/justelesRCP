@@ -1011,12 +1011,18 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _send(self, code: int, payload: dict) -> None:
         body = json.dumps(payload).encode("utf-8")
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            # The client hung up before we finished writing (navigated away, or a
+            # status poll was aborted). Nobody to send to: routine, not a fault. Drop
+            # the connection instead of letting it bubble up as a per-request traceback.
+            self.close_connection = True
 
     def log_message(self, fmt: str, *args) -> None:  # route through loguru
         # The container healthcheck hits /api/health every 30s forever; logging
@@ -1086,6 +1092,23 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 REFRESHER: Refresher | None = None  # set in main(), read by _Handler
+
+
+class _QuietHTTPServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer that treats a client hangup as routine, not an error.
+
+    A reader who navigates away, or whose status poll is aborted, drops the
+    connection mid-exchange. The default handle_error then dumps a BrokenPipeError/
+    ConnectionResetError traceback per hangup (noise, not a fault). _send already
+    swallows the write side; this also covers a reset while READING the request
+    body. Log it at DEBUG and move on."""
+
+    def handle_error(self, request, client_address) -> None:
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (BrokenPipeError, ConnectionResetError)):
+            logger.debug("client {} hung up mid-request", client_address)
+            return
+        super().handle_error(request, client_address)
 
 
 @click.command(context_settings={"help_option_names": ["-h", "--help"]})
@@ -1214,7 +1237,7 @@ def main(host: str, port: int, rate: float, demand_rate: float, min_interval: fl
                 f"on ttl={crawl_ttl_days}d" if crawl else "off",
                 f"on rate={eu_rate}s ttl={eu_crawl_ttl_days}d" if eu_crawl else "off",
                 embed_notify_url or "off")
-    ThreadingHTTPServer((host, port), _Handler).serve_forever()
+    _QuietHTTPServer((host, port), _Handler).serve_forever()
 
 
 if __name__ == "__main__":

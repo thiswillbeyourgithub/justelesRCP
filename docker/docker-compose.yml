@@ -193,7 +193,8 @@ services:
     volumes:
       # Read-only: the warm encoder model + tokenizer (scripts/download-model.sh fetches it
       # into ./models). Mounted, not baked, so it stays out of the image / build
-      # context; EMBED_MODEL_DIR defaults to /app/models/Xenova/multilingual-e5-small.
+      # context; EMBED_MODEL_DIR defaults to
+      # /app/models/Snowflake/snowflake-arctic-embed-l-v2.0.
       - ../models:/app/models:ro
       # Read-only: the crawled overlays are the ONLY text this service embeds (never
       # the 2022 baseline CSV, which is not mounted here at all). It reads the raw
