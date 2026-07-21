@@ -101,8 +101,13 @@ def _img_data_uri(doc: fitz.Document, xref: int) -> tuple[str, int] | None:
     """Return ``(data_uri, display_width)`` for one image xref, or None if it is
     too small to be a real figure. Transcodes to a browser format and downscales.
 
-    Note: an image's soft mask (transparency) is not applied here; SmPC figures
-    are charts/structures on white, so ignoring it is fine and keeps this simple."""
+    Transparency is PRESERVED: a figure drawn on a transparent background (e.g. a
+    Kaplan-Meier curve) is emitted as a real RGBA PNG so the page's per-theme figure
+    backing shows through (CSS --fig-img-bg is white in dark mode + the lightbox pads
+    white). Dropping the soft mask instead baked those areas opaque black, unreadable on
+    the dark theme. NOTE: this changes the converted overlay, so existing data/eu pages
+    keep the old flattened image until re-converted (scrape-ema.py / the refresh EMA lane
+    re-crawl, e.g. deploy.sh --rebuild)."""
     try:
         info = doc.extract_image(xref)
     except Exception:
@@ -114,6 +119,15 @@ def _img_data_uri(doc: fitz.Document, xref: int) -> tuple[str, int] | None:
         pix = fitz.Pixmap(doc, xref)
         if pix.colorspace and pix.colorspace.name not in ("DeviceRGB", "DeviceGray"):
             pix = fitz.Pixmap(fitz.csRGB, pix)  # normalise CMYK/other to browser RGB
+        # Re-attach the soft mask (a separate grayscale xref) so transparent regions stay
+        # transparent in the emitted PNG. Same-dimension single-channel mask only; on any
+        # size mismatch / read error keep the opaque base (the previous behaviour).
+        smask_xref = info.get("smask", 0)
+        if smask_xref and pix.alpha == 0:
+            try:
+                pix = fitz.Pixmap(pix, fitz.Pixmap(doc, smask_xref))
+            except Exception:
+                pass
         # Halve until within the width cap (shrink(n) reduces each side by 2**n).
         n = 0
         while pix.width > _IMG_MAX_WIDTH * (2 ** n):
