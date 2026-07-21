@@ -390,6 +390,37 @@ class Refresher:
             return False
         return age < self.min_interval
 
+    def _rcp_archived(self, cis: str) -> bool:
+        """True if this ANSM CIS was scraped and the ANSM published NO RCP: a
+        zero-byte overlay ("scraped, no RCP"). This is the delisted/withdrawn case
+        (the drug left BDPM), distinct from "never scraped" (no overlay at all -> the
+        page still shows whatever the build baked, e.g. the 2022 baseline).
+
+        Read straight off the overlay FILE (not the manifest 'status', which older
+        entries recorded as 'ok' even when empty), reusing build's own overlay
+        helpers so it matches exactly what the build sees. So the button can be told
+        the honest truth ('we checked; ANSM no longer publishes this') and stop
+        pretending a reload will ever show something new. EU CIS are never 'archived'
+        here (their absence of an ANSM RCP is by design; they live under /eu/)."""
+        if self._is_eu(cis):
+            return False
+        path = build._overlay_path(cis)
+        if path is None:
+            return False
+        try:
+            return build._read_overlay(path).strip() == ""
+        except OSError:
+            return False
+
+    def status_of(self, cis: str) -> dict:
+        """The button's poll payload: capture date, whether a fetch is queued, and
+        whether the ANSM has no RCP for this drug (archived/retiré). ``archived``
+        lets the client show an honest terminal message instead of reload-looping on
+        a manifest-vs-page date that can never converge for a delisted drug."""
+        return {"asof": self.asof_of(cis),
+                "pending": self.is_pending(cis),
+                "archived": self._rcp_archived(cis)}
+
     def is_pending(self, cis: str) -> bool:
         with self._lock:
             return cis in self._pending
@@ -622,7 +653,8 @@ class Refresher:
         if self._recently_fetched(cis):
             with self._lock:
                 self._stats["fresh"] += 1
-            return {"status": "fresh", "asof": self.asof_of(cis)}
+            return {"status": "fresh", "asof": self.asof_of(cis),
+                    "archived": self._rcp_archived(cis)}
         # NB: asof_of() reads the manifest under self._lock, so it must NOT be
         # called while we hold the lock here (self._lock is a plain, non-reentrant
         # Lock; re-acquiring it on the same thread deadlocks). Decide under the
@@ -652,7 +684,8 @@ class Refresher:
                 pending_n = self._demand.qsize()
         if not already:
             logger.info("queued {} [{}] (on-demand pending={})", cis, source, pending_n)
-        return {"status": "queued", "asof": self.asof_of(cis)}
+        return {"status": "queued", "asof": self.asof_of(cis),
+                "archived": self._rcp_archived(cis)}
 
     # -- worker --------------------------------------------------------------
 
@@ -962,7 +995,7 @@ class _Handler(BaseHTTPRequestHandler):
     """Minimal JSON API. Routes:
 
     ``POST /api/refresh/<cis>[?src=user|auto]`` - enqueue a refresh; -> {status, asof?}.
-    ``GET  /api/status/<cis>``  - {asof, pending} so the button can poll.
+    ``GET  /api/status/<cis>``  - {asof, pending, archived} so the button can poll.
     ``GET  /api/stats``         - crawl counters by source + queue depth + ETA.
     ``GET  /api/health``        - {ok: true} for container healthchecks (never logged).
     """
@@ -1034,9 +1067,7 @@ class _Handler(BaseHTTPRequestHandler):
             return
         m = re.fullmatch(r"/api/status/(\d{8})", self.path)
         if m:
-            cis = m.group(1)
-            self._send(200, {"asof": REFRESHER.asof_of(cis),
-                             "pending": REFRESHER.is_pending(cis)})
+            self._send(200, REFRESHER.status_of(m.group(1)))
             return
         self._send(404, {"error": "not found"})
 

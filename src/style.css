@@ -266,6 +266,9 @@ a:hover { text-decoration: underline; }
 /* "ou" separator between the refresh button and the relocated source link. */
 .rcp-refresh .rcp-refresh-or { vertical-align: middle; margin: 0 .4rem; color: var(--muted); }
 .rcp-refresh .msg { color: var(--muted); }
+/* A standing terminal note (e.g. the "retiré de la base" case): breaks onto its own
+   line under the button and wraps, unlike the transient inline .msg text. */
+.rcp-refresh .msg.msg-note { display: block; margin-top: .35rem; line-height: 1.4; }
 /* Per-drug semantic search (src/rcp-semsearch.js): a collapsible box that asks the
    reader for a natural-language question and highlights the closest passages with a
    prev/next navigator. Built in JS and shaped like the .toc panel; the query is

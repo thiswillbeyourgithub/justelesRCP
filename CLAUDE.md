@@ -297,9 +297,28 @@ Key facts that aren't obvious from a single file:
   by its own thread, so `_wait_rate(since, rate)` needs no lock. `_process` is
   throttle-free (each worker waits on its lane's rate before calling `_handle`, which
   wraps `_process` with the shared error/pending bookkeeping). Endpoints: `GET /api/health`, `GET /api/status/<cis>`
-  (asof + pending), `GET /api/stats` (crawl counters + `crawl` gauge), `POST
-  /api/refresh/<cis>[?src=user|auto]` (returns fresh|queued|busy). It is
+  (`{asof, pending, archived}`), `GET /api/stats` (crawl counters + `crawl` gauge), `POST
+  /api/refresh/<cis>[?src=user|auto]` (returns `{status: fresh|queued|busy, asof, archived}`). It is
   same-origin, so the strict `connect-src 'self'` CSP covers the button's fetches.
+  **Honest feedback for a delisted drug (`archived`).** A drug WITHDRAWN from BDPM
+  (e.g. its ANSM `/medicament/<cis>/extrait` now says "Le médicament demandé n'existe
+  pas") is scraped to a zero-byte overlay ("scraped, no RCP"), so its page keeps
+  rendering the 2022 baseline and its capture date NEVER moves. The status/refresh
+  responses carry `archived` (Refresher `_rcp_archived`: the ANSM overlay exists AND is
+  empty, read straight off the FILE via `build._overlay_path`/`_read_overlay` so it is
+  right even for old manifest entries that recorded `status:"ok"`; EU CIS are never
+  archived). `src/app-init.js` keys the button off `archived`, NOT a
+  page-asof-vs-manifest-asof compare that can never converge for such a drug (the old
+  bug: it reload-looped forever showing the same 2022 copy). On `archived` it shows a
+  standing `.msg-note` "L'ANSM ne publie plus de RCP … (retiré de la base). Nous
+  affichons notre dernière copie (<mois année>)." and never reloads. **Persistent
+  feedback:** the last outcome per CIS is stored in `localStorage` (`jlrcp_maj_<cis>`,
+  self-pruning after 3 days) and re-shown on load (a `pending` refresh resumes its
+  poll, an `updated` shows a one-shot "vérifié à l'instant" after the reload, a
+  `retired` re-shows the note), so a reader who reloads no longer loses the feedback.
+  Keep the `archived` field + the `jlrcp_maj_` outcome vocabulary in sync across
+  `status_of`/`_rcp_archived`/`request` (refresh-service.py), the button state machine
+  in `src/app-init.js`, and `.rcp-refresh .msg.msg-note` in `style.css`.
   If the service is absent, `/api/*` just 502s and the button degrades gracefully,
   so static-only deploys omit it entirely. Both `build.py` and `scrape-rcp.py`
   guard `__main__`, so importing them must stay import-safe (no side effects at

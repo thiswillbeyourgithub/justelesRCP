@@ -183,6 +183,14 @@
     let polling = false;
     function setMsg(text) {
       msg.textContent = text ? " " + text : "";
+      msg.classList.remove("msg-note");
+    }
+    // A standing, wrapping note (muted, under the button) for a TERMINAL outcome the
+    // reader should keep seeing, e.g. the "retiré" case. setMsg() is the transient
+    // inline variant; setNote() the persistent block one.
+    function setNote(text) {
+      msg.textContent = text || "";
+      msg.classList.toggle("msg-note", !!text);
     }
     // Set the reader's expectation clearly: the page reloads itself once the copy is
     // ready (usually well under 30 s), and if it takes longer they can just refresh.
@@ -193,16 +201,85 @@
       : "Mise à jour en cours… la page se rechargera automatiquement dès qu'elle est prête, en général en moins de 30 secondes.";
     const slowMsg =
       "C'est un peu plus long que prévu ; rechargez la page dans un instant pour voir le résultat.";
+    // The honest terminal message when the ANSM has no RCP for this drug (delisted /
+    // retiré de la base): we keep showing our last captured copy and say so, instead
+    // of reload-looping on a date that can never match (see the .archived handling).
+    const copyLabel = bakedAsof
+      ? (function () {
+          try {
+            return new Date(bakedAsof + "T00:00:00Z").toLocaleDateString("fr-FR", {
+              month: "long",
+              year: "numeric",
+            });
+          } catch (_) {
+            return "";
+          }
+        })()
+      : "";
+    const retiredNote =
+      "L'ANSM ne publie plus de RCP pour ce médicament (retiré de la base). " +
+      "Nous affichons notre dernière copie" +
+      (copyLabel ? " (" + copyLabel + ")" : "") +
+      ".";
 
-    // After a refresh is queued, poll the service until it reports a scrape date
-    // newer than the one baked into this page, then reload to show the fresh RCP.
+    // --- persistent feedback (survives a reload) ----------------------------
+    // A reader often reloads to "check", which used to wipe every inline message.
+    // We remember the last outcome for THIS drug in localStorage (keyed by CIS,
+    // self-pruning) and re-show it on load; a pending refresh resumes its poll.
+    const STORE_KEY = "jlrcp_maj_" + cis;
+    const STORE_TTL = 3 * 86400000; // keep an outcome visible for ~3 days, then forget
+    function remember(outcome) {
+      try {
+        localStorage.setItem(STORE_KEY, JSON.stringify({ t: Date.now(), o: outcome }));
+      } catch (_) {}
+    }
+    function recall() {
+      try {
+        const rec = JSON.parse(localStorage.getItem(STORE_KEY) || "null");
+        if (!rec || !rec.o) return null;
+        if (Date.now() - (rec.t || 0) > STORE_TTL) {
+          localStorage.removeItem(STORE_KEY);
+          return null;
+        }
+        return rec;
+      } catch (_) {
+        return null;
+      }
+    }
+    function forget() {
+      try {
+        localStorage.removeItem(STORE_KEY);
+      } catch (_) {}
+    }
+
+    // The ANSM has no RCP for this drug: honest terminal state, never a reload.
+    function showRetired() {
+      polling = false;
+      btn.disabled = false;
+      setNote(retiredNote);
+      remember("retired");
+    }
+    // A genuinely newer copy landed: remember it so the reloaded page can show a
+    // brief confirmation, then reload. Reached ONLY when the drug is NOT archived,
+    // so a delisted drug (whose baked date can never match) never loops here.
+    function reloadFresh() {
+      remember("updated");
+      setMsg("à jour, rechargement…");
+      location.reload();
+    }
+
+    // After a refresh is queued, poll the service until it either reports the drug is
+    // archived (no ANSM RCP) or a capture date newer than this page's, then resolve.
     function pollUntilFresh(deadline) {
       fetch("/api/status/" + cis, { headers: { Accept: "application/json" } })
         .then((r) => r.json())
         .then((s) => {
+          if (s.archived) {
+            showRetired();
+            return true;
+          }
           if (s.asof && s.asof !== bakedAsof && !s.pending) {
-            setMsg("à jour, rechargement…");
-            location.reload();
+            reloadFresh();
             return true;
           }
           return false;
@@ -216,6 +293,7 @@
             polling = false;
             btn.disabled = false;
             setMsg(slowMsg);
+            remember("slow");
           }
         });
     }
@@ -224,19 +302,26 @@
       if (polling) return;
       btn.disabled = true;
       setMsg(askedMsg);
+      remember("pending");
       refresh(cis, "user")
         .then((r) => r.json())
         .then((s) => {
+          if (s.archived) {
+            showRetired();
+            return;
+          }
           if (s.status === "fresh") {
             if (s.asof && s.asof !== bakedAsof) {
-              location.reload();
+              reloadFresh();
               return;
             }
             btn.disabled = false;
             setMsg("déjà à jour.");
+            forget();
           } else if (s.status === "busy") {
             btn.disabled = false;
             setMsg("service occupé, réessayez plus tard.");
+            remember("busy");
           } else {
             polling = true;
             setMsg(workingMsg);
@@ -246,15 +331,43 @@
         .catch(() => {
           btn.disabled = false;
           setMsg("rafraîchissement indisponible.");
+          forget();
         });
     });
 
+    // Restore the last outcome for this drug so a reload doesn't lose the feedback.
+    const stored = recall();
+    if (stored) {
+      if (stored.o === "retired") {
+        setNote(retiredNote);
+      } else if (stored.o === "pending") {
+        // A refresh was in flight when the page was left/reloaded: resume its poll.
+        polling = true;
+        btn.disabled = true;
+        setMsg(workingMsg);
+        pollUntilFresh(Date.now() + 90000);
+      } else if (stored.o === "updated") {
+        // Just reloaded after a successful refresh: one-shot confirmation, then clear.
+        setMsg("à jour, vérifié à l'instant.");
+        forget();
+      }
+    }
+
     // Automatic, fire-and-forget refresh when the page is over a year old. The
-    // server dedups + rate-limits, so many visitors on the same stale page cause
-    // a single fetch; the freshened page shows up on a later visit. We do not
-    // reload here (no surprise reloads), we just nudge the queue.
-    if (Number.isFinite(ageDays) && ageDays > 365) {
-      refresh(cis, "auto").catch(() => {});
+    // server dedups + rate-limits, so many visitors on the same stale page cause a
+    // single fetch; the freshened page shows up on a later visit. We do not reload
+    // here (no surprise reloads). Skip it entirely for a drug already known to be
+    // retiré (re-fetching a delisted RCP is pointless), but still LEARN the retiré
+    // state from the response so an old delisted page shows the honest note on load
+    // without a click.
+    const knownRetired = stored && stored.o === "retired";
+    if (!knownRetired && Number.isFinite(ageDays) && ageDays > 365) {
+      refresh(cis, "auto")
+        .then((r) => r.json())
+        .then((s) => {
+          if (s && s.archived) showRetired();
+        })
+        .catch(() => {});
     }
   })();
 
