@@ -70,6 +70,9 @@
   var perStepCleanup = null; // teardown for a step's ad-hoc listeners/observers/timers
   var revealPending = false; // while true, keep the spotlight faded out (mid step-scroll)
   var scrollGen = 0;         // invalidates a stale scroll-settle callback when the step changes
+  var holdCard = false;      // while true, freeze the card in place (during a step's scroll)
+  var cardDelayTimer = 0;    // the "slight delay" timer before the card glides to a new spot
+  var CARD_MOVE_DELAY_MS = 220; // pause after the spotlight settles before the card follows
 
   function ensureOverlay() {
     if (spot) return;
@@ -155,6 +158,11 @@
 
   function placeCard(rect) {
     if (!card) return;
+    // While a step is scrolling its target into view, keep the card frozen where it was
+    // (holdCard): the spotlight still repositions, but the card only glides to its new
+    // spot once, after the scroll settles + a slight delay (see showStep). This makes the
+    // card easy to follow by eye instead of chasing the scroll frame-by-frame.
+    if (holdCard) return;
     var gap = 14, cw = card.offsetWidth, ch = card.offsetHeight;
     var vw = window.innerWidth, vh = window.innerHeight, top, left;
     if (rect.top + rect.height + gap + ch <= vh) top = rect.top + rect.height + gap;
@@ -240,22 +248,35 @@
     var gen = ++scrollGen; // any pending scroll-settle callback from the previous step is now stale
     targets = (spec.targets || []).filter(Boolean);
     var refs = renderCard(spec);
+    if (cardDelayTimer) { window.clearTimeout(cardDelayTimer); cardDelayTimer = 0; }
     if (targets.length) {
       // Keep the spotlight faded out while we scroll the target into view, and reveal it
       // only once the scroll has settled: the rect fading in on a stationary page reads as
       // smoother + more intentional than chasing the target across a moving one. The card is
-      // placed right away (reposition below) so it is readable during the scroll.
+      // held at its PREVIOUS position (holdCard) while the page scrolls: it stays readable
+      // where the eye already is, then glides once to the new spot after a slight delay.
       revealPending = true;
+      holdCard = true;
       spot.classList.add("tour-hidden");
       reposition();
       try { targets[0].scrollIntoView({ block: "center", behavior: "smooth" }); } catch (e) {}
       afterScrollSettles(function () {
         if (gen !== scrollGen) return; // superseded by a newer step
         revealPending = false;
-        reposition();
+        reposition(); // fade the spotlight in at its final rect (card still held)
+        // Then, after a slight pause so the eye can register the new highlight, release the
+        // card so it GLIDES once to its new position (via the .tour-card top/left CSS
+        // transition) rather than snapping or having chased the scroll.
+        cardDelayTimer = window.setTimeout(function () {
+          cardDelayTimer = 0;
+          if (gen !== scrollGen || !spot) return;
+          holdCard = false;
+          reposition();
+        }, CARD_MOVE_DELAY_MS);
       });
     } else {
       revealPending = false;
+      holdCard = false;
       reposition();
     }
     if (spec.onEnter) spec.onEnter(refs);
@@ -267,6 +288,8 @@
     ensureOverlay();
     ++scrollGen;               // invalidate any pending scroll-settle reveal from a prior step
     revealPending = false;
+    holdCard = false;
+    if (cardDelayTimer) { window.clearTimeout(cardDelayTimer); cardDelayTimer = 0; }
     spot.classList.add("tour-hidden");
     targets = [];
     if (!backdrop) { backdrop = el("div", "tour-backdrop"); document.body.appendChild(backdrop); }
@@ -276,6 +299,8 @@
 
   function teardownDom() {
     if (raf) { window.cancelAnimationFrame(raf); raf = 0; }
+    if (cardDelayTimer) { window.clearTimeout(cardDelayTimer); cardDelayTimer = 0; }
+    holdCard = false;
     if (perStepCleanup) { perStepCleanup(); perStepCleanup = null; }
     window.removeEventListener("scroll", scheduleReposition, true);
     window.removeEventListener("resize", scheduleReposition);
