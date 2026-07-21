@@ -523,8 +523,9 @@ a:hover { text-decoration: underline; }
 .tour-close:hover { color: var(--fg); }
 .tour-step-num { margin: 0 0 .2rem; font-size: .72rem; letter-spacing: .04em;
   text-transform: uppercase; color: var(--accent); font-weight: 700; }
-.tour-title { margin: 0 0 .45rem; font-size: 1.05rem; padding-right: 1.2rem; }
-.tour-body { margin: 0; font-size: .92rem; line-height: 1.45; color: var(--fg); }
+/* padding-right clears the absolutely-positioned close cross: the body can now be the
+   card's first line (modals have no step number / former title above it). */
+.tour-body { margin: 0; font-size: .92rem; line-height: 1.45; color: var(--fg); padding-right: 1.2rem; }
 .tour-status { margin: .6rem 0 0; font-size: .82rem; color: var(--muted); font-style: italic; }
 /* space-between so "Precedent" sits at the left and the primary action at the right. */
 .tour-actions { display: flex; flex-wrap: wrap; gap: .5rem; justify-content: space-between; margin-top: .9rem; }

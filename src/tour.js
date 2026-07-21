@@ -209,7 +209,6 @@
     if (spec.step) {
       card.appendChild(el("p", "tour-step-num", "Étape " + spec.step + " / " + spec.total));
     }
-    card.appendChild(el("h3", "tour-title", spec.title));
     card.appendChild(el("p", "tour-body", spec.body));
 
     var status = null;
@@ -361,9 +360,7 @@
   }
 
   function welcomeModal() {
-    showModal({
-      title: "Bienvenue sur justelesRCP",
-      body: "justelesRCP affiche les résumés des caractéristiques du produit (RCP) des " +
+    showModal({      body: "justelesRCP affiche les résumés des caractéristiques du produit (RCP) des " +
             "médicaments vendus en France : rapide, sans publicité, sans compte. " +
             "Voulez-vous une courte visite guidée ?",
       buttons: [
@@ -386,9 +383,7 @@
       try { input.blur(); } catch (e) {}
     }
     showStep({
-      step: 1, total: TOTAL,
-      title: "Le champ de recherche",
-      body: "Tout commence ici : saisissez le nom d'un médicament pour ouvrir sa fiche. " +
+      step: 1, total: TOTAL,      body: "Tout commence ici : saisissez le nom d'un médicament pour ouvrir sa fiche. " +
             "Regardons ce que ça donne.",
       targets: [box],
       back: welcomeModal,
@@ -432,9 +427,7 @@
     var box = qs(".searchbox") || input;
     var results = qs("#results");
     showStep({
-      step: 2, total: TOTAL,
-      title: "Rechercher un médicament",
-      body: "Tapez le nom d'un médicament (ici « quétiapine ») : les résultats " +
+      step: 2, total: TOTAL,      body: "Tapez le nom d'un médicament (ici « quétiapine ») : les résultats " +
             "apparaissent au fur et à mesure. Cliquez le résultat mis en évidence " +
             "pour ouvrir une fiche. Nous continuons sur un exemple concret.",
       targets: [box, results],
@@ -500,9 +493,7 @@
   // Step 3: freshness / source / "En savoir plus".
   function stepAsof() {
     showStep({
-      step: 3, total: TOTAL,
-      title: "Fraîcheur, source et liens utiles",
-      body: "En haut de chaque fiche : la date de mise à jour officielle (ANSM) et notre " +
+      step: 3, total: TOTAL,      body: "En haut de chaque fiche : la date de mise à jour officielle (ANSM) et notre " +
             "date de vérification, le bouton « Rafraîchir maintenant », le lien vers " +
             "la source officielle, et les liens « En savoir plus » (BDPM, HAS, EMA, " +
             "CRAT, Vidal).",
@@ -516,9 +507,7 @@
   function stepToc() {
     var toc = openDetails(".toc");
     showStep({
-      step: 4, total: TOTAL,
-      title: "Le sommaire",
-      body: "Le sommaire permet de sauter directement à n'importe quelle section du RCP.",
+      step: 4, total: TOTAL,      body: "Le sommaire permet de sauter directement à n'importe quelle section du RCP.",
       targets: [toc],
       back: stepAsof,
       buttons: [{ label: "Suivant", primary: true, onClick: stepSemOpen }],
@@ -540,9 +529,7 @@
     var box = openSemBox();
     if (!box) { stepXref(); return; } // embed feature absent: skip gracefully
     showStep({
-      step: 5, total: TOTAL,
-      title: "Recherche sémantique",
-      body: "Cette fiche se laisse interroger en langage naturel : posez une question et " +
+      step: 5, total: TOTAL,      body: "Cette fiche se laisse interroger en langage naturel : posez une question et " +
             "les passages les plus proches par le sens sont classés. Ouvrons-la.",
       targets: [box],
       back: stepToc,
@@ -556,9 +543,7 @@
     if (!box) { stepXref(); return; }
     var input = qs(".semsearch-input", box);
     showStep({
-      step: 6, total: TOTAL,
-      title: "Posez votre question",
-      body: "Exemple : « " + SEM_QUERY + " ». Regardez la question s'écrire, puis nous " +
+      step: 6, total: TOTAL,      body: "Exemple : « " + SEM_QUERY + " ». Regardez la question s'écrire, puis nous " +
             "repérerons le passage le plus pertinent.",
       targets: [box],
       back: stepSemOpen,
@@ -575,9 +560,7 @@
     var input = qs(".semsearch-input", box);
     var results = qs(".semsearch-results", box);
     var refs = showStep({
-      step: 7, total: TOTAL,
-      title: "Le passage le plus pertinent",
-      body: "Nous avons repéré le résultat le plus utile pour cette question. Cliquez le " +
+      step: 7, total: TOTAL,      body: "Nous avons repéré le résultat le plus utile pour cette question. Cliquez le " +
             "résultat mis en évidence pour aller droit au passage dans le texte.",
       status: "Recherche en cours…",
       targets: [box],
@@ -673,9 +656,7 @@
     if (!hit) { stepXref(); return; } // nothing was clicked/served: move on
     try { hit.scrollIntoView({ block: "center", behavior: "smooth" }); } catch (e) {}
     showStep({
-      step: 8, total: TOTAL,
-      title: "Vous y êtes",
-      body: "Le passage le plus pertinent est mis en évidence dans le texte de la fiche. " +
+      step: 8, total: TOTAL,      body: "Le passage le plus pertinent est mis en évidence dans le texte de la fiche. " +
             "Vous pouvez encore naviguer entre les passages avec ‹ › dans la recherche. " +
             "Terminons la visite.",
       targets: [hit],
@@ -696,9 +677,7 @@
     closeDetails(".semsearch"); // collapse the search box (the "skip" path leaves it open)
     var xref = openDetails(".drug-xref-list");
     showStep({
-      step: 9, total: TOTAL,
-      title: "Médicaments liés",
-      body: xref
+      step: 9, total: TOTAL,      body: xref
         ? "En bas de page, « Médicaments liés » regroupe les autres médicaments " +
           "cités dans ce texte, reliés automatiquement pour naviguer d'une fiche à l'autre."
         : "En bas des fiches concernées, « Médicaments liés » relie automatiquement " +
@@ -710,9 +689,7 @@
   }
 
   function finish() {
-    showModal({
-      title: "Visite terminée",
-      body: "Voilà l'essentiel ! Bonne visite. Vous pourrez relancer cette visite à " +
+    showModal({      body: "Voilà l'essentiel ! Bonne visite. Vous pourrez relancer cette visite à " +
             "tout moment depuis le lien « Visite guidée » en bas de page.",
       back: stepXref,
       buttons: [{ label: "Fermer", primary: true, onClick: endTour }],
