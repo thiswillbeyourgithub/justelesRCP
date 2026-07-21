@@ -823,6 +823,38 @@ def test_load_cap_meta_excludes_decentralised():
     print("ok  test_load_cap_meta_excludes_decentralised")
 
 
+def test_embed_page_to_vec_reports_stats():
+    # embed-service logs throughput (chars/sec) from the optional stats out-dict: it is
+    # filled with chunks + chars ONLY on the encode ("ok") path and left untouched when
+    # the page is fresh (nothing encoded), so a chars/sec line never counts a skip.
+    class _FakeEncoder:
+        query_prefix = "query: "
+        def encode_passages(self, texts):
+            return [_l2_normalise([0.1] * 6) for _ in texts]
+
+    raw = ("<div id='textDocument'><h1 class='AmmAnnexeTitre1'>4. Indications</h1>"
+           "<p>Une phrase de contenu suffisamment longue pour tenir dans un chunk "
+           "unique et dépasser le seuil de fusion des petits paragraphes.</p></div>")
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        (d / "rcp").mkdir()
+        (d / "rcp" / "12345678-drug.html").write_text("<html></html>")
+        saved = build.DIST
+        build.DIST = d
+        try:
+            enc = _FakeEncoder()
+            info: dict = {}
+            r1 = build.embed_page_to_vec("12345678", raw, "rcp", enc, model="m", stats=info)
+            assert r1 == "ok", r1
+            assert info.get("chunks", 0) >= 1 and info.get("chars", 0) > 0, info
+            info2: dict = {}
+            r2 = build.embed_page_to_vec("12345678", raw, "rcp", enc, model="m", stats=info2)
+            assert r2 == "fresh" and info2 == {}, (r2, info2)  # skip leaves stats untouched
+        finally:
+            build.DIST = saved
+    print("ok  test_embed_page_to_vec_reports_stats")
+
+
 def test_rcp_archived_detects_zero_byte_overlay():
     # rcp_archived is the single canonical "is this drug delisted?" test: a zero-byte
     # ANSM overlay ("scraped, no RCP") means the drug left BDPM. A non-empty overlay
@@ -932,6 +964,7 @@ if __name__ == "__main__":
     test_robots_points_at_sitemap()
     test_rcp_page_has_canonical_and_no_leftover_slots()
     test_jsonld_escapes_script_breakout_and_website_searchaction()
+    test_embed_page_to_vec_reports_stats()
     test_rcp_archived_detects_zero_byte_overlay()
     test_iter_rcp_raw_serves_delisted_baseline()
     test_record_hash_changes_when_archived()

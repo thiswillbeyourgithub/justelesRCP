@@ -58,7 +58,7 @@ import sys
 import threading
 import time
 import urllib.request
-from collections import OrderedDict, deque
+from collections import Counter, OrderedDict, deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -88,6 +88,52 @@ onnx_embed = _load_module("onnx_embed.py", "onnx_embed")  # warm ONNX encoder
 # src values a caller may pass on /api/sem/page; anything else is treated as "user".
 _SOURCES = {"user", "crawl"}
 
+# Human labels for the queue "source" values so the logs read plainly (the raw values
+# are user/crawl/sweep). "reader" = a visitor opened the search box on this page;
+# "scraper" = the refresh service just (re-)crawled it and notified us; "backlog" =
+# the periodic reconcile sweep working through the catalog. A query is NOT a queue
+# source (queries run on request threads, never enqueued); it is counted separately.
+_SOURCE_LABEL = {"user": "reader", "crawl": "scraper", "sweep": "backlog"}
+
+# Emit a rolling-aggregate progress line every N background page embeds, so throughput
+# + RAM are visible even when no reconcile pass has logged recently.
+_AGG_EVERY = 50
+
+
+def _rss_mb() -> float | None:
+    """Current resident set size (MB) of this process, from /proc/self/status. None on
+    a platform without it (the container is Linux). No psutil dependency."""
+    try:
+        with open("/proc/self/status", encoding="ascii") as fh:
+            for line in fh:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1]) / 1024.0  # value is in kB
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def _peak_rss_mb() -> float | None:
+    """High-water-mark RSS (MB) via getrusage: the largest the process ever grew to, so
+    a plateau after warm-up shows the model+arena ceiling. None if unavailable."""
+    try:
+        import resource
+        kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    except Exception:
+        return None
+    return kb / 1024.0 if sys.platform != "darwin" else kb / (1024.0 * 1024.0)
+
+
+def _mb(x: float | None) -> str:
+    return f"{x:.0f} MB" if x is not None else "n/a"
+
+
+def _rate(chars_per_s: float) -> str:
+    """Compact 'characters embedded per second'."""
+    if chars_per_s >= 1000:
+        return f"{chars_per_s / 1000:.1f}k c/s"
+    return f"{chars_per_s:.0f} c/s"
+
 
 class Embedder:
     """Owns the warm encoder + a single background page-embedding worker with a
@@ -96,9 +142,14 @@ class Embedder:
     def __init__(self, encoder, model: str, *, backlog: bool, backlog_rate: float,
                  reconcile_seconds: float, queue_max: int, refresh_url: str,
                  timeout: float, min_chars: int, max_chars: int,
-                 max_concurrent_queries: int = 8, query_wait: float = 2.0) -> None:
+                 max_concurrent_queries: int = 8, query_wait: float = 2.0,
+                 model_rss: float | None = None) -> None:
         self.encoder = encoder
         self.model = model
+        # RSS (MB) right after the model loaded, so a per-embed line can report how much
+        # the process has grown BEYOND the resident weights (the encode activations /
+        # onnxruntime arena). Set from main() where both readings are taken.
+        self._model_rss = model_rss
         self.backlog = backlog
         self.backlog_rate = max(0.0, backlog_rate)
         self.reconcile_seconds = max(5.0, reconcile_seconds)
@@ -122,7 +173,8 @@ class Embedder:
         self._running: str | None = None
         self._wake = threading.Event()
         self._stats = {"embedded": 0, "skipped": 0, "errors": 0,
-                       "queries": 0, "queries_shed": 0, "crawl_triggered": 0}
+                       "queries": 0, "queries_shed": 0, "crawl_triggered": 0,
+                       "chars": 0, "embed_seconds": 0.0}
 
     # -- lifecycle ---------------------------------------------------------
     def start(self) -> None:
@@ -196,17 +248,47 @@ class Embedder:
             self._wake.wait(timeout=5.0)
             self._wake.clear()
 
+    def _queue_summary(self) -> tuple[int, str]:
+        """(pages still waiting, 'reader=a scraper=b backlog=c') so a log line spells
+        out what the queue number MEANS: how many pages are planned, split by origin."""
+        with self._lock:
+            depth = len(self._queue)
+            counts = Counter(self._pending.values())
+        breakdown = " ".join(f"{_SOURCE_LABEL.get(s, s)}={counts.get(s, 0)}"
+                             for s in ("user", "crawl", "sweep"))
+        return depth, breakdown
+
+    def _log_aggregate(self) -> None:
+        """Rolling throughput + RAM summary (mean chars/s over all embeds, RSS + peak),
+        so speed and memory are legible without reading every per-page line."""
+        with self._lock:
+            s = dict(self._stats)
+        secs = s["embed_seconds"]
+        mean_rate = s["chars"] / secs if secs > 0 else 0.0
+        depth, breakdown = self._queue_summary()
+        logger.info(
+            "progress: {} pages / {} chars embedded, mean {} | {} skipped, {} errors | "
+            "queries {} ({} shed) | RSS {} peak {} | queue {} ({})",
+            s["embedded"], s["chars"], _rate(mean_rate), s["skipped"], s["errors"],
+            s["queries"], s["queries_shed"], _mb(_rss_mb()), _mb(_peak_rss_mb()),
+            depth, breakdown)
+
     # -- the actual embedding ---------------------------------------------
-    def _embed_page(self, cis: str) -> str:
+    def _embed_page(self, cis: str, info: dict | None = None) -> str:
         """Embed ONE crawled page's sections into its .vec.json. Returns
         "ok"|"fresh"|"no-page"|"absent". The segment->encode->hash-gate->write core is
         build.embed_page_to_vec (shared with embed-rcp.py); here we only resolve the
-        overlay (crawled-only; baseline pages return "absent")."""
+        overlay (crawled-only; baseline pages return "absent"). ``info`` (optional) is
+        filled with ``lane`` (rcp/eu) and, on the encode path, ``chunks``/``chars`` so
+        the worker can log the page + throughput."""
         ov = self._overlay_for(cis)
         if ov is None:
             return "absent"
         raw, subdir = ov
-        return build.embed_page_to_vec(cis, raw, subdir, self.encoder, model=self.model)
+        if info is not None:
+            info["lane"] = subdir
+        return build.embed_page_to_vec(cis, raw, subdir, self.encoder,
+                                       model=self.model, stats=info)
 
     def _worker(self) -> None:
         while True:
@@ -214,22 +296,40 @@ class Embedder:
             with self._lock:
                 self._running = cis
             result = "error"
+            info: dict = {}
+            t0 = time.perf_counter()
             try:
-                result = self._embed_page(cis)
+                result = self._embed_page(cis, info)
             except Exception as exc:  # never let one bad page kill the worker
                 logger.warning("embed cis {} failed: {}", cis, exc)
-            finally:
-                with self._lock:
-                    self._running = None
-                    self._pending.pop(cis, None)
-                    if result == "ok":
-                        self._stats["embedded"] += 1
-                    elif result == "error":
-                        self._stats["errors"] += 1
-                    else:
-                        self._stats["skipped"] += 1
+            dt = time.perf_counter() - t0
+            embedded_n = None
+            with self._lock:
+                self._running = None
+                self._pending.pop(cis, None)
+                if result == "ok":
+                    self._stats["embedded"] += 1
+                    self._stats["chars"] += info.get("chars", 0)
+                    self._stats["embed_seconds"] += dt
+                    embedded_n = self._stats["embedded"]
+                elif result == "error":
+                    self._stats["errors"] += 1
+                else:
+                    self._stats["skipped"] += 1
             if result == "ok":
-                logger.info("embedded {} ({}), queue={}", cis, source, len(self._queue))
+                chars = info.get("chars", 0)
+                rss = _rss_mb()
+                act = rss - self._model_rss if (rss is not None and self._model_rss) else None
+                depth, breakdown = self._queue_summary()
+                logger.info(
+                    "embedded {} [{}] {} chars / {} chunks in {} ms = {} | src={} | "
+                    "RSS {}{} | queue {} ({})",
+                    cis, info.get("lane", "?"), chars, info.get("chunks", 0),
+                    round(dt * 1000), _rate(chars / dt if dt > 0 else 0.0),
+                    _SOURCE_LABEL.get(source, source), _mb(rss),
+                    f" act +{act:.0f} MB" if act is not None else "", depth, breakdown)
+                if embedded_n and embedded_n % _AGG_EVERY == 0:
+                    self._log_aggregate()
             # Space out ONLY the background sweep so queries + on-demand keep the CPU.
             if source == "sweep" and self.backlog_rate:
                 time.sleep(self.backlog_rate)
@@ -263,10 +363,15 @@ class Embedder:
             try:
                 n = self._scan_and_enqueue(check_model=check_model)
                 if n:
-                    logger.info("reconcile: queued {} stale page(s) (queue={})",
-                                n, len(self._queue))
+                    depth, breakdown = self._queue_summary()
+                    logger.info("reconcile: queued {} stale page(s) | queue {} ({})",
+                                n, depth, breakdown)
             except Exception as exc:
                 logger.warning("reconcile scan failed: {}", exc)
+            # While a backlog is draining, emit the throughput + RAM summary each pass so
+            # speed/memory stay visible even between the every-50-pages worker aggregates.
+            if self._queue:
+                self._log_aggregate()
             # Bound how long cached query hashes+vectors linger even while idle: the
             # lazy per-request purge only fires when a query arrives, so sweep here too.
             self.encoder.purge_expired_queries()
@@ -291,7 +396,13 @@ class Embedder:
             return {"status": "fresh"}
         # user-viewed and crawl-notify both jump the sweep (front); reader waits least.
         status = self._enqueue(cis, source, front=True)
-        return {"status": "queued" if status == "dup" else status}
+        result = "queued" if status == "dup" else status
+        # Surface on-demand work (a reader opened the box, or the scraper notified us);
+        # DEBUG for a duplicate, since it just re-hit an already-planned page.
+        logger.log("DEBUG" if status == "dup" else "INFO",
+                   "page requested {} [{}] src={} -> {}", cis, subdir,
+                   _SOURCE_LABEL.get(source, source), result)
+        return {"status": result}
 
     def status_page(self, cis: str) -> dict:
         with self._lock:
@@ -330,18 +441,31 @@ class Embedder:
         vectors, so the client dequantises both with decodeVec). The query text is
         never logged or persisted. Call under acquire_query_slot()/release_query_slot()
         so concurrent encodes stay bounded."""
+        t0 = time.perf_counter()
         vec = self.encoder.encode_query(q)
         qi = build.quantize_int8(vec.tolist())
         b64 = base64.b64encode(struct.pack(f"{len(qi)}b", *qi)).decode("ascii")
         with self._lock:
             self._stats["queries"] += 1
+        # LENGTH + timing only, NEVER the text (privacy). DEBUG so a query flood does not
+        # spam INFO; the running count rides the periodic aggregate + /api/sem/stats.
+        logger.debug("query embedded: {} chars in {} ms",
+                     len(q), round((time.perf_counter() - t0) * 1000))
         return {"q": b64, "dim": len(qi), "query_prefix": self.encoder.query_prefix}
 
     def stats(self) -> dict:
         with self._lock:
-            return {"enabled": self.backlog, "model": self.model,
+            base = {"enabled": self.backlog, "model": self.model,
                     "queue": len(self._queue), "pending": len(self._pending),
                     "running": self._running, **self._stats}
+        # RAM + throughput, so the operator can size the box and estimate speed without
+        # scraping the logs. rss = resident now, peak = high-water, model = weights-only.
+        secs = base["embed_seconds"]
+        base["mean_chars_per_s"] = round(base["chars"] / secs) if secs > 0 else 0
+        base["rss_mb"] = round(_rss_mb() or 0)
+        base["peak_rss_mb"] = round(_peak_rss_mb() or 0)
+        base["model_rss_mb"] = round(self._model_rss or 0)
+        return base
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -568,6 +692,7 @@ def main(host, port, model_dir, intra_threads, min_query_chars, max_query_chars,
     logger.add(sys.stderr, level=log_level.upper())
 
     logger.info("loading model from {} (kept warm)", model_dir)
+    baseline_rss = _rss_mb()  # process RSS before the weights load (Python + onnxruntime lib)
     try:
         encoder = onnx_embed.Encoder(
             model_dir=model_dir, model_name=onnx_embed.RUNTIME_MODEL,
@@ -578,11 +703,24 @@ def main(host, port, model_dir, intra_threads, min_query_chars, max_query_chars,
         # A misconfig, not the "feature off" path (that is: don't run this container).
         sys.exit(f"embed service: {exc}")
 
+    model_rss = _rss_mb()  # after the InferenceSession + weights are resident
+    weights = (model_rss - baseline_rss
+               if (model_rss is not None and baseline_rss is not None) else None)
+    logger.info("model loaded: {} | process RSS {} (weights ~{}, before-load {}) | "
+                "intra-threads={}", onnx_embed.RUNTIME_MODEL, _mb(model_rss),
+                _mb(weights), _mb(baseline_rss), intra_threads)
+    logger.info("log legend: a page-embed line's 'src=' is reader (a visitor opened the "
+                "search box) / scraper (refresh crawled it + notified) / backlog (the "
+                "reconcile sweep); 'queue N (reader=.. scraper=.. backlog=..)' is pages "
+                "STILL WAITING by origin; 'act +X MB' is RSS beyond the resident weights "
+                "(encode arena); queries run on request threads (not queued), timed at "
+                "DEBUG and counted in the 'progress:' aggregate + /api/sem/stats")
+
     EMBEDDER = Embedder(
         encoder, onnx_embed.RUNTIME_MODEL, backlog=backlog, backlog_rate=backlog_rate,
         reconcile_seconds=reconcile_seconds, queue_max=queue_max, refresh_url=refresh_url,
         timeout=timeout, min_chars=min_query_chars, max_chars=max_query_chars,
-        max_concurrent_queries=max_concurrent_queries,
+        max_concurrent_queries=max_concurrent_queries, model_rss=model_rss,
     )
     EMBEDDER.start()
 

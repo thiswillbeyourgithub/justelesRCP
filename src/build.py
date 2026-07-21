@@ -52,7 +52,7 @@ from lxml import html as lxml_html
 
 import bdpm  # shared, pure-stdlib BDPM tokenising + frequency scoring
 
-__version__ = "0.46.1"  # single source of truth; bump patch/minor per change
+__version__ = "0.47.0"  # single source of truth; bump patch/minor per change
 
 # This script lives in ``src/`` (alongside the frontend templates it renders), so the
 # repo root is its parent's parent; data/, src/ and dist/ all hang off that root. In the
@@ -1901,7 +1901,8 @@ def iter_overlay_raw():
 
 
 def embed_page_to_vec(cis: str, raw: str, subdir: str, encoder, *,
-                      model: str, force: bool = False) -> str:
+                      model: str, force: bool = False,
+                      stats: dict | None = None) -> str:
     """Segment a crawled page's raw HTML into sections, embed them with ``encoder``,
     and write ``dist/<subdir>/<slug>.vec.json``. Returns ``"ok"`` (wrote fresh
     vectors), ``"fresh"`` (content hash + model unchanged, skipped the encode) or
@@ -1914,7 +1915,12 @@ def embed_page_to_vec(cis: str, raw: str, subdir: str, encoder, *,
     pre-bake), so their vectors can never disagree. Staleness is the content hash
     baked into the existing .vec.json (see read_vec_meta); a no-op re-crawl that
     rewrote identical bytes hashes the same and is skipped (mtime bumped so a
-    mtime-gated sweep stops re-queuing it)."""
+    mtime-gated sweep stops re-queuing it).
+
+    ``stats`` is an optional out-dict the caller can pass to learn how much work the
+    encode actually did (for logging/throughput): on the ``"ok"`` path it is filled
+    with ``chunks`` (sections encoded) and ``chars`` (total characters fed to the
+    encoder). Left untouched on the skip paths (nothing was encoded)."""
     page = dist_page_for(cis, subdir)
     if page is None:
         return "no-page"
@@ -1935,6 +1941,9 @@ def embed_page_to_vec(cis: str, raw: str, subdir: str, encoder, *,
     vecs = encoder.encode_passages(texts) if texts else []
     payload = vec_payload(chunks, vecs, model, encoder.query_prefix, src_hash)
     write_vec_json(vec, payload)
+    if stats is not None:
+        stats["chunks"] = len(texts)
+        stats["chars"] = sum(len(t) for t in texts)
     return "ok"
 
 
