@@ -8,6 +8,7 @@
 #   "numpy",
 #   "onnxruntime",
 #   "tokenizers",
+#   "tqdm",
 # ]
 # ///
 """Optional OFFLINE pre-bake of per-drug semantic-search vectors (see CLAUDE.md).
@@ -39,6 +40,7 @@ from pathlib import Path
 
 import click
 from loguru import logger
+from tqdm import tqdm
 
 HERE = Path(__file__).resolve().parent
 
@@ -77,12 +79,23 @@ def main(limit, do_all, only, eu, model_dir, intra_threads, force):
     if only_set:
         force = True
 
-    logger.info("loading encoder from {}", model_dir)
+    logger.info("loading encoder from {} (~500 MB int8 weights, takes a moment)", model_dir)
     encoder = onnx_embed.Encoder(model_dir=model_dir, intra_threads=intra_threads)
     model = encoder.model_name  # same string the service bakes, so the gate agrees
 
+    # Progress-bar total: the path-level overlay count (a cheap dir scan, no content
+    # reads). It slightly over-counts what actually embeds (iter_overlay_raw skips
+    # zero-byte archived overlays), so the bar may finish a hair under 100%; close
+    # enough to show position + ETA. Each page's .vec.json is written as it is embedded,
+    # so a Ctrl-C is safe and a re-run resumes (unchanged pages are skipped as "fresh").
+    total = sum(1 for _ in build.iter_overlay_paths())
+    logger.info("encoder ready; {} overlay(s) to consider{}", total,
+                "" if do_all else f", stopping after {limit} embedded")
+
     done = fresh = skipped = errors = no_page = 0
-    for cis, raw, subdir in build.iter_overlay_raw():
+    bar = tqdm(build.iter_overlay_raw(), total=total, unit="page",
+               desc="embedding", smoothing=0.05)
+    for cis, raw, subdir in bar:
         if only_set and cis not in only_set:
             continue
         if not eu and subdir == "eu":
@@ -92,7 +105,7 @@ def main(limit, do_all, only, eu, model_dir, intra_threads, force):
                                              model=model, force=force)
         except Exception as exc:  # never let one bad page abort the batch
             errors += 1
-            logger.warning("cis {} failed: {}", cis, exc)
+            bar.write(f"cis {cis} failed: {exc}")  # write() keeps the bar intact
             continue
         if result == "ok":
             done += 1
@@ -102,12 +115,13 @@ def main(limit, do_all, only, eu, model_dir, intra_threads, force):
             # Overlay exists but the page isn't built yet: run `uv run build.py` first.
             no_page += 1
             continue
-        if done and done % 100 == 0:
-            logger.info("embedded {} pages ({} unchanged, {} not-built, {} errors)",
-                        done, fresh, no_page, errors)
+        # Live counters in the bar's postfix (redrawn on tqdm's own schedule).
+        bar.set_postfix(embedded=done, unchanged=fresh, notbuilt=no_page,
+                        err=errors, refresh=False)
         # Count against the limit only pages we actually embedded this run.
         if not do_all and done >= limit:
             break
+    bar.close()
 
     logger.info("done: {} embedded, {} unchanged, {} not-built-yet, {} errors",
                 done, fresh, no_page, errors)
