@@ -60,6 +60,10 @@
   function fire(node, type) {
     if (node) node.dispatchEvent(new Event(type, { bubbles: true }));
   }
+  function reducedMotion() {
+    try { return window.matchMedia("(prefers-reduced-motion: reduce)").matches; }
+    catch (e) { return false; }
+  }
 
   // ---- overlay + card state ------------------------------------------------
   var spot = null;      // the spotlight (dimmer) element
@@ -73,6 +77,7 @@
   var holdCard = false;      // while true, freeze the card in place (during a step's scroll)
   var cardDelayTimer = 0;    // the "slight delay" timer before the card glides to a new spot
   var CARD_MOVE_DELAY_MS = 220; // pause after the spotlight settles before the card follows
+  var MODAL_ENTER_RISE = 22;    // px a centered popup glides UP into place on its first show
 
   function ensureOverlay() {
     if (spot) return;
@@ -176,11 +181,24 @@
 
   // Centered modal placement. Positioned in pixels (NOT a translate transform) so the
   // per-step enter animation is free to use `transform` without fighting the centering.
-  function centerCard() {
+  // With animate=true (a modal's FIRST show) the popup GLIDES up into place instead of
+  // snapping: the first placement is auto->px, which browsers don't transition, so seed a
+  // slightly-below-center px baseline, flush it, then set the real center so the `top`
+  // transition slides it up. A modal that already has a px top (the end popup, reached
+  // after a step) glides straight there via the same transition, so it needs no seeding.
+  function centerCard(animate) {
     if (!card) return;
     var cw = card.offsetWidth, ch = card.offsetHeight;
-    card.style.top = Math.max(8, (window.innerHeight - ch) / 2) + "px";
-    card.style.left = Math.max(8, (window.innerWidth - cw) / 2) + "px";
+    var top = Math.max(8, (window.innerHeight - ch) / 2);
+    var left = Math.max(8, (window.innerWidth - cw) / 2);
+    card.style.left = left + "px";
+    if (animate && !card.style.top && !reducedMotion()) {
+      card.style.top = (top + MODAL_ENTER_RISE) + "px"; // px baseline (auto->px: no glide)
+      void card.offsetHeight;                           // flush, so the baseline is the glide's start
+      card.style.top = top + "px";                      // -> glides up into center
+    } else {
+      card.style.top = top + "px";
+    }
   }
 
   // Replace the single per-step cleanup with a fresh collector; returns an `add(fn)` used
@@ -293,7 +311,7 @@
     targets = [];
     if (!backdrop) { backdrop = el("div", "tour-backdrop"); document.body.appendChild(backdrop); }
     renderCard(spec);
-    centerCard();
+    centerCard(true);
   }
 
   function teardownDom() {
