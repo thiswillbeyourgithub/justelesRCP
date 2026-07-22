@@ -735,9 +735,19 @@ Key facts that aren't obvious from a single file:
   and MRL width: arctic-l-v2.0 = **CLS-pool -> L2, query-only `query: ` prefix (NO passage
   prefix), Matryoshka-truncated to 256 dims** (truncate THEN normalise once), verified
   against the repo config + ONNX graph (inputs `input_ids`/`attention_mask` only, output
-  `token_embeddings`). Swapping `RUNTIME_MODEL` (+ the matching `scripts/download-model.sh` fetch)
-  re-embeds the whole catalog (`read_vec_meta` gates on the model name). The prior model
-  was e5-small (mean-pool, `query:`/`passage:` prefixes, 384 dims). `build.quantize_int8`
+  `token_embeddings`). The MRL width is the profile default but is **env-configurable via
+  `EMBED_OUT_DIM`** (`Encoder(out_dim=...)`, `--out-dim` on embed-service.py + embed-rcp.py;
+  default 256, `0`=full model width): the served width is baked into each `.vec.json` and
+  gated alongside the model, so a change to EITHER `RUNTIME_MODEL` OR `EMBED_OUT_DIM`
+  re-embeds the whole catalog (`read_vec_meta`/`embed_page_to_vec`/`vec_is_fresh` compare
+  both, keeping the reader's query vectors and the stored passage vectors at one width; a
+  stored `dim` of 0 = a chunkless page, so it stays fresh at any width). Swapping
+  `RUNTIME_MODEL` also needs the matching `scripts/download-model.sh` fetch. The prior model
+  was e5-small (mean-pool, `query:`/`passage:` prefixes, 384 dims). Keep the `EMBED_OUT_DIM`
+  env in sync across `Encoder`/`_profile` (onnx_embed.py), `read_vec_meta`/`vec_is_fresh`/
+  `embed_page_to_vec` (build.py), the `--out-dim` option + `_is_embedded`/`_scan_and_enqueue`
+  (embed-service.py), `--out-dim` (embed-rcp.py), and `docker/env.example` +
+  `docker/docker-compose.yml`. `build.quantize_int8`
   (symmetric `q=round(v*127)`, dequant `q/127`) is the ONE canonical formula, mirrored
   in JS `decodeVec`. **The embed service** (`embed-service.py`, behind Caddy's
   same-origin `/api/sem/*`, mirrors `refresh-service.py`: `ThreadingHTTPServer`,
@@ -1012,7 +1022,8 @@ uv run src/embed-service.py   # optional: warm SERVER-SIDE embedder on :8461 (be
                           #  (500), EMBED_MAX_CONCURRENT_QUERIES (8, bounds encode CPU; per-IP rate limit
                           #  belongs at the proxy), EMBED_MIN/MAX_QUERY_CHARS (5/400), EMBED_QUERY_CACHE
                           #  (256) + EMBED_QUERY_CACHE_TTL_SECONDS (60, bounds query-data retention; 0=off),
-                          #  EMBED_MODEL_DIR, REFRESH_TRIGGER_URL (baseline auto-crawl), EMBED_LOG_LEVEL;
+                          #  EMBED_MODEL_DIR, EMBED_OUT_DIM (MRL width, 256; change re-embeds all),
+                          #  REFRESH_TRIGGER_URL (baseline auto-crawl), EMBED_LOG_LEVEL;
                           # GET /api/sem/stats; query CONTENT is never logged (privacy)
 cp docker/env.example docker/.env                      # optional: umami analytics / DEV banner / refresh + embed knobs
 docker compose -f docker/docker-compose.yml up -d      # serve ./dist on :8459 + refresh + embed services (read-only, hardened)
