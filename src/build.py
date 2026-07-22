@@ -52,7 +52,7 @@ from lxml import html as lxml_html
 
 import bdpm  # shared, pure-stdlib BDPM tokenising + frequency scoring
 
-__version__ = "0.48.1"  # single source of truth; bump patch/minor per change
+__version__ = "0.49.0"  # single source of truth; bump patch/minor per change
 
 # This script lives in ``src/`` (alongside the frontend templates it renders), so the
 # repo root is its parent's parent; data/, src/ and dist/ all hang off that root. In the
@@ -119,6 +119,17 @@ SITE_URL = "https://justelesrcp.olicorne.org"
 # Same URL scrape-rcp.py fetches from (PAGE_URL there); kept here to avoid a
 # cross-import (build.py can't cheaply import scrape-rcp.py's httpx/click deps).
 ANSM_PAGE_URL = "https://base-donnees-publique.medicaments.gouv.fr/medicament/{cis}/extrait"
+
+# The other reader-facing tabs of the SAME ANSM/BDPM drug page, reached by a
+# fragment anchor on ANSM_PAGE_URL: the patient Notice, the "Fiche info" and the
+# "Bon usage" recommendations. Shown as pills next to BDPM on /rcp/ pages ONLY
+# (ansm_tabs=True): a centrally-authorized /eu/ drug has no ANSM RCP, so its BDPM
+# page carries no such tab content. (label, fragment) pairs.
+ANSM_TABS = (
+    ("Notice", "#tab-notice"),
+    ("Fiche info", "#tab-fiche-info"),
+    ("Bon usage", "#tab-bon-usage"),
+)
 
 # External-reference pill row shown at the top of every page (see _ref_links_html).
 # BDPM reuses ANSM_PAGE_URL (keyed by CIS: the drug's official BDPM record). HAS,
@@ -2151,13 +2162,20 @@ def _ref_pill(url: str, label: str) -> str:
     )
 
 
-def _ref_links_html(cis: str, name: str, include_ema: bool = True) -> str:
+def _ref_links_html(
+    cis: str, name: str, include_ema: bool = True, ansm_tabs: bool = False
+) -> str:
     """Top-of-page '.rcp-more' box ("En savoir plus") wrapping a centered
     '.rcp-refs' row of external-reference pill buttons: BDPM (this drug's official
     BDPM record, keyed by CIS) first, then HAS, EMA, CRAT and Vidal full-text
     searches on the drug's active substance (falling back to its brand root when
     the composition is unknown). CRAT (lecrat.fr) is the pregnancy/breastfeeding
     reference; Vidal is last per the product intent.
+
+    ``ansm_tabs`` (True on /rcp/ pages only) adds, right after BDPM, one pill per
+    ANSM_TABS entry (Notice, Fiche info, Bon usage): the same BDPM drug page's other
+    tabs, reached by a fragment anchor. Kept off /eu/ pages, whose centrally-
+    authorized drugs have no such ANSM tab content.
 
     ``include_ema`` is False on /eu/ pages, which already carry a direct EMA button
     (render_eu_page / the stub), so the EMA pill is dropped there to avoid a
@@ -2166,7 +2184,10 @@ def _ref_links_html(cis: str, name: str, include_ema: bool = True) -> str:
     to link."""
     if not cis:
         return ""
-    pills = [_ref_pill(ANSM_PAGE_URL.format(cis=cis), "BDPM")]
+    bdpm_url = ANSM_PAGE_URL.format(cis=cis)
+    pills = [_ref_pill(bdpm_url, "BDPM")]
+    if ansm_tabs:
+        pills += [_ref_pill(bdpm_url + frag, label) for label, frag in ANSM_TABS]
     query = _SUBSTANCES.get(cis) or _brand_root(name)
     if query:
         q = urllib.parse.quote_plus(query.lower())
@@ -2208,7 +2229,9 @@ def render_record(item: tuple[str, str, str]) -> dict[str, str] | None:
         + _jsonld(_drug_jsonld(name, cis, description, path, reviewed=ansm))
         + _jsonld(crumb_ld)
     )
-    refs = _ref_links_html(cis, name)  # reused: top of page ({{ASOF}}) + bottom ({{MORE_BOTTOM}})
+    # ansm_tabs=True: /rcp/ pages also get the BDPM Notice / Fiche info / Bon usage
+    # tab pills (the same official page's other tabs); reused top + bottom of page.
+    refs = _ref_links_html(cis, name, ansm_tabs=True)
     # A zero-byte ANSM overlay means the drug was delisted (see rcp_archived): we
     # keep serving the 2022 baseline text but headline it with a retired banner.
     archived = rcp_archived(cis)

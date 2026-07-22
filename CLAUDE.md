@@ -485,7 +485,12 @@ Key facts that aren't obvious from a single file:
   keyed by CIS), then **HAS**, **EMA**, **CRAT** and **Vidal**, all full-text
   searches on the drug's active substance. **CRAT** (`CRAT_SEARCH_URL`, lecrat.fr
   WordPress `?s=` search) is the pregnancy/breastfeeding reference; Vidal stays
-  last per the product intent. The EMA pill is shown on `/eu/` pages too
+  last per the product intent. On `/rcp/` pages ONLY (`ansm_tabs=True`), three more
+  pills sit right after BDPM: **Notice**, **Fiche info** and **Bon usage**
+  (`ANSM_TABS`), the same BDPM drug page's other reader tabs reached by a `#tab-*`
+  fragment anchor on `ANSM_PAGE_URL` (also keyed by CIS, no substance needed). They
+  are kept OFF `/eu/` pages, whose centrally-authorized drugs have no ANSM tab
+  content. The EMA pill is shown on `/eu/` pages too
   (`include_ema=True`): it carries the EMA *search*, while the *direct* EMA PDF is a
   separate source button paired next to "Rafraîchir maintenant". The substance query is
   `load_substances()` (CIS -> cleaned active-substance string from
@@ -506,7 +511,7 @@ Key facts that aren't obvious from a single file:
   render path computes the block once and reuses the string for both `{{ASOF}}` (top)
   and `{{MORE_BOTTOM}}` (bottom); thin `/eu/` stubs fill `{{MORE_BOTTOM}}` empty. Keep
   the contract in sync across
-  `load_substances`/`_ref_links_html`/`_init_worker`/`_global_key` (build.py), the
+  `load_substances`/`_ref_links_html`/`ANSM_TABS`/`_init_worker`/`_global_key` (build.py), the
   `{{ASOF}}` + `{{MORE_BOTTOM}}` slots in `src/rcp.html`,
   `.rcp-more`/`.rcp-more-title`/`.rcp-refs`/
   `.ref-pill` in `style.css`, and the refresh service's `_init_worker` call.
