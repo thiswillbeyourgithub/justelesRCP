@@ -415,7 +415,7 @@ def test_vec_payload_roundtrip():
 
 def test_write_read_vec_meta_roundtrip():
     # write_vec_json writes the plain .vec.json + a .gz/.br sibling; read_vec_meta
-    # recovers the baked {src_hash, model} (the content-hash staleness key, no
+    # recovers the baked {src_hash, model, dim} (the content-hash staleness key, no
     # manifest) from EITHER the plain file or its .gz alone.
     payload = build.vec_payload(
         [("sec-0", "snip", "un texte")],
@@ -430,7 +430,7 @@ def test_write_read_vec_meta_roundtrip():
         assert gz.exists(), "expected a .gz sibling from compress()"
         meta = build.read_vec_meta(vec)
         assert meta == {"src_hash": "feedface1234",
-                        "model": "Xenova/multilingual-e5-small"}, meta
+                        "model": "Xenova/multilingual-e5-small", "dim": 6}, meta
         # With the plain file gone (as Caddy might serve only the .gz), the meta must
         # still be readable from the compressed sibling.
         vec.unlink()
@@ -484,6 +484,19 @@ def test_vec_is_fresh_gate():
         # 5. Same, check_model pass, current model DIFFERS from the baked one -> stale,
         #    so the startup pass re-embeds it despite the newer mtime (the #1 fix).
         assert not build.vec_is_fresh(vec, overlay, "new-model", check_model=True)
+
+        # 6. check_model pass with a matching served width (dim=6, the payload's) ->
+        #    still fresh; a DIFFERING width (EMBED_OUT_DIM change) -> stale, re-embed
+        #    (else the reader's new-width query would rank against old-width passages).
+        assert build.vec_is_fresh(vec, overlay, "old-model", check_model=True, dim=6)
+        assert not build.vec_is_fresh(vec, overlay, "old-model", check_model=True, dim=8)
+
+        # 7. A chunkless page bakes dim=0 (dimensionless), so it matches any width.
+        empty = build.vec_payload([], [], "old-model", "query: ", "beadbeadbeadbead")
+        vec2 = d / "87654321-vide.vec.json"
+        build.write_vec_json(vec2, empty)
+        os.utime(overlay, (overlay.stat().st_atime, vec2.stat().st_mtime - 10))
+        assert build.vec_is_fresh(vec2, overlay, "old-model", check_model=True, dim=8)
     print("ok  test_vec_is_fresh_gate")
 
 
@@ -853,6 +866,7 @@ def test_embed_page_to_vec_reports_stats():
     # the page is fresh (nothing encoded), so a chars/sec line never counts a skip.
     class _FakeEncoder:
         query_prefix = "query: "
+        dim = 6  # served width; must match the vectors' length for the fresh gate
         def encode_passages(self, texts):
             return [_l2_normalise([0.1] * 6) for _ in texts]
 

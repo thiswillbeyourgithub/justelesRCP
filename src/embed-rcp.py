@@ -140,6 +140,11 @@ onnx_embed = _load_module("onnx_embed.py", "onnx_embed")  # warm ONNX encoder (n
 @click.option("--model-dir", default=str(onnx_embed.DEFAULT_MODEL_DIR), show_default=True,
               envvar="EMBED_MODEL_DIR",
               help="Directory of the ONNX model + tokenizer (run ./scripts/download-model.sh).")
+@click.option("--out-dim", type=int, default=256, show_default=True,
+              envvar="EMBED_OUT_DIM",
+              help="Matryoshka (MRL) width to truncate to (env EMBED_OUT_DIM); 0 keeps the "
+                   "full model width. MUST match the embed service's EMBED_OUT_DIM, else "
+                   "the service re-embeds these pages (the width is gated per .vec.json).")
 @click.option("--intra-threads", type=int, default=4, show_default=True,
               help="onnxruntime intra-op threads for the passage encode (CPU path).")
 @click.option("--gpu/--no-gpu", default=True, show_default=True,
@@ -149,7 +154,7 @@ onnx_embed = _load_module("onnx_embed.py", "onnx_embed")  # warm ONNX encoder (n
               help="Passage encode batch size; raise (e.g. 128) to feed a GPU better.")
 @click.option("--force", is_flag=True,
               help="Re-embed even if the content hash and model are unchanged.")
-def main(limit, do_all, only, eu, model_dir, intra_threads, gpu, batch_size, force):
+def main(limit, do_all, only, eu, model_dir, out_dim, intra_threads, gpu, batch_size, force):
     """Pre-bake dist/<rcp|eu>/<slug>.vec.json for crawled pages (warms the backlog)."""
     only_set = {c.strip() for c in only if c.strip()}
     if only_set:
@@ -172,12 +177,13 @@ def main(limit, do_all, only, eu, model_dir, intra_threads, gpu, batch_size, for
 
     logger.info("loading encoder from {} (~500 MB int8 weights, takes a moment)", model_dir)
     encoder = onnx_embed.Encoder(model_dir=model_dir, intra_threads=intra_threads,
-                                 providers=providers, passage_batch_size=batch_size)
+                                 providers=providers, passage_batch_size=batch_size,
+                                 out_dim=out_dim)
     model = encoder.model_name  # same string the service bakes, so the gate agrees
     # get_providers() reports what actually registered, so a silent GPU-load failure
     # (CUDA libs missing) is visible: it will read CPUExecutionProvider only.
-    logger.info("execution provider(s): {} | batch={}",
-                ", ".join(encoder.session.get_providers()), batch_size)
+    logger.info("execution provider(s): {} | batch={} | dim={}",
+                ", ".join(encoder.session.get_providers()), batch_size, encoder.dim)
 
     # Progress-bar total: the path-level overlay count (a cheap dir scan, no content
     # reads). It slightly over-counts what actually embeds (iter_overlay_raw skips

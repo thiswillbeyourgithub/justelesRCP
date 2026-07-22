@@ -228,7 +228,8 @@ class Embedder:
             return False
         meta = self._read_vec_meta(self._vec_path(page))
         return bool(meta and meta["src_hash"] == build.raw_hash(raw)
-                    and meta["model"] == self.model)
+                    and meta["model"] == self.model
+                    and meta.get("dim") in (0, self.encoder.dim))
 
     # -- queue -------------------------------------------------------------
     def _enqueue(self, cis: str, source: str, front: bool) -> str:
@@ -345,15 +346,17 @@ class Embedder:
         stat-only mtime gate via build.vec_is_fresh; the src_hash+model hash is the
         authoritative gate in _embed_page). Backstop for missed notifies + manual
         scrape-*.py runs. ``check_model`` (the first pass, see _reconcile_loop) also
-        re-embeds mtime-fresh pages whose baked model differs from the current one, so
-        a model swap isn't hidden by the mtime gate forever."""
+        re-embeds mtime-fresh pages whose baked model OR served width (EMBED_OUT_DIM)
+        differs from the current one, so a model/dim swap isn't hidden by the mtime gate
+        forever."""
         queued = 0
         for cis, ov, subdir in build.iter_overlay_paths():
             page = self._dist_page(cis, subdir)
             if page is None:
                 continue
             vec = self._vec_path(page)
-            if build.vec_is_fresh(vec, ov, self.model, check_model=check_model):
+            if build.vec_is_fresh(vec, ov, self.model, check_model=check_model,
+                                  dim=self.encoder.dim):
                 continue
             if self._enqueue(cis, "sweep", front=False) == "queued":
                 queued += 1
@@ -462,6 +465,7 @@ class Embedder:
     def stats(self) -> dict:
         with self._lock:
             base = {"enabled": self.backlog, "model": self.model,
+                    "dim": self.encoder.dim,
                     "queue": len(self._queue), "pending": len(self._pending),
                     "running": self._running, **self._stats}
         # RAM + throughput, so the operator can size the box and estimate speed without
@@ -634,6 +638,12 @@ class _QuietHTTPServer(ThreadingHTTPServer):
               envvar="EMBED_MODEL_DIR",
               help="Directory of the ONNX model + tokenizer (env EMBED_MODEL_DIR). "
                    "Mounted read-only from ./models by scripts/download-model.sh.")
+@click.option("--out-dim", type=int, default=256, show_default=True,
+              envvar="EMBED_OUT_DIM",
+              help="Matryoshka (MRL) embedding width to truncate to (env EMBED_OUT_DIM). "
+                   "256 suits arctic-embed-l-v2.0; 0 keeps the full model width. Changing "
+                   "it re-embeds the whole catalog (the width is baked into each .vec.json "
+                   "and gated on, so query and passage vectors always share one width).")
 @click.option("--sem-floor", type=float, default=0.0, show_default=True,
               envvar="EMBED_SEM_FLOOR",
               help="Minimum raw cosine (-1..1) for a section to be a search candidate "
@@ -696,9 +706,10 @@ class _QuietHTTPServer(ThreadingHTTPServer):
                   case_sensitive=False),
               help="Minimum log level (env EMBED_LOG_LEVEL). /api/sem/health is never "
                    "logged; query text is never logged.")
-def main(host, port, model_dir, sem_floor, intra_threads, min_query_chars, max_query_chars,
-         query_cache, query_cache_ttl, backlog, backlog_rate, reconcile_seconds, queue_max,
-         max_concurrent_queries, refresh_url, timeout, log_level) -> None:
+def main(host, port, model_dir, out_dim, sem_floor, intra_threads, min_query_chars,
+         max_query_chars, query_cache, query_cache_ttl, backlog, backlog_rate,
+         reconcile_seconds, queue_max, max_concurrent_queries, refresh_url, timeout,
+         log_level) -> None:
     """Run the semantic-search embedder (see module docstring)."""
     global EMBEDDER
     logger.remove()
@@ -710,7 +721,7 @@ def main(host, port, model_dir, sem_floor, intra_threads, min_query_chars, max_q
         encoder = onnx_embed.Encoder(
             model_dir=model_dir, model_name=onnx_embed.RUNTIME_MODEL,
             intra_threads=intra_threads, query_cache=query_cache,
-            query_ttl=query_cache_ttl,
+            query_ttl=query_cache_ttl, out_dim=out_dim,
         )
     except FileNotFoundError as exc:
         # A misconfig, not the "feature off" path (that is: don't run this container).
@@ -719,8 +730,8 @@ def main(host, port, model_dir, sem_floor, intra_threads, min_query_chars, max_q
     model_rss = _rss_mb()  # after the InferenceSession + weights are resident
     weights = (model_rss - baseline_rss
                if (model_rss is not None and baseline_rss is not None) else None)
-    logger.info("model loaded: {} | process RSS {} (weights ~{}, before-load {}) | "
-                "intra-threads={}", onnx_embed.RUNTIME_MODEL, _mb(model_rss),
+    logger.info("model loaded: {} (dim={}) | process RSS {} (weights ~{}, before-load {}) "
+                "| intra-threads={}", onnx_embed.RUNTIME_MODEL, encoder.dim, _mb(model_rss),
                 _mb(weights), _mb(baseline_rss), intra_threads)
     logger.info("log legend: a page-embed line's 'src=' is reader (a visitor opened the "
                 "search box) / scraper (refresh crawled it + notified) / backlog (the "

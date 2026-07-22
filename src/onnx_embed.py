@@ -96,6 +96,7 @@ class Encoder:
         query_ttl: float = 60.0,
         providers: list[str] | None = None,
         passage_batch_size: int = 32,
+        out_dim: int | None = None,
     ) -> None:
         model_dir = Path(model_dir)
         prof = _profile(model_name)
@@ -135,7 +136,18 @@ class Encoder:
         self.model_name = model_name
         self.pooling = prof["pooling"]
         self.query_prefix, self.passage_prefix = prof["query"], prof["passage"]
-        self._out_dim = prof["out_dim"]
+        # Matryoshka (MRL) truncation width. ``out_dim`` (wired from EMBED_OUT_DIM by the
+        # services) OVERRIDES the model profile's default when given: a positive int
+        # truncates to that many dims, 0 keeps the full model width, and None (the
+        # default) uses the profile's out_dim (arctic-embed-l-v2.0 -> 256). Truncating
+        # below the model's native width is only meaningful for an MRL-trained model
+        # (arctic v2.0 is), so keep EMBED_OUT_DIM aligned with RUNTIME_MODEL. Changing it
+        # re-embeds the whole catalog (the dim is baked into each .vec.json and gated on;
+        # see build.read_vec_meta / embed_page_to_vec).
+        if out_dim is None:
+            self._out_dim = prof["out_dim"]
+        else:
+            self._out_dim = out_dim if out_dim > 0 else None
         # Served vector width: the MRL truncation length if set (arctic -> 256), else the
         # model's hidden size from config.json (fallback 384). Re-confirmed on 1st encode.
         self.dim = self._out_dim or 384

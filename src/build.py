@@ -52,7 +52,7 @@ from lxml import html as lxml_html
 
 import bdpm  # shared, pure-stdlib BDPM tokenising + frequency scoring
 
-__version__ = "0.50.0"  # single source of truth; bump patch/minor per change
+__version__ = "0.51.0"  # single source of truth; bump patch/minor per change
 
 # This script lives in ``src/`` (alongside the frontend templates it renders), so the
 # repo root is its parent's parent; data/, src/ and dist/ all hang off that root. In the
@@ -1833,8 +1833,11 @@ def vec_path_for(page: Path) -> Path:
 
 
 def read_vec_meta(vec: Path) -> dict | None:
-    """``{src_hash, model}`` baked into an existing ``.vec.json`` (or its ``.gz``),
-    else None. The self-describing staleness key: no separate manifest is kept."""
+    """``{src_hash, model, dim}`` baked into an existing ``.vec.json`` (or its ``.gz``),
+    else None. The self-describing staleness key: no separate manifest is kept. ``dim``
+    is the served vector width (the MRL truncation length, e.g. 256): a change to it (via
+    EMBED_OUT_DIM) MUST re-embed, just like a model swap, because the reader's query
+    vectors and the stored passage vectors have to share one width or cosine breaks."""
     for p in (vec, vec.with_name(vec.name + ".gz")):
         if not p.exists():
             continue
@@ -1843,27 +1846,31 @@ def read_vec_meta(vec: Path) -> dict | None:
             if p.suffix == ".gz":
                 data = gzip.decompress(data)
             d = json.loads(data)
-            return {"src_hash": d.get("src_hash"), "model": d.get("model")}
+            return {"src_hash": d.get("src_hash"), "model": d.get("model"),
+                    "dim": d.get("dim")}
         except Exception:
             return None
     return None
 
 
-def vec_is_fresh(vec: Path, overlay: Path, model: str, *, check_model: bool) -> bool:
+def vec_is_fresh(vec: Path, overlay: Path, model: str, *, check_model: bool,
+                 dim: int | None = None) -> bool:
     """Cheap "is this page's .vec.json up to date?" gate for the embed service's
     reconcile sweep, so it can skip re-enqueuing pages that are already embedded.
 
     The fast path is stat-only: the ``.vec.json`` exists and is at least as new as the
     overlay (mtime). That is enough for the common case (a re-crawl rewrites the overlay
-    -> newer mtime -> the vec looks older -> re-embed). BUT a MODEL swap leaves every
-    already-embedded page's vec newer than its unchanged overlay, so the mtime gate
-    alone would hide the mismatch forever and the reader would get new-model query
-    vectors ranked against old-model passage vectors (silently wrong). So on the
-    ``check_model`` pass (run once at startup, when a model change is picked up), a vec
-    that looks mtime-fresh is ALSO required to carry the current model in its baked
-    metadata; otherwise it is treated as stale and re-embedded. The authoritative
-    src_hash+model gate still lives in ``embed_page_to_vec``; this only decides whether
-    to bother enqueuing."""
+    -> newer mtime -> the vec looks older -> re-embed). BUT a MODEL swap (or an
+    EMBED_OUT_DIM change) leaves every already-embedded page's vec newer than its
+    unchanged overlay, so the mtime gate alone would hide the mismatch forever and the
+    reader would get new query vectors ranked against passage vectors of a different
+    model/width (silently wrong). So on the ``check_model`` pass (run once at startup,
+    when such a change is picked up), a vec that looks mtime-fresh is ALSO required to
+    carry the current model AND (when ``dim`` is given) the current served width in its
+    baked metadata; otherwise it is treated as stale and re-embedded. A stored ``dim``
+    of 0 means the page has no chunks (dimensionless), so it always matches. The
+    authoritative src_hash+model+dim gate still lives in ``embed_page_to_vec``; this only
+    decides whether to bother enqueuing."""
     try:
         if not (vec.exists() and vec.stat().st_mtime >= overlay.stat().st_mtime):
             return False
@@ -1872,6 +1879,8 @@ def vec_is_fresh(vec: Path, overlay: Path, model: str, *, check_model: bool) -> 
     if check_model:
         meta = read_vec_meta(vec)
         if not meta or meta.get("model") != model:
+            return False
+        if dim is not None and meta.get("dim") not in (0, dim):
             return False
     return True
 
@@ -1943,7 +1952,11 @@ def embed_page_to_vec(cis: str, raw: str, subdir: str, encoder, *,
     src_hash = raw_hash(raw)
     if not force:
         meta = read_vec_meta(vec)
-        if meta and meta.get("src_hash") == src_hash and meta.get("model") == model:
+        # Re-embed on ANY of: content change (src_hash), model swap, or served-width
+        # change (EMBED_OUT_DIM). A stored dim of 0 = a chunkless page, dimensionless,
+        # so it stays fresh regardless of the current width.
+        if (meta and meta.get("src_hash") == src_hash and meta.get("model") == model
+                and meta.get("dim") in (0, encoder.dim)):
             try:
                 os.utime(vec, None)
             except OSError:
