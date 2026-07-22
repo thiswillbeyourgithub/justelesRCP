@@ -378,11 +378,11 @@
   }
 
   function welcomeModal() {
-    showModal({      body: "Les notices officielles (RCP) des médicaments vendus en France. " +
-            "Rapide, sans pub, sans compte. Une courte visite ?",
+    showModal({      body: "Les notices officielles (RCP) des médicaments. Rapide, sans pub. " +
+            "On fait le tour ?",
       buttons: [
         { label: "Non merci", onClick: endTour },
-        { label: "Commencer la visite", primary: true, onClick: homeSearchBox },
+        { label: "C'est parti", primary: true, onClick: homeSearchBox },
       ],
     });
   }
@@ -400,7 +400,7 @@
       try { input.blur(); } catch (e) {}
     }
     showStep({
-      step: 1, total: TOTAL,      body: "Tapez un nom de médicament ici pour ouvrir sa fiche.",
+      step: 1, total: TOTAL,      body: "Tapez un nom de médicament ici.",
       targets: [box],
       back: welcomeModal,
       buttons: [{ label: "Suivant", primary: true, onClick: homeSearch }],
@@ -443,8 +443,8 @@
     var box = qs(".searchbox") || input;
     var results = qs("#results");
     showStep({
-      step: 2, total: TOTAL,      body: "Les résultats s'affichent au fil de la frappe. " +
-            "Cliquez celui en évidence pour ouvrir sa fiche.",
+      step: 2, total: TOTAL,      body: "Les résultats s'affichent en direct. " +
+            "Cliquez celui en évidence.",
       targets: [box, results],
       back: homeSearchBox,
       buttons: [{ label: "Continuer sur la quétiapine", primary: true, onClick: goToDrugPage }],
@@ -508,8 +508,8 @@
   // Step 3: freshness / source / "En savoir plus".
   function stepAsof() {
     showStep({
-      step: 3, total: TOTAL,      body: "En tête de fiche : dates de mise à jour, bouton « Rafraîchir », source " +
-            "officielle, et liens « En savoir plus » (BDPM, HAS, EMA, CRAT, Vidal).",
+      step: 3, total: TOTAL,      body: "En haut : la date de mise à jour, le bouton " +
+            "« Rafraîchir » et les liens « En savoir plus ».",
       targets: [qs(".rcp-asof"), qs(".rcp-more")],
       back: backToHomeSearch,
       buttons: [{ label: "Suivant", primary: true, onClick: stepToc }],
@@ -520,7 +520,7 @@
   function stepToc() {
     var toc = openDetails(".toc");
     showStep({
-      step: 4, total: TOTAL,      body: "Le sommaire saute directement à n'importe quelle section.",
+      step: 4, total: TOTAL,      body: "Le sommaire saute à n'importe quelle section.",
       targets: [toc],
       back: stepAsof,
       buttons: [{ label: "Suivant", primary: true, onClick: stepSemOpen }],
@@ -542,8 +542,8 @@
     var box = openSemBox();
     if (!box) { stepXref(); return; } // embed feature absent: skip gracefully
     showStep({
-      step: 5, total: TOTAL,      body: "Interrogez la fiche en langage naturel : une question, et les passages " +
-            "les plus proches par le sens remontent.",
+      step: 5, total: TOTAL,      body: "Posez une question en langage normal. " +
+            "Les passages qui répondent remontent.",
       targets: [box],
       back: stepToc,
       buttons: [{ label: "Suivant", primary: true, onClick: stepSemType }],
@@ -556,7 +556,7 @@
     if (!box) { stepXref(); return; }
     var input = qs(".semsearch-input", box);
     showStep({
-      step: 6, total: TOTAL,      body: "Exemple : « " + SEM_QUERY + " ». Regardez-la s'écrire.",
+      step: 6, total: TOTAL,      body: "Exemple : « " + SEM_QUERY + " ».",
       targets: [box],
       back: stepSemOpen,
       buttons: [{ label: "Suivant", primary: true, onClick: stepSemPick }],
@@ -572,7 +572,7 @@
     var input = qs(".semsearch-input", box);
     var results = qs(".semsearch-results", box);
     var refs = showStep({
-      step: 7, total: TOTAL,      body: "Cliquez le résultat en évidence pour aller droit au passage.",
+      step: 7, total: TOTAL,      body: "Cliquez le résultat en évidence.",
       status: "Recherche en cours…",
       targets: [box],
       back: stepSemType,
@@ -652,8 +652,7 @@
     var skipTimer = window.setTimeout(function () {
       if (advanced) return;
       if (refs.status) {
-        refs.status.textContent =
-          "Recherche sémantique indisponible ici. Vous pouvez passer cette étape.";
+        refs.status.textContent = "Recherche indisponible ici.";
       }
       var skip = el("button", "tour-btn primary", "Passer cette étape");
       skip.type = "button";
@@ -670,8 +669,8 @@
     if (!hit) { stepXref(); return; } // nothing was clicked/served: move on
     try { hit.scrollIntoView({ block: "center", behavior: "smooth" }); } catch (e) {}
     showStep({
-      step: 8, total: TOTAL,      body: "Vous y êtes : le passage est surligné dans le texte. " +
-            "Naviguez entre les passages avec ‹ › dans la recherche.",
+      step: 8, total: TOTAL,      body: "Vous y êtes, le passage est surligné. " +
+            "Passez d'un passage à l'autre avec ‹ ›.",
       targets: [hit],
       back: stepSemPick,
       buttons: [{ label: "Suivant", primary: true, onClick: stepXref }],
@@ -691,9 +690,8 @@
     var xref = openDetails(".drug-xref-list");
     showStep({
       step: 9, total: TOTAL,      body: xref
-        ? "En bas de page, « Médicaments liés » relie les autres médicaments cités dans le texte."
-        : "« Médicaments liés » relie les médicaments cités dans le texte. " +
-          "(Absent ici : aucun n'est cité.)",
+        ? "En bas, « Médicaments liés » renvoie aux médicaments cités dans le texte."
+        : "« Médicaments liés » renvoie aux médicaments cités. (Absent ici : aucun n'est cité.)",
       targets: [xref],
       back: xrefBack,
       buttons: [{ label: "Terminer", primary: true, onClick: finish }],
@@ -701,7 +699,7 @@
   }
 
   function finish() {
-    showModal({      body: "C'est tout ! Bonne visite. Relancez-la quand vous voulez via " +
+    showModal({      body: "C'est tout, bonne visite ! Pour la relancer : " +
             "« Visite guidée » en bas de page.",
       back: stepXref,
       buttons: [{ label: "Fermer", primary: true, onClick: endTour }],
