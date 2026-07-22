@@ -6,11 +6,17 @@
 #   "lxml>=5.0",
 #   "brotli>=1.1",
 #   "numpy",
-#   "onnxruntime",
+#   "onnxruntime-gpu",
 #   "tokenizers",
 #   "tqdm",
 # ]
 # ///
+# NOTE: this OFFLINE tool depends on onnxruntime-GPU (not the CPU-only onnxruntime the
+# VPS embed-service uses) so it can bake vectors on a local GPU when one is present. The
+# GPU wheel also runs fine CPU-only (the CUDA provider just won't register), so a
+# machine without a GPU degrades gracefully; --no-gpu forces CPU. Using a GPU needs an
+# NVIDIA driver + a CUDA runtime matching the installed onnxruntime-gpu (else the CUDA
+# provider fails to load and it falls back to CPU, logged so you can see it).
 """Optional OFFLINE pre-bake of per-drug semantic-search vectors (see CLAUDE.md).
 
 The per-drug "Rechercher dans ce RCP" box is served by the runtime embed service
@@ -39,10 +45,24 @@ import importlib.util
 from pathlib import Path
 
 import click
+import onnxruntime as ort
 from loguru import logger
 from tqdm import tqdm
 
 HERE = Path(__file__).resolve().parent
+
+
+def _select_providers(want_gpu: bool) -> tuple[list[str], list[str]]:
+    """Pick onnxruntime execution providers. With ``want_gpu``, prefer a GPU provider
+    (CUDA, then ROCm) IF the installed onnxruntime exposes it, always appending CPU as a
+    fallback so an unsupported int8 op or an absent GPU degrades instead of erroring.
+    Returns ``(chosen, available)`` for logging."""
+    available = list(ort.get_available_providers())
+    if want_gpu:
+        for gpu in ("CUDAExecutionProvider", "ROCMExecutionProvider"):
+            if gpu in available:
+                return [gpu, "CPUExecutionProvider"], available
+    return ["CPUExecutionProvider"], available
 
 
 def _load_module(filename: str, name: str):
@@ -70,18 +90,34 @@ onnx_embed = _load_module("onnx_embed.py", "onnx_embed")  # warm ONNX encoder (n
               envvar="EMBED_MODEL_DIR",
               help="Directory of the ONNX model + tokenizer (run ./scripts/download-model.sh).")
 @click.option("--intra-threads", type=int, default=4, show_default=True,
-              help="onnxruntime intra-op threads for the passage encode.")
+              help="onnxruntime intra-op threads for the passage encode (CPU path).")
+@click.option("--gpu/--no-gpu", default=True, show_default=True,
+              help="Use a GPU (CUDA/ROCm) if onnxruntime exposes one; else fall back to "
+                   "CPU. --no-gpu forces CPU.")
+@click.option("--batch-size", type=int, default=32, show_default=True,
+              help="Passage encode batch size; raise (e.g. 128) to feed a GPU better.")
 @click.option("--force", is_flag=True,
               help="Re-embed even if the content hash and model are unchanged.")
-def main(limit, do_all, only, eu, model_dir, intra_threads, force):
+def main(limit, do_all, only, eu, model_dir, intra_threads, gpu, batch_size, force):
     """Pre-bake dist/<rcp|eu>/<slug>.vec.json for crawled pages (warms the backlog)."""
     only_set = {c.strip() for c in only if c.strip()}
     if only_set:
         force = True
 
+    providers, available = _select_providers(gpu)
+    if gpu and providers[0] == "CPUExecutionProvider":
+        logger.warning("no GPU execution provider available (have: {}); using CPU. For "
+                       "NVIDIA, install the driver + a CUDA runtime matching "
+                       "onnxruntime-gpu.", ", ".join(available))
+
     logger.info("loading encoder from {} (~500 MB int8 weights, takes a moment)", model_dir)
-    encoder = onnx_embed.Encoder(model_dir=model_dir, intra_threads=intra_threads)
+    encoder = onnx_embed.Encoder(model_dir=model_dir, intra_threads=intra_threads,
+                                 providers=providers, passage_batch_size=batch_size)
     model = encoder.model_name  # same string the service bakes, so the gate agrees
+    # get_providers() reports what actually registered, so a silent GPU-load failure
+    # (CUDA libs missing) is visible: it will read CPUExecutionProvider only.
+    logger.info("execution provider(s): {} | batch={}",
+                ", ".join(encoder.session.get_providers()), batch_size)
 
     # Progress-bar total: the path-level overlay count (a cheap dir scan, no content
     # reads). It slightly over-counts what actually embeds (iter_overlay_raw skips

@@ -94,6 +94,8 @@ class Encoder:
         intra_threads: int = 4,
         query_cache: int = 256,
         query_ttl: float = 60.0,
+        providers: list[str] | None = None,
+        passage_batch_size: int = 32,
     ) -> None:
         model_dir = Path(model_dir)
         prof = _profile(model_name)
@@ -107,9 +109,18 @@ class Encoder:
         opts = ort.SessionOptions()
         opts.intra_op_num_threads = max(1, int(intra_threads))
         opts.inter_op_num_threads = 1
+        # ``providers`` defaults to CPU-only: that is the runtime container's posture (the
+        # VPS has no GPU and installs the CPU-only ``onnxruntime``). The offline pre-bake
+        # (embed-rcp.py) passes a GPU-preferring list on a machine that has one, always
+        # with CPU appended so an unsupported int8 op / a missing GPU degrades to CPU
+        # instead of failing. onnxruntime silently drops providers it can't load.
         self.session = ort.InferenceSession(
-            str(onnx_path), opts, providers=["CPUExecutionProvider"]
+            str(onnx_path), opts, providers=providers or ["CPUExecutionProvider"]
         )
+        # Batch size for PASSAGE encodes (queries are always a batch of 1). 32 suits CPU;
+        # a GPU is better fed with a larger batch (embed-rcp.py raises it). Kept as an
+        # attribute so build.embed_page_to_vec -> encode_passages needs no new argument.
+        self.passage_batch_size = max(1, int(passage_batch_size))
         self._input_names = {i.name for i in self.session.get_inputs()}
         # The ONNX may expose several outputs (arctic-l-v2.0 exposes token_embeddings
         # [B,L,H] AND a pre-pooled sentence_embedding [B,H]); we pool in-code, so target
@@ -190,8 +201,9 @@ class Encoder:
         return result
 
     def encode_passages(self, texts: list[str]) -> np.ndarray:
-        """Embed document chunks (adds the passage prefix)."""
-        return self.encode(texts, prefix=self.passage_prefix)
+        """Embed document chunks (adds the passage prefix), at ``passage_batch_size``."""
+        return self.encode(texts, prefix=self.passage_prefix,
+                           batch_size=self.passage_batch_size)
 
     def purge_expired_queries(self, now: float | None = None) -> int:
         """Drop every cached query entry past its TTL and return how many were removed.
