@@ -52,7 +52,7 @@ from lxml import html as lxml_html
 
 import bdpm  # shared, pure-stdlib BDPM tokenising + frequency scoring
 
-__version__ = "0.48.0"  # single source of truth; bump patch/minor per change
+__version__ = "0.48.1"  # single source of truth; bump patch/minor per change
 
 # This script lives in ``src/`` (alongside the frontend templates it renders), so the
 # repo root is its parent's parent; data/, src/ and dist/ all hang off that root. In the
@@ -1887,14 +1887,18 @@ def iter_overlay_paths():
                 yield cis, path, subdir
 
 
-def iter_overlay_raw():
+def iter_overlay_raw(paths=None):
     """Yield ``(cis, raw, subdir)`` for every CRAWLED page: a non-empty overlay in
     ``data/rcp`` (subdir ``"rcp"``) or ``data/eu`` (subdir ``"eu"``). Skips zero-byte
     overlays ("scraped, no body") and NEVER touches the frozen 2022 baseline CSV, so
     the semantic-search index only ever covers fresh, re-scraped text. Shared by the
     embed service's sweep intent and embed-rcp.py's offline pre-bake so both embed the
-    exact same set."""
-    for cis, path, subdir in iter_overlay_paths():
+    exact same set. ``paths`` overrides the enumeration source (default
+    ``iter_overlay_paths()``): pass a pre-materialised list of ``(cis, path, subdir)`` to
+    control order (e.g. embed-rcp.py shuffles it so tqdm's ETA is representative)."""
+    if paths is None:
+        paths = iter_overlay_paths()
+    for cis, path, subdir in paths:
         raw = _read_overlay(path)
         if raw.strip():
             yield cis, raw, subdir

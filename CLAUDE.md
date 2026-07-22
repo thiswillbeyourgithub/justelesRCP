@@ -964,11 +964,18 @@ uv run src/embed-rcp.py --limit 60    # OPTIONAL offline pre-bake of the semanti
                                   # --no-eu for RCP only), writing dist/<rcp|eu>/<slug>.vec.json
                                   # DIRECTLY with the same src_hash. No manifest (content-hash gated).
                                   # Needs ./scripts/download-model.sh's model + a prior `uv run src/build.py`.
-                                  # Shows a tqdm bar. Depends on onnxruntime-GPU (not the VPS's CPU-only
-                                  # onnxruntime): --gpu (default) uses a local CUDA/ROCm GPU if present,
-                                  # else falls back to CPU (--no-gpu forces CPU); --batch-size 128 feeds a
-                                  # GPU better. GPU-baked vectors share the src_hash+model gate, so they are
-                                  # accepted as-is (no VPS re-embed) and pushed via deploy.sh --push-vectors.
+                                  # Shows a tqdm bar (overlay order is SHUFFLED so long /eu/ + short /rcp/
+                                  # pages interleave and the ETA is representative). Depends on
+                                  # onnxruntime-GPU (not the VPS's CPU-only onnxruntime): --gpu (default)
+                                  # uses a local CUDA/ROCm GPU if present, else falls back to CPU (--no-gpu
+                                  # forces CPU); --batch-size 128 feeds a GPU better. A GPU needs CUDA 12 +
+                                  # cuDNN 9; if "libcudnn.so.9" is missing, supply the wheels no-root via
+                                  # `uv run --with nvidia-cudnn-cu12 --with nvidia-cublas-cu12 --with
+                                  # nvidia-cuda-runtime-cu12 --with nvidia-cufft-cu12 --with
+                                  # nvidia-curand-cu12 src/embed-rcp.py ...` (_preload_cuda_libs makes ort
+                                  # find them) or install cuDNN 9 system-wide. GPU-baked vectors share the
+                                  # src_hash+model gate, so they are accepted as-is (no VPS re-embed) and
+                                  # pushed via deploy.sh --push-vectors.
 uv run src/build.py           # build ./dist from ./data (overlay wins over the 2022 CSV; a data/eu
                           #  overlay makes /eu/<cis> a full converted page instead of a stub). Does NOT
                           #  bake vectors anymore: the embed service / embed-rcp.py write .vec.json

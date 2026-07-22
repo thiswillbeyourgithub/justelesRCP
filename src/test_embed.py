@@ -518,6 +518,30 @@ def test_overlay_iterators_agree():
     print("ok  test_overlay_iterators_agree")
 
 
+def test_iter_overlay_raw_honors_caller_order():
+    # embed-rcp.py shuffles iter_overlay_paths() and feeds it back so tqdm's ETA is
+    # representative; iter_overlay_raw(paths) must yield in the caller's order (skipping
+    # only empty overlays), not re-enumerate its own.
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        rcp = d / "rcp"; rcp.mkdir()
+        eu = d / "eu"; eu.mkdir()
+        (rcp / "11111111.html").write_text("<div id='textDocument'>a</div>")
+        (rcp / "22222222.html").write_text("")            # empty -> dropped, order intact
+        (eu / "33333333.html").write_text("<div id='textDocument'>b</div>")
+        saved = build.OVERLAY_LANES
+        build.OVERLAY_LANES = (("rcp", rcp), ("eu", eu))
+        try:
+            paths = list(build.iter_overlay_paths())
+            ordered = sorted(paths, key=lambda t: t[0], reverse=True)  # 33.., 22.., 11..
+            got = [c for c, _, _ in build.iter_overlay_raw(ordered)]
+        finally:
+            build.OVERLAY_LANES = saved
+        # The empty 22222222 is dropped; the two non-empty ones keep the caller's order.
+        assert got == ["33333333", "11111111"]
+    print("ok  test_iter_overlay_raw_honors_caller_order")
+
+
 def test_sentence_chunks_group_and_fallbacks():
     # Prose is grouped on whole sentences up to the limit; a chunk ends on a sentence
     # boundary, never mid-sentence (the coherence win over the old word-windows).
@@ -957,6 +981,7 @@ if __name__ == "__main__":
     test_raw_hash_is_the_staleness_key()
     test_vec_is_fresh_gate()
     test_overlay_iterators_agree()
+    test_iter_overlay_raw_honors_caller_order()
     test_sentence_chunks_group_and_fallbacks()
     test_long_section_tail_survives_raised_cap()
     test_duplicate_chunks_within_page_dropped()

@@ -15,8 +15,17 @@
 # VPS embed-service uses) so it can bake vectors on a local GPU when one is present. The
 # GPU wheel also runs fine CPU-only (the CUDA provider just won't register), so a
 # machine without a GPU degrades gracefully; --no-gpu forces CPU. Using a GPU needs an
-# NVIDIA driver + a CUDA runtime matching the installed onnxruntime-gpu (else the CUDA
-# provider fails to load and it falls back to CPU, logged so you can see it).
+# NVIDIA driver + the CUDA 12 runtime + cuDNN 9 the installed onnxruntime-gpu expects.
+# If cuDNN is missing you'll see "libcudnn.so.9: cannot open shared object file" and it
+# falls back to CPU (logged). Two no-root ways to supply them without a system install:
+#   * add the pip wheels for THIS run (uv puts them in the same env; _preload_cuda_libs
+#     below then makes onnxruntime find them):
+#       uv run --with nvidia-cudnn-cu12 --with nvidia-cublas-cu12 \
+#              --with nvidia-cuda-runtime-cu12 --with nvidia-cufft-cu12 \
+#              --with nvidia-curand-cu12 src/embed-rcp.py --all --batch-size 128
+#   * or install cuDNN 9 for CUDA 12 system-wide (e.g. apt: libcudnn9-cuda-12).
+# They're kept OUT of the deps above on purpose: a pure-CPU run must not pull ~1.5 GB of
+# CUDA wheels, and a bad pin must not break the working CPU fallback.
 """Optional OFFLINE pre-bake of per-drug semantic-search vectors (see CLAUDE.md).
 
 The per-drug "Rechercher dans ce RCP" box is served by the runtime embed service
@@ -42,6 +51,7 @@ Keep import-safe (``__main__`` guard) in case anything imports it later.
 from __future__ import annotations
 
 import importlib.util
+import random
 from pathlib import Path
 
 import click
@@ -50,6 +60,47 @@ from loguru import logger
 from tqdm import tqdm
 
 HERE = Path(__file__).resolve().parent
+
+
+def _preload_cuda_libs() -> None:
+    """Make the CUDA/cuDNN shared libraries from the ``nvidia-*-cu12`` pip wheels loadable
+    by onnxruntime's CUDA provider. Its ``.so`` does NOT search ``site-packages`` on its
+    own, so wheels installed via ``uv run --with nvidia-cudnn-cu12 ...`` are present on
+    disk yet invisible to it (the "libcudnn.so.9: cannot open shared object file" failure).
+    onnxruntime>=1.21 exposes ``preload_dlls()`` which loads them from the nvidia packages;
+    on older builds we ctypes-preload the wheels' libs ``RTLD_GLOBAL`` in dependency order
+    (cudart/cublas before cudnn) so the provider's later ``dlopen`` resolves their symbols.
+    A no-op when neither the wheels nor system libs are present (the provider then just
+    fails to register and we fall back to CPU, already handled). Must run BEFORE onnxruntime
+    probes CUDA (``get_available_providers``/session build), so ``main`` calls it first."""
+    preload = getattr(ort, "preload_dlls", None)
+    if callable(preload):
+        try:
+            preload()  # official path: loads CUDA + cuDNN from the nvidia-*-cu12 wheels
+            return
+        except Exception as exc:  # pragma: no cover - depends on ort version/env
+            logger.debug("ort.preload_dlls() failed ({}); trying manual preload", exc)
+    import ctypes
+    import glob
+    import site
+
+    bases = list(site.getsitepackages())
+    user = site.getusersitepackages()
+    if user:
+        bases.append(user)
+    lib_dirs: list[str] = []
+    for base in dict.fromkeys(bases):  # de-dup, keep order
+        lib_dirs.extend(glob.glob(str(Path(base) / "nvidia" / "*" / "lib")))
+    # Load order matters: cudnn needs cudart + cublas, so pull those in first, each
+    # RTLD_GLOBAL so the CUDA provider's own dlopen later sees their symbols.
+    for pattern in ("libcudart.so*", "libcublasLt.so*", "libcublas.so*",
+                    "libcufft.so*", "libcurand.so*", "libcudnn*.so*"):
+        for libdir in lib_dirs:
+            for so in sorted(glob.glob(str(Path(libdir) / pattern))):
+                try:
+                    ctypes.CDLL(so, mode=ctypes.RTLD_GLOBAL)
+                except OSError:  # pragma: no cover - best effort
+                    pass
 
 
 def _select_providers(want_gpu: bool) -> tuple[list[str], list[str]]:
@@ -104,11 +155,20 @@ def main(limit, do_all, only, eu, model_dir, intra_threads, gpu, batch_size, for
     if only_set:
         force = True
 
+    # Make any nvidia-*-cu12 wheels (uv --with) findable BEFORE onnxruntime probes CUDA,
+    # else the CUDA provider can't load them and never registers (see _preload_cuda_libs).
+    if gpu:
+        _preload_cuda_libs()
     providers, available = _select_providers(gpu)
     if gpu and providers[0] == "CPUExecutionProvider":
         logger.warning("no GPU execution provider available (have: {}); using CPU. For "
-                       "NVIDIA, install the driver + a CUDA runtime matching "
-                       "onnxruntime-gpu.", ", ".join(available))
+                       "NVIDIA you need the driver + CUDA 12 + cuDNN 9; a missing "
+                       "'libcudnn.so.9' means cuDNN is absent. No-root fix: re-run with "
+                       "`uv run --with nvidia-cudnn-cu12 --with nvidia-cublas-cu12 "
+                       "--with nvidia-cuda-runtime-cu12 --with nvidia-cufft-cu12 "
+                       "--with nvidia-curand-cu12 src/embed-rcp.py ...` (or install cuDNN "
+                       "9 system-wide). Otherwise `--no-gpu --intra-threads N` is fine.",
+                       ", ".join(available))
 
     logger.info("loading encoder from {} (~500 MB int8 weights, takes a moment)", model_dir)
     encoder = onnx_embed.Encoder(model_dir=model_dir, intra_threads=intra_threads,
@@ -124,12 +184,18 @@ def main(limit, do_all, only, eu, model_dir, intra_threads, gpu, batch_size, for
     # zero-byte archived overlays), so the bar may finish a hair under 100%; close
     # enough to show position + ETA. Each page's .vec.json is written as it is embedded,
     # so a Ctrl-C is safe and a re-run resumes (unchanged pages are skipped as "fresh").
-    total = sum(1 for _ in build.iter_overlay_paths())
+    # SHUFFLE the overlay order: /eu/ (long EMA SmPCs) and /rcp/ (short) pages are grouped
+    # by lane on disk, so a lane-ordered walk makes tqdm's smoothed rate/ETA swing wildly
+    # (all-fast then all-slow). Interleaving long + short randomly keeps the running
+    # per-page cost representative from early on, so the ETA is trustworthy sooner.
+    paths = list(build.iter_overlay_paths())
+    random.shuffle(paths)
+    total = len(paths)
     logger.info("encoder ready; {} overlay(s) to consider{}", total,
                 "" if do_all else f", stopping after {limit} embedded")
 
     done = fresh = skipped = errors = no_page = 0
-    bar = tqdm(build.iter_overlay_raw(), total=total, unit="page",
+    bar = tqdm(build.iter_overlay_raw(paths), total=total, unit="page",
                desc="embedding", smoothing=0.05)
     for cis, raw, subdir in bar:
         if only_set and cis not in only_set:
