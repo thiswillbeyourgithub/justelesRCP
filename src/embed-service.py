@@ -143,9 +143,14 @@ class Embedder:
                  reconcile_seconds: float, queue_max: int, refresh_url: str,
                  timeout: float, min_chars: int, max_chars: int,
                  max_concurrent_queries: int = 8, query_wait: float = 2.0,
-                 model_rss: float | None = None) -> None:
+                 sem_floor: float = 0.0, model_rss: float | None = None) -> None:
         self.encoder = encoder
         self.model = model
+        # Candidate relevance floor (raw cosine) applied CLIENT-SIDE: a section below it is
+        # not a search candidate. Ranking runs in the browser, so we only carry the value
+        # and hand it out in each embed response (see embed_query); the gate itself lives
+        # in src/rcp-semsearch.js. Clamped to [-1, 1] (cosine range); 0.0 keeps everything.
+        self.sem_floor = min(1.0, max(-1.0, float(sem_floor)))
         # RSS (MB) right after the model loaded, so a per-embed line can report how much
         # the process has grown BEYOND the resident weights (the encode activations /
         # onnxruntime arena). Set from main() where both readings are taken.
@@ -451,7 +456,8 @@ class Embedder:
         # spam INFO; the running count rides the periodic aggregate + /api/sem/stats.
         logger.debug("query embedded: {} chars in {} ms",
                      len(q), round((time.perf_counter() - t0) * 1000))
-        return {"q": b64, "dim": len(qi), "query_prefix": self.encoder.query_prefix}
+        return {"q": b64, "dim": len(qi), "query_prefix": self.encoder.query_prefix,
+                "floor": self.sem_floor}
 
     def stats(self) -> dict:
         with self._lock:
@@ -628,6 +634,13 @@ class _QuietHTTPServer(ThreadingHTTPServer):
               envvar="EMBED_MODEL_DIR",
               help="Directory of the ONNX model + tokenizer (env EMBED_MODEL_DIR). "
                    "Mounted read-only from ./models by scripts/download-model.sh.")
+@click.option("--sem-floor", type=float, default=0.0, show_default=True,
+              envvar="EMBED_SEM_FLOOR",
+              help="Minimum raw cosine (-1..1) for a section to be a search candidate "
+                   "(env EMBED_SEM_FLOOR); the gate runs client-side, so this value is "
+                   "handed to the browser in each /api/sem/embed response. 0.0 keeps every "
+                   "section (only the hybrid rank + result cap prune); raise it (e.g. 0.5) "
+                   "to demand real similarity.")
 @click.option("--intra-threads", type=int, default=4, show_default=True,
               envvar="EMBED_INTRA_THREADS",
               help="onnxruntime intra-op threads (env EMBED_INTRA_THREADS). Query embeds "
@@ -683,7 +696,7 @@ class _QuietHTTPServer(ThreadingHTTPServer):
                   case_sensitive=False),
               help="Minimum log level (env EMBED_LOG_LEVEL). /api/sem/health is never "
                    "logged; query text is never logged.")
-def main(host, port, model_dir, intra_threads, min_query_chars, max_query_chars,
+def main(host, port, model_dir, sem_floor, intra_threads, min_query_chars, max_query_chars,
          query_cache, query_cache_ttl, backlog, backlog_rate, reconcile_seconds, queue_max,
          max_concurrent_queries, refresh_url, timeout, log_level) -> None:
     """Run the semantic-search embedder (see module docstring)."""
@@ -720,7 +733,8 @@ def main(host, port, model_dir, intra_threads, min_query_chars, max_query_chars,
         encoder, onnx_embed.RUNTIME_MODEL, backlog=backlog, backlog_rate=backlog_rate,
         reconcile_seconds=reconcile_seconds, queue_max=queue_max, refresh_url=refresh_url,
         timeout=timeout, min_chars=min_query_chars, max_chars=max_query_chars,
-        max_concurrent_queries=max_concurrent_queries, model_rss=model_rss,
+        max_concurrent_queries=max_concurrent_queries, sem_floor=sem_floor,
+        model_rss=model_rss,
     )
     EMBEDDER.start()
 
@@ -729,9 +743,9 @@ def main(host, port, model_dir, intra_threads, min_query_chars, max_query_chars,
     signal.signal(signal.SIGHUP, signal.SIG_IGN)
 
     logger.info("embed service on {}:{} (model={}, backlog={}, reconcile={}s, "
-                "min/max query chars={}/{})", host, port, onnx_embed.RUNTIME_MODEL,
-                "on" if backlog else "off", reconcile_seconds,
-                min_query_chars, max_query_chars)
+                "min/max query chars={}/{}, sem-floor={})", host, port,
+                onnx_embed.RUNTIME_MODEL, "on" if backlog else "off", reconcile_seconds,
+                min_query_chars, max_query_chars, EMBEDDER.sem_floor)
     _QuietHTTPServer((host, port), _Handler).serve_forever()
 
 

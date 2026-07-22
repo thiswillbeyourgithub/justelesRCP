@@ -784,10 +784,19 @@ Key facts that aren't obvious from a single file:
   fuzzy word match of the query's terms, accent-folded, stopwords dropped, against each
   section's own words: exact/prefix-inflection/small-edit-distance credit, mean over the
   query terms x `KEYWORD_BOOST`), so a passage that both reads close AND literally mentions
-  the query floats up. The candidate gate is the RAW cosine `>= SEM_FLOOR` (~0.5, "at
-  least 50% similarity"; a `continue`, not a `break`, since the list is sorted by the
-  hybrid score), capped at `MAX_RESULTS` (25) distinct passages; a wholly-irrelevant query
-  (nothing clears the floor) still yields "Aucun passage pertinent.". Each surviving hit
+  the query floats up. The candidate gate is the RAW cosine `>= semFloor` (a `continue`,
+  not a `break`, since the list is sorted by the hybrid score), capped at `MAX_RESULTS`
+  (25) distinct passages; a wholly-irrelevant query (nothing clears the floor) still
+  yields "Aucun passage pertinent." (only when the floor is above 0). **The floor is
+  server config, not a baked constant**: the embed service reads `EMBED_SEM_FLOOR` (env,
+  default **0.0**) and returns it as `floor` in every `/api/sem/embed` response;
+  `rcp-semsearch.js` applies it (`SEM_FLOOR_DEFAULT`/`semFloor`, defaulting to 0.0 if the
+  service omits it). 0.0 keeps EVERY section (only the hybrid rank + `MAX_RESULTS` cap
+  prune, so a query always surfaces its closest passages); raise it (e.g. 0.5, "at least
+  50% similarity") to drop weak matches. Keep the `EMBED_SEM_FLOOR` env in sync across
+  `Embedder.sem_floor`/`embed_query`/the `--sem-floor` option (embed-service.py), the
+  `floor` field consumed in `src/rcp-semsearch.js`, and `docker/env.example` +
+  `docker/docker-compose.yml`. Each surviving hit
   shows the FULL on-page passage it resolves to (read from that DOM paragraph via
   `displayText`; a table-row/heading-resolved hit keeps the stored snippet) plus its
   blended relevance small + muted as a percentage (`.semsearch-score`, clamped to 100%,

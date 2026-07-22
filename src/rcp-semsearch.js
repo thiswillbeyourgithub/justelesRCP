@@ -59,15 +59,20 @@
   // then ADD a small lexical bonus whenever the reader's own words fuzzily match the
   // words in that section (see lexicalScore). So a passage that is both semantically
   // close AND literally mentions the query terms floats to the top, while a purely
-  // semantic match still ranks on its own merit. e5's query/passage cosines sit in a
+  // semantic match still ranks on its own merit. The query/passage cosines sit in a
   // narrow high band, so a low absolute floor keeps every plausible section and lets the
   // lexical bonus plus the MAX_RESULTS cap do the pruning.
-  //   SEM_FLOOR     - minimum cosine (0..1) for a chunk to be a candidate at all ("at
-  //                   least 50 % similarity"); below it the chunk is dropped as noise.
+  //   semFloor      - minimum raw cosine for a chunk to be a candidate at all; below it
+  //                   the chunk is dropped as noise. This is server config: it comes from
+  //                   the embed service (env EMBED_SEM_FLOOR, default 0.0) in every
+  //                   /api/sem/embed response; SEM_FLOOR_DEFAULT is only the fallback used
+  //                   if the service omits it. 0.0 keeps every section (only the hybrid
+  //                   rank + MAX_RESULTS cap prune); raise it to demand real similarity.
   //   KEYWORD_BOOST - most a full keyword match can add to the cosine. Kept small so it
   //                   re-orders within the semantic band without overriding it.
   // Scores are the int8-dequantised dot product of ~unit-norm vectors, i.e. the cosine.
-  const SEM_FLOOR = 0.5;
+  const SEM_FLOOR_DEFAULT = 0.0;
+  let semFloor = SEM_FLOOR_DEFAULT; // overwritten by the server's `floor` on first embed
   const KEYWORD_BOOST = 0.15;
   const MIN_TERM_LEN = 3; // ignore shorter query/section words (stopword-ish noise)
   const POLL_MS = 1500; // gap between page-status polls while indexing
@@ -475,6 +480,9 @@
           });
           if (!res.ok) return null;
           const data = await res.json();
+          // The candidate floor is server config (env EMBED_SEM_FLOOR); it rides every
+          // embed response. Identical across sub-queries, so last write wins harmlessly.
+          if (Number.isFinite(data.floor)) semFloor = data.floor;
           return { vec: decodeVec(data.q), terms: queryTerms(sub) };
         })
       );
@@ -507,7 +515,7 @@
     // fuzzily match this section's words. We AVERAGE both the cosine and the lexical
     // bonus across sub-queries (equal weights), so a plain single query is unchanged and
     // an "a//b" query surfaces chunks close to BOTH. Keep the (averaged) raw cosine too:
-    // it, not the hybrid score, is what the SEM_FLOOR candidate gate tests, so a keyword
+    // it, not the hybrid score, is what the semFloor candidate gate tests, so a keyword
     // match re-orders candidates without inventing them out of unrelated sections.
     const scored = chunks.map((c) => {
       const v = c.vec;
@@ -541,7 +549,7 @@
       if (hits.length >= MAX_RESULTS) break;
       // Gate on the raw cosine, and `continue` (not `break`): the list is sorted by the
       // HYBRID score, so a lower-cosine item can sit above a higher-cosine one.
-      if (s.cosine < SEM_FLOOR) continue;
+      if (s.cosine < semFloor) continue;
       const el = locate(s.sec, s.snippet);
       if (!el || seen.has(el)) continue;
       seen.add(el);

@@ -186,8 +186,9 @@ services:
     # EMBED_BACKLOG_RATE_SECONDS, EMBED_RECONCILE_SECONDS, EMBED_QUEUE_MAX,
     # EMBED_MIN_QUERY_CHARS (5) / EMBED_MAX_QUERY_CHARS (400), EMBED_QUERY_CACHE,
     # EMBED_QUERY_CACHE_TTL_SECONDS (60, bounds query-data retention; 0 = LRU only),
-    # EMBED_MODEL_DIR, REFRESH_TRIGGER_URL (embed -> refresh, for baseline
-    # auto-crawl), EMBED_LOG_LEVEL. See docker/env.example.
+    # EMBED_MODEL_DIR, EMBED_SEM_FLOOR (client relevance floor, default 0.0),
+    # REFRESH_TRIGGER_URL (embed -> refresh, for baseline auto-crawl),
+    # EMBED_LOG_LEVEL. See docker/env.example.
     env_file:
       - .env
     volumes:
