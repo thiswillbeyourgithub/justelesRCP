@@ -501,6 +501,18 @@ class Embedder:
         for the operator. Query CONTENT is never tracked anywhere, only counts."""
         s = self.stats()  # already snapshots queue/pending/running under _lock
         last = dict(self._last_scan)  # whole-dict reassignment is atomic in CPython
+        # Sustained embedding throughput, so /status can show a pages/min speed, an ETA
+        # to clear the whole backlog, and (combined with the crawl rate, client-side)
+        # whether indexing outpaces the crawler. seconds_per_page is the MEASURED mean
+        # compute time (embed_seconds / embedded) PLUS, when the background sweep is on,
+        # the backlog_rate it sleeps between pages: the sweep is what drains the backlog,
+        # so its throttled cadence is the honest drain rate. Reported only once >=1 page
+        # has been embedded this boot (else compute time is unknown -> pages_per_min 0,
+        # which the client shows as "en cours de mesure").
+        embedded = s["embedded"]
+        cadence = ((s["embed_seconds"] / embedded) if embedded else 0.0) \
+            + (self.backlog_rate if self.backlog else 0.0)
+        pages_per_min = round(60.0 / cadence, 1) if (embedded and cadence > 0) else 0.0
         summary = {
             "enabled": s["enabled"], "model": s["model"], "dim": s["dim"],
             "uptime_seconds": round(time.monotonic() - self._started, 1),
@@ -508,6 +520,9 @@ class Embedder:
             "pages": {"embedded": s["embedded"], "skipped": s["skipped"],
                       "errors": s["errors"], "chars": s["chars"],
                       "mean_chars_per_s": s["mean_chars_per_s"]},
+            # Sustained page throughput (pages/min) + the per-page drain cadence (s).
+            "indexing": {"pages_per_min": pages_per_min,
+                         "seconds_per_page": round(cadence, 2) if embedded else 0.0},
             "queries": {"embedded": s["queries"], "shed": s["queries_shed"],
                         "crawl_triggered": s["crawl_triggered"]},
             # Live embed backlog (pages waiting / in flight right now).
@@ -525,6 +540,9 @@ class Embedder:
                 "embedded_pct": round(100.0 * (crawled - awaiting) / crawled, 1)
                                 if crawled else 100.0,
                 "scan_age_seconds": round(time.monotonic() - last["at"], 1),
+                # ETA to clear the whole current backlog at the sustained rate above.
+                "backlog_eta_seconds": round(awaiting * cadence, 1)
+                                       if (pages_per_min > 0 and awaiting) else 0.0,
             }
         return summary
 

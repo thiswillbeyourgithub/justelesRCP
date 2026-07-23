@@ -466,6 +466,7 @@ class Refresher:
         return {"enabled": lane.enabled, "total": len(lane.order), "idx": lane.idx,
                 "ttl_days": lane.ttl_days, "idle": lane.idle, "due": due,
                 "forced": len(lane.force_pending),
+                "rate_seconds": round(lane.rate, 1),
                 "eta_seconds": round(self._crawl_eta_seconds(due, lane.rate), 1)}
 
     def stats(self) -> dict:
@@ -496,9 +497,16 @@ class Refresher:
         def lane_view(g: dict) -> dict:
             total = g["total"]
             done = max(0, total - g["due"])
+            # Effective per-page crawl cadence (base rate + mean jitter), matching
+            # _crawl_eta_seconds, so /status can turn it into a pages/min rate and
+            # compare it against the embedder's indexing speed (the catch-up gauge).
+            rate = g["rate_seconds"]
+            cadence = rate + min(rate, 10.0) / 2 if rate > 0 else 0.0
             return {"enabled": g["enabled"], "total": total, "due": g["due"],
                     "done": done, "idle": g["idle"], "ttl_days": g["ttl_days"],
                     "forced": g["forced"], "eta_seconds": g["eta_seconds"],
+                    "rate_seconds": rate,
+                    "pages_per_min": round(60.0 / cadence, 1) if cadence > 0 else 0.0,
                     "pct": round(100.0 * done / total, 1) if total else 0.0}
 
         return {
