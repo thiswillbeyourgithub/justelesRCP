@@ -752,11 +752,13 @@ class _QuietHTTPServer(ThreadingHTTPServer):
               help="Run the perpetual reconcile sweep that (re-)embeds every crawled "
                    "page whose vectors are missing/stale (env EMBED_ENABLE). --no-backlog "
                    "leaves only on-demand + notify-driven embedding.")
-@click.option("--backlog-rate", type=float, default=2.0, show_default=True,
+@click.option("--backlog-rate", type=float, default=0.0, show_default=True,
               envvar="EMBED_BACKLOG_RATE_SECONDS",
-              help="Seconds to pause after each BACKGROUND (sweep) page, to leave CPU "
-                   "for queries (env EMBED_BACKLOG_RATE_SECONDS). On-demand/notify embeds "
-                   "are not throttled.")
+              help="Seconds to pause after each BACKGROUND (sweep) page "
+                   "(env EMBED_BACKLOG_RATE_SECONDS). Default 0 = no pause (fastest "
+                   "catalog indexing); raise it to yield CPU on a box that also serves a "
+                   "lot of live queries during the sweep. On-demand/notify embeds are "
+                   "never throttled either way.")
 @click.option("--reconcile-seconds", type=float, default=60.0, show_default=True,
               envvar="EMBED_RECONCILE_SECONDS",
               help="How often the reconcile sweep rescans overlays (env "
