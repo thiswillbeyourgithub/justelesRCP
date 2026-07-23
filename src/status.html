@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" type="image/svg+xml" href="/logo.svg">
+<!-- Theme (light/dark/auto): loaded synchronously so the saved choice is applied before first paint (no flash). -->
+<script src="/theme.js"></script>
+<title>Statut du service | justelesRCP</title>
+<meta name="description" content="État en temps réel de justelesRCP : progression de l'exploration des RCP, indexation sémantique et activité de rafraîchissement.">
+<!-- Canonical + noindex robots meta injected by build.py (this operational page is kept out of the index). -->
+{{HEAD}}
+<link rel="stylesheet" href="/style.css">
+<!-- Runtime config (umami metrics + dev banner); rendered by docker/entrypoint.sh. No-op when unset. -->
+<script src="/app-config.js"></script>
+<!-- Build version (window.__APP_VERSION__), injected into [data-app-version] by app-init.js. -->
+<script src="/app-version.js" defer></script>
+<script src="/app-init.js" defer></script>
+<script src="/dev-banner.js" defer></script>
+<!-- Fetches /api/summary + /api/sem/summary and renders this dashboard (same-origin, CSP-safe). -->
+<script src="/status.js" defer></script>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="/">justelesRCP</a>
+  <nav class="topnav"><a href="/browse/">A-Z</a><a href="/">Rechercher</a><a href="/a-propos">À propos</a></nav>
+</header>
+<main class="status">
+  <h1>Statut du service</h1>
+  <p class="status-intro">État en direct de l'infrastructure de justelesRCP : la
+  consultation des RCP est 100&nbsp;% statique et ne dépend pas de ces composants ;
+  ils ne servent qu'au rafraîchissement des pages et à la recherche sémantique.</p>
+  <p class="status-updated" id="status-updated" aria-live="polite">Chargement…</p>
+
+  <section class="status-card" id="card-crawl">
+    <h2>Exploration des RCP</h2>
+    <p class="status-sub">Ré-extraction périodique des pages depuis l'ANSM (RCP) et l'EMA
+    (autorisations européennes), pour maintenir chaque fiche à jour.</p>
+    <div class="status-body" id="body-crawl"><p class="status-loading">Chargement…</p></div>
+  </section>
+
+  <section class="status-card" id="card-embed">
+    <h2>Indexation sémantique</h2>
+    <p class="status-sub">Calcul des vecteurs de chaque page pour la « Recherche sémantique
+    dans ce RCP ». L'indexation suit l'exploration : une page fraîchement explorée est
+    ré-indexée peu après.</p>
+    <div class="status-body" id="body-embed"><p class="status-loading">Chargement…</p></div>
+  </section>
+
+  <section class="status-card" id="card-queries">
+    <h2>Recherches des visiteurs</h2>
+    <p class="status-sub">Nombre de questions de recherche sémantique traitées depuis le
+    dernier redémarrage. Le contenu des questions n'est jamais enregistré.</p>
+    <div class="status-body" id="body-queries"><p class="status-loading">Chargement…</p></div>
+  </section>
+
+  <section class="status-card" id="card-refresh">
+    <h2>Rafraîchissements</h2>
+    <p class="status-sub">Détail des rafraîchissements terminés depuis le dernier
+    redémarrage, par déclencheur et par résultat.</p>
+    <div class="status-body" id="body-refresh"><p class="status-loading">Chargement…</p></div>
+  </section>
+
+  <p><a href="/">← Retour à la recherche</a></p>
+  <p class="ver" data-app-version></p>
+</main>
+<footer class="foot">
+  <p>Source : <a href="https://base-donnees-publique.medicaments.gouv.fr" target="_blank" rel="noopener">Base de données publique des médicaments</a>
+  (BDPM, ANSM), réutilisée sous <a href="https://www.etalab.gouv.fr/licence-ouverte-open-licence/" target="_blank" rel="noopener">Licence Ouverte / Etalab 2.0</a>.
+  Réutilisation sans caractère officiel, non affiliée à l'ANSM. Ne remplace pas un avis médical. Généré avec l'aide de Claude Code.</p>
+  <p class="credit">par <a href="https://olicorne.org/fr" rel="noopener">Olivier Cornelis</a></p>
+</footer>
+</body>
+</html>

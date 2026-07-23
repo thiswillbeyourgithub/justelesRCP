@@ -34,11 +34,14 @@
 		file_server
 	}
 
-	# Operational stats endpoints (queue depths, crawl progress, refresh counters)
-	# are not used by the site frontend and would reveal the scraping infra's shape
-	# to anyone, so they are not exposed publicly: reach them from inside the docker
+	# The DETAILED stats endpoints (raw queue internals, server RAM figures) are not
+	# used by the site frontend and would reveal the scraping infra's shape / host
+	# memory, so they are not exposed publicly: reach them from inside the docker
 	# network or via `docker exec`. Exact-path `handle`s before the wildcards below,
-	# and `handle` is first-match, so these win over /api/sem/* and /api/*.
+	# and `handle` is first-match, so these win over /api/sem/* and /api/*. The PUBLIC
+	# /status page instead consumes the curated /api/summary + /api/sem/summary
+	# endpoints (progress %, counts, ETA; no host internals), which fall through to the
+	# wildcard proxies below like any other API call and are rate-limited the same way.
 	handle /api/stats {
 		respond 404
 	}

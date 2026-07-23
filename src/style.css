@@ -122,6 +122,57 @@ a:hover { text-decoration: underline; }
 .about p { margin: .6rem 0; }
 .about .ver { margin-top: 2rem; color: var(--muted); font-size: .8rem; opacity: .7; }
 
+/* /status operational dashboard (status.html + status.js). OK/warn tints reuse the
+   site amber (#b45309); a green is added just for the "up to date" badge. Both are
+   given light/dark values so the badges read on either theme. */
+:root { --status-ok: #15803d; --status-warn: #b45309; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --status-ok: #4ade80; --status-warn: #f0a35e; }
+}
+:root[data-theme="dark"] { --status-ok: #4ade80; --status-warn: #f0a35e; }
+.status { max-width: 52rem; margin: 0 auto; padding: 1.5rem 1.2rem 4rem; }
+.status h1 { font-size: 1.8rem; margin: 0 0 .8rem; }
+.status-intro { margin: 0 0 .4rem; color: var(--muted); }
+.status-updated { margin: 0 0 1.4rem; color: var(--muted); font-size: .85rem; }
+.status-card {
+  border: 1px solid var(--line); border-radius: .6rem; background: var(--card);
+  padding: 1rem 1.1rem; margin: 0 0 1.1rem;
+}
+.status-card h2 { font-size: 1.15rem; margin: 0 0 .2rem; }
+.status-sub { margin: 0 0 .8rem; color: var(--muted); font-size: .85rem; }
+.status-loading { color: var(--muted); font-style: italic; margin: 0; }
+.status-lane { margin: 0 0 1rem; }
+.status-lane:last-child { margin-bottom: 0; }
+.status-lane-head { display: flex; align-items: center; gap: .6rem; margin: 0 0 .5rem; flex-wrap: wrap; }
+.status-lane-title { font-size: 1rem; margin: 0; }
+.status-badge {
+  font-size: .72rem; font-weight: 600; padding: .12rem .5rem; border-radius: 1rem;
+  border: 1px solid currentColor; white-space: nowrap;
+}
+.status-badge-ok { color: var(--status-ok); }
+.status-badge-warn { color: var(--status-warn); }
+.status-badge-run { color: var(--accent); }
+.status-badge-off { color: var(--muted); }
+.status-bar {
+  height: .55rem; border-radius: 1rem; background: rgb(var(--accent-rgb) / .15);
+  overflow: hidden; margin: 0 0 .6rem;
+}
+.status-bar-fill {
+  height: 100%; width: 0; background: var(--accent); border-radius: 1rem;
+  transition: width .4s ease;
+}
+.status-metric {
+  display: flex; justify-content: space-between; gap: 1rem; align-items: baseline;
+  padding: .2rem 0; font-size: .9rem; border-bottom: 1px dotted var(--line);
+}
+.status-metric:last-child { border-bottom: 0; }
+.status-metric-label { color: var(--muted); }
+.status-metric-value { font-weight: 600; text-align: right; white-space: nowrap; }
+.status-metric.warn .status-metric-value { color: var(--status-warn); }
+.status-sep { height: .6rem; }
+.status-note { margin: .3rem 0; font-size: .9rem; }
+.status-note-off { color: var(--muted); font-style: italic; }
+
 /* --- A-Z browse --- */
 .browse { max-width: var(--maxw); margin: 0 auto; padding: 1.5rem 1.2rem 4rem; }
 .browse h1 { font-size: 1.6rem; margin: 0 0 1rem; }

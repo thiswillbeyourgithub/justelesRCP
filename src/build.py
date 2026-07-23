@@ -52,7 +52,7 @@ from lxml import html as lxml_html
 
 import bdpm  # shared, pure-stdlib BDPM tokenising + frequency scoring
 
-__version__ = "0.51.1"  # single source of truth; bump patch/minor per change
+__version__ = "0.52.0"  # single source of truth; bump patch/minor per change
 
 # This script lives in ``src/`` (alongside the frontend templates it renders), so the
 # repo root is its parent's parent; data/, src/ and dist/ all hang off that root. In the
@@ -1575,6 +1575,12 @@ _STATIC_META = {
         "médicaments (source ANSM / BDPM).",
         "website",
     ),
+    "status.html": (
+        "Statut du service | justelesRCP",
+        "État en temps réel de justelesRCP : progression de l'exploration des RCP, "
+        "indexation sémantique et activité de rafraîchissement.",
+        "website",
+    ),
 }
 
 
@@ -1673,6 +1679,11 @@ def _static_page_head(asset: str, path: str) -> str:
     head = _canonical_link(path) + _social_meta(title, desc, path, page_type)
     if asset == "index.html":
         head += _jsonld(_website_jsonld())
+    if asset == "status.html":
+        # Operational dashboard: thin, ever-changing, no reader-search value, so keep it
+        # out of the index (and it is deliberately absent from the sitemap too). It still
+        # gets a canonical for cleanliness.
+        head = '<meta name="robots" content="noindex">' + head
     return head
 
 
@@ -3032,6 +3043,8 @@ def main() -> None:
     static_assets = (
         "index.html",
         "a-propos.html",
+        "status.html",  # operational dashboard (noindex); status.js fills it at runtime
+        "status.js",  # fetches /api/summary + /api/sem/summary and renders /status
         "style.css",
         "search.js",
         "app-config.js",
@@ -3047,7 +3060,8 @@ def main() -> None:
     # index.html + a-propos.html are hand-written static pages carrying a {{HEAD}}
     # placeholder; inject their canonical/social/JSON-LD head (built from the one
     # SITE_URL origin) instead of copying verbatim. Everything else is copied as-is.
-    head_pages = {"index.html": "/", "a-propos.html": "/a-propos"}
+    head_pages = {"index.html": "/", "a-propos.html": "/a-propos",
+                  "status.html": "/status"}
     for asset in static_assets:
         src = SRC / asset
         if asset in head_pages:
