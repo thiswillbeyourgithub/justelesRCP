@@ -499,10 +499,8 @@ class Embedder:
         and the "behind the crawler?" gauge, but DROPS the server-internal memory figures
         (rss/peak/model RSS) that the detailed /api/sem/stats (blocked at the edge) keeps
         for the operator. Query CONTENT is never tracked anywhere, only counts."""
-        with self._lock:
-            queue, pending, running = len(self._queue), len(self._pending), self._running
-            last = dict(self._last_scan)
-        s = self.stats()
+        s = self.stats()  # already snapshots queue/pending/running under _lock
+        last = dict(self._last_scan)  # whole-dict reassignment is atomic in CPython
         summary = {
             "enabled": s["enabled"], "model": s["model"], "dim": s["dim"],
             "uptime_seconds": round(time.monotonic() - self._started, 1),
@@ -513,7 +511,8 @@ class Embedder:
             "queries": {"embedded": s["queries"], "shed": s["queries_shed"],
                         "crawl_triggered": s["crawl_triggered"]},
             # Live embed backlog (pages waiting / in flight right now).
-            "backlog": {"queue": queue, "pending": pending, "running": running},
+            "backlog": {"queue": s["queue"], "pending": s["pending"],
+                        "running": s["running"]},
         }
         # "Is the embedder behind the crawler?" from the last reconcile scan: total
         # crawled overlays on disk vs how many still lack a fresh vector.
