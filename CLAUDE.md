@@ -94,6 +94,8 @@ dist/sitemap.xml robots.txt  SEO: sitemap of every crawlable URL (home, /a-propo
                              it. Every page also bakes a canonical link + Open Graph +
                              JSON-LD (see the SEO bullet). Origin = SITE_URL constant
 dist/index.html a-propos.html style.css search.js
+dist/status.html status.js  noindex live ops dashboard (crawl/embed/query stats via
+                            the curated /api/summary + /api/sem/summary endpoints)
 dist/logo.svg               site logo (SVG favicon on every page + README header)
 dist/og.png                 raster social card for og:image / twitter:image (1200x630)
 dist/app-config.js app-init.js dev-banner.js toc.js app-version.js rcp-semsearch.js  (runtime client assets)
@@ -519,6 +521,34 @@ Key facts that aren't obvious from a single file:
   static asset): what the site is, the author, a privacy/hosting note, and a
   direct link to the GitHub repo. (`SOURCE_URL` still drives the separate "Code
   source" link in the DEV banner, `src/dev-banner.js`.)
+- **`/status` is a live operational dashboard** (`src/status.html` + `src/status.js`,
+  both shipped as static assets, styled by `.status-*` in `style.css`). It is a plain
+  static page whose JS fetches the TWO curated PUBLIC summary endpoints and renders
+  them: `GET /api/summary` (refresh service `public_summary()`: per-lane crawl progress
+  %, pages still due, sweep ETA, TTL, idle/active; refresh outcomes by trigger/result;
+  on-demand queue; uptime) and `GET /api/sem/summary` (embed service `public_summary()`:
+  pages + user queries embedded since boot, throughput, live embed backlog, and a
+  `crawl_gap` gauge = crawled overlays vs those still awaiting a vector, from the last
+  reconcile scan, so the page shows whether embedding trails the crawler). Both derive
+  from each service's existing `stats()` (single source of truth, no counter
+  duplication) but OMIT the host-internal figures (raw queue internals, RSS/peak/model
+  RAM) that the DETAILED `/api/stats` + `/api/sem/stats` keep for the operator and that
+  Caddy blocks at the edge (see the hardening note). The summary routes are NOT blocked:
+  they fall through to the `/api/*` + `/api/sem/*` proxies and are rate-limited like any
+  API call; the query POST is same-origin so `connect-src 'self'` covers the page's
+  fetches. It is CSP-safe (same-origin script, no inline handlers/eval; bar widths set
+  via CSSOM), auto-refreshes every 15 s only while the tab is visible, and degrades to a
+  per-card "indisponible" if a service is down (the static site is unaffected). It is
+  `noindex` (thin, ever-changing: `_static_page_head` prepends the robots meta for
+  `status.html`) and deliberately kept OUT of the sitemap; it is discoverable via the
+  home + `/a-propos` footers. Both services track a monotonic `_started` for uptime and
+  the counters are per-process ("since last reboot"). Keep the contract in sync across
+  `public_summary`/`_started` + the `/api/summary` route (refresh-service.py),
+  `public_summary`/`_started`/`_last_scan` (set in `_scan_and_enqueue`) + the
+  `/api/sem/summary` route (embed-service.py), `src/status.html`, `src/status.js`,
+  `.status-*` in `style.css`, `_STATIC_META`/`_static_page_head`/`static_assets`/
+  `head_pages` (build.py), the footer links in `src/index.html` + `src/a-propos.html`,
+  and the blocked-vs-public comment in `docker/Caddyfile`.
 - **~15% of CIS have an empty RCP field** in the source and are skipped (no RCP
   page, not counted in browse). This is expected, not an error. But the centrally-
   authorized ones among them now get an EU-authorization stub instead of vanishing
@@ -1013,6 +1043,8 @@ uv run src/refresh-service.py # optional: run the refresh API on :8460 (behind C
                           # REFRESH_EMA_RATE_SECONDS (300) + REFRESH_EMA_CRAWL_TTL_DAYS (180);
                           # REFRESH_LOG_LEVEL (INFO, health never logged);
                           # GET /api/stats returns crawl counters + crawl (ANSM) + crawl_eu gauges
+                          #  (INTERNAL, blocked at the edge); GET /api/summary is the curated
+                          #  PUBLIC view the /status page consumes (proxied, rate-limited)
 uv run src/embed-service.py   # optional: warm SERVER-SIDE embedder on :8461 (behind Caddy /api/sem/*)
                           # keeps the ONNX encoder warm; embeds the reader's query on request
                           #  (no browser model) + (re-)embeds each CRAWLED page's sections in the
@@ -1024,7 +1056,9 @@ uv run src/embed-service.py   # optional: warm SERVER-SIDE embedder on :8461 (be
                           #  (256) + EMBED_QUERY_CACHE_TTL_SECONDS (60, bounds query-data retention; 0=off),
                           #  EMBED_MODEL_DIR, EMBED_OUT_DIM (MRL width, 256; change re-embeds all),
                           #  REFRESH_TRIGGER_URL (baseline auto-crawl), EMBED_LOG_LEVEL;
-                          # GET /api/sem/stats; query CONTENT is never logged (privacy)
+                          # GET /api/sem/stats (INTERNAL, blocked at the edge) + GET
+                          #  /api/sem/summary (curated PUBLIC view for /status); query
+                          #  CONTENT is never logged (privacy)
 cp docker/env.example docker/.env                      # optional: umami analytics / DEV banner / refresh + embed knobs
 docker compose -f docker/docker-compose.yml up -d      # serve ./dist on :8459 + refresh + embed services (read-only, hardened)
 docker compose -f docker/docker-compose.yml up --build # after changing Caddyfile/compose/refresh.Dockerfile/embed.Dockerfile
@@ -1056,9 +1090,13 @@ Restart is not needed (Caddy reads the mounted dir live), but a
   public IP. The limits are tunable via `API_RATE_EVENTS`/`API_RATE_WINDOW` and
   `SEM_RATE_EVENTS`/`SEM_RATE_WINDOW` (env, read by Caddy). Both API handles also
   `request_body { max_size 16KB }` (reject oversized POSTs at the edge) and the two
-  operational stats endpoints (`/api/stats`, `/api/sem/stats`) are **blocked**
-  (`respond 404`, exact-path `handle` before the wildcards) so they are reachable
-  only from inside the docker network, not publicly. These edge limits COMPLEMENT
+  **detailed** stats endpoints (`/api/stats`, `/api/sem/stats`, which expose raw queue
+  internals + host RAM) are **blocked** (`respond 404`, exact-path `handle` before the
+  wildcards) so they are reachable only from inside the docker network, not publicly.
+  The **public** `/status` page instead consumes the curated `/api/summary` +
+  `/api/sem/summary` endpoints (progress %, counts, ETA, uptime; NO host internals),
+  which fall through to the wildcard proxies and are rate-limited like any other API
+  call (see the /status bullet in the architecture section). These edge limits COMPLEMENT
   the refresh service's global hourly scrape ceiling (`REFRESH_DEMAND_HOURLY_MAX`,
   which caps the aggregate) and its per-CIS min-interval floor; keep all three.
   The `order rate_limit before reverse_proxy` global option is required (the plugin
