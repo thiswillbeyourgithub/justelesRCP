@@ -1057,7 +1057,7 @@ uv run src/embed-service.py   # optional: warm SERVER-SIDE embedder on :8461 (be
                           # keeps the ONNX encoder warm; embeds the reader's query on request
                           #  (no browser model) + (re-)embeds each CRAWLED page's sections in the
                           #  background, writing dist/<rcp|eu>/<slug>.vec.json (never the 2022 baseline)
-                          # knobs (env): EMBED_ENABLE (backlog sweep 1=on), EMBED_INTRA_THREADS (4),
+                          # knobs (env): EMBED_ENABLE (backlog sweep 1=on), EMBED_INTRA_THREADS (-2),
                           # EMBED_BACKLOG_RATE_SECONDS (2), EMBED_RECONCILE_SECONDS (60), EMBED_QUEUE_MAX
                           #  (500), EMBED_MAX_CONCURRENT_QUERIES (8, bounds encode CPU; per-IP rate limit
                           #  belongs at the proxy), EMBED_MIN/MAX_QUERY_CHARS (5/400), EMBED_QUERY_CACHE

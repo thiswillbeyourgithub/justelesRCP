@@ -725,10 +725,13 @@ class _QuietHTTPServer(ThreadingHTTPServer):
                    "handed to the browser in each /api/sem/embed response. 0.0 keeps every "
                    "section (only the hybrid rank + result cap prune); raise it (e.g. 0.5) "
                    "to demand real similarity.")
-@click.option("--intra-threads", type=int, default=4, show_default=True,
+@click.option("--intra-threads", type=int, default=-2, show_default=True,
               envvar="EMBED_INTRA_THREADS",
-              help="onnxruntime intra-op threads (env EMBED_INTRA_THREADS). Query embeds "
-                   "are tiny; this mainly speeds background page embedding.")
+              help="onnxruntime intra-op threads (env EMBED_INTRA_THREADS). A positive "
+                   "value is a literal thread count; <= 0 is relative to the CPU count "
+                   "(-1 = all cores, -2 = all but one, floored at 1, respecting the "
+                   "container's cpuset). Query embeds are tiny; this mainly speeds "
+                   "background page embedding.")
 @click.option("--min-query-chars", type=int, default=5, show_default=True,
               envvar="EMBED_MIN_QUERY_CHARS",
               help="Reject queries shorter than this (env EMBED_MIN_QUERY_CHARS).")

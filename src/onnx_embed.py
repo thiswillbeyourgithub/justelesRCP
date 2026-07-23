@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import time
 from collections import OrderedDict
 from pathlib import Path
@@ -80,6 +81,24 @@ def _profile(model_name: str) -> dict:
             "query": "", "passage": "", "out_dim": None}
 
 
+def _resolve_intra_threads(n: int) -> int:
+    """Resolve the onnxruntime intra-op thread count from ``n``.
+
+    A positive ``n`` is a literal thread count. ``n <= 0`` is interpreted relative to
+    the available CPUs, joblib-style: ``-1`` = all cores, ``-2`` = all but one (formally
+    ``cpu + 1 + n``), ``0`` = all cores. The result is floored at 1 and capped at the CPU
+    count, so it is always usable. On Linux the count is the container's CPU affinity
+    (``sched_getaffinity``), so a cpuset-limited container does not over-subscribe."""
+    n = int(n)
+    if n >= 1:
+        return n
+    try:
+        cpu = max(1, len(os.sched_getaffinity(0)))  # respects a cgroup cpuset
+    except AttributeError:  # not Linux (e.g. a macOS dev box)
+        cpu = max(1, os.cpu_count() or 1)
+    return min(cpu, max(1, cpu + 1 + n))
+
+
 class Encoder:
     """A warm ONNX feature-extraction encoder: load once, embed many.
 
@@ -108,7 +127,10 @@ class Encoder:
                 f"need onnx/{prof['onnx']} + tokenizer.json"
             )
         opts = ort.SessionOptions()
-        opts.intra_op_num_threads = max(1, int(intra_threads))
+        # intra_threads may be negative (relative to the CPU count); resolve it here so
+        # every caller (embed-service.py, embed-rcp.py) shares one meaning. See
+        # _resolve_intra_threads: -1 = all cores, -2 = all but one, positive = literal.
+        opts.intra_op_num_threads = _resolve_intra_threads(intra_threads)
         opts.inter_op_num_threads = 1
         # ``providers`` defaults to CPU-only: that is the runtime container's posture (the
         # VPS has no GPU and installs the CPU-only ``onnxruntime``). The offline pre-bake
