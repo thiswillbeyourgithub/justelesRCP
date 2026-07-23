@@ -527,9 +527,17 @@ Key facts that aren't obvious from a single file:
   them: `GET /api/summary` (refresh service `public_summary()`: per-lane crawl progress
   %, pages still due, sweep ETA, TTL, idle/active; refresh outcomes by trigger/result;
   on-demand queue; uptime) and `GET /api/sem/summary` (embed service `public_summary()`:
-  pages + user queries embedded since boot, throughput, live embed backlog, and a
-  `crawl_gap` gauge = crawled overlays vs those still awaiting a vector, from the last
-  reconcile scan, so the page shows whether embedding trails the crawler). Both derive
+  pages + user queries embedded since boot, throughput, live embed backlog, an
+  `indexing` block (sustained pages/min + per-page cadence: mean compute time +, when
+  the sweep is on, its `backlog_rate` throttle), and a `crawl_gap` gauge = crawled
+  overlays vs those still awaiting a vector, from the last reconcile scan, with a
+  `backlog_eta_seconds` to clear it, so the page shows whether embedding trails the
+  crawler). A dedicated "Indexation vs exploration" card correlates the TWO summaries
+  client-side: the embedder's pages/min vs the crawler's page-production rate (each
+  lane_view now carries `rate_seconds`+`pages_per_min`; only enabled, non-idle lanes
+  count as producing), yielding the indexing/crawl ratio and a catch-up ETA
+  (`backlog / (indexing_rate - crawl_rate)`), worst-case assuming every explored page
+  must be re-indexed. Both derive
   from each service's existing `stats()` (single source of truth, no counter
   duplication) but OMIT the host-internal figures (raw queue internals, RSS/peak/model
   RAM) that the DETAILED `/api/stats` + `/api/sem/stats` keep for the operator and that
