@@ -180,6 +180,13 @@ class Embedder:
         self._stats = {"embedded": 0, "skipped": 0, "errors": 0,
                        "queries": 0, "queries_shed": 0, "crawl_triggered": 0,
                        "chars": 0, "embed_seconds": 0.0}
+        # Monotonic start mark: the public /api/sem/summary reports uptime, and it tells
+        # the /status reader the counters above are "since last reboot".
+        self._started = time.monotonic()
+        # Snapshot of the last reconcile scan (how many crawled overlays exist and how
+        # many still lack a fresh .vec.json), so the /status page can answer "is the
+        # embedder behind the crawler?" without an expensive per-request full scan.
+        self._last_scan: dict = {}
 
     # -- lifecycle ---------------------------------------------------------
     def start(self) -> None:
@@ -350,16 +357,24 @@ class Embedder:
         differs from the current one, so a model/dim swap isn't hidden by the mtime gate
         forever."""
         queued = 0
+        overlays = 0  # crawled pages seen on disk this pass
+        stale = 0     # of those, how many lack a fresh .vec.json (the embed backlog)
         for cis, ov, subdir in build.iter_overlay_paths():
             page = self._dist_page(cis, subdir)
             if page is None:
                 continue
+            overlays += 1
             vec = self._vec_path(page)
             if build.vec_is_fresh(vec, ov, self.model, check_model=check_model,
                                   dim=self.encoder.dim):
                 continue
+            stale += 1
             if self._enqueue(cis, "sweep", front=False) == "queued":
                 queued += 1
+        # Record for /api/sem/summary: total crawled pages vs how many still await an
+        # embed, so the /status page can show whether embedding trails the crawl.
+        self._last_scan = {"overlays": overlays, "stale": stale,
+                           "at": time.monotonic()}
         return queued
 
     def _reconcile_loop(self) -> None:
@@ -477,6 +492,43 @@ class Embedder:
         base["model_rss_mb"] = round(self._model_rss or 0)
         return base
 
+    def public_summary(self) -> dict:
+        """A curated, public-safe view of the embedder for the /status page, served at
+        GET /api/sem/summary. Derived from stats() (single source of truth): it keeps the
+        reader-facing progress (pages/queries embedded since boot, throughput, backlog)
+        and the "behind the crawler?" gauge, but DROPS the server-internal memory figures
+        (rss/peak/model RSS) that the detailed /api/sem/stats (blocked at the edge) keeps
+        for the operator. Query CONTENT is never tracked anywhere, only counts."""
+        with self._lock:
+            queue, pending, running = len(self._queue), len(self._pending), self._running
+            last = dict(self._last_scan)
+        s = self.stats()
+        summary = {
+            "enabled": s["enabled"], "model": s["model"], "dim": s["dim"],
+            "uptime_seconds": round(time.monotonic() - self._started, 1),
+            # Since last reboot.
+            "pages": {"embedded": s["embedded"], "skipped": s["skipped"],
+                      "errors": s["errors"], "chars": s["chars"],
+                      "mean_chars_per_s": s["mean_chars_per_s"]},
+            "queries": {"embedded": s["queries"], "shed": s["queries_shed"],
+                        "crawl_triggered": s["crawl_triggered"]},
+            # Live embed backlog (pages waiting / in flight right now).
+            "backlog": {"queue": queue, "pending": pending, "running": running},
+        }
+        # "Is the embedder behind the crawler?" from the last reconcile scan: total
+        # crawled overlays on disk vs how many still lack a fresh vector.
+        if last:
+            awaiting = last.get("stale", 0)
+            crawled = last.get("overlays", 0)
+            summary["crawl_gap"] = {
+                "crawled_pages": crawled,
+                "awaiting_embed": awaiting,
+                "embedded_pct": round(100.0 * (crawled - awaiting) / crawled, 1)
+                                if crawled else 100.0,
+                "scan_age_seconds": round(time.monotonic() - last["at"], 1),
+            }
+        return summary
+
 
 class _Handler(BaseHTTPRequestHandler):
     """JSON API under /api/sem/*:
@@ -484,7 +536,9 @@ class _Handler(BaseHTTPRequestHandler):
     ``POST /api/sem/embed`` {q}              -> {q: base64-int8 vec, dim, query_prefix}
     ``POST /api/sem/page/<cis>[?src=user|crawl]`` -> {status}
     ``GET  /api/sem/page/<cis>``             -> {embedded, pending}
-    ``GET  /api/sem/stats``                  -> counters + queue gauge
+    ``GET  /api/sem/stats``                  -> full counters + RAM gauge (INTERNAL:
+                                                blocked at the edge)
+    ``GET  /api/sem/summary``                -> curated, public-safe view for /status
     ``GET  /api/sem/health``                 -> {ok: true} (never logged)
     """
 
@@ -524,6 +578,9 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/api/sem/stats":
             self._send(200, EMBEDDER.stats())
+            return
+        if self.path == "/api/sem/summary":  # public curated view for the /status page
+            self._send(200, EMBEDDER.public_summary())
             return
         m = re.fullmatch(r"/api/sem/page/(\d{8})", self.path)
         if m:

@@ -249,6 +249,9 @@ class Refresher:
         self._stats = {"ok": 0, "empty": 0, "error": 0,
                        "user": 0, "auto": 0, "crawl": 0,
                        "fresh": 0, "busy": 0, "budget": 0}
+        # Monotonic start mark, so the public /api/summary can report uptime and the
+        # reader of the /status page knows the counters above are "since last reboot".
+        self._started = time.monotonic()
         # Prime build.py's render globals (names + page template + cross-drug
         # backlink index) once, so render_record() can run outside its normal pool
         # worker AND a refreshed page carries the same "Médicaments liés" links a
@@ -480,6 +483,37 @@ class Refresher:
         snap["crawl"] = crawl        # ANSM /rcp/ lane (unchanged shape)
         snap["crawl_eu"] = crawl_eu  # EMA /eu/ lane, same shape
         return snap
+
+    def public_summary(self) -> dict:
+        """A curated, public-safe view of the crawl/refresh state for the /status page,
+        served at GET /api/summary. Derived from stats() (single source of truth), it
+        keeps the reader-facing progress (crawl sweep %, ETA, refresh outcomes by source,
+        on-demand queue) and adds uptime + a per-lane percent-done, but omits nothing
+        sensitive here (the refresh counters mirror public data). The detailed /api/stats
+        stays internal-only; this is the one meant to be reachable from a browser."""
+        s = self.stats()
+
+        def lane_view(g: dict) -> dict:
+            total = g["total"]
+            done = max(0, total - g["due"])
+            return {"enabled": g["enabled"], "total": total, "due": g["due"],
+                    "done": done, "idle": g["idle"], "ttl_days": g["ttl_days"],
+                    "forced": g["forced"], "eta_seconds": g["eta_seconds"],
+                    "pct": round(100.0 * done / total, 1) if total else 0.0}
+
+        return {
+            "uptime_seconds": round(time.monotonic() - self._started, 1),
+            "crawl": lane_view(s["crawl"]),        # ANSM /rcp/ lane
+            "crawl_eu": lane_view(s["crawl_eu"]),  # EMA /eu/ lane
+            # Completed refreshes since boot, by outcome and by trigger source.
+            "refreshes": {k: s[k] for k in ("ok", "empty", "error", "done",
+                                            "user", "auto", "crawl")},
+            # Request-level short-circuits (min-interval hit / queue full / hourly cap).
+            "shortcircuits": {k: s[k] for k in ("fresh", "busy", "budget")},
+            # On-demand (button/auto) lane queue depth + drain ETA.
+            "ondemand": {"queued": s["queued"], "pending": s["pending"],
+                         "eta_seconds": s["eta_seconds"]},
+        }
 
     # -- perpetual crawler (one instance per lane) ---------------------------
 
@@ -997,7 +1031,10 @@ class _Handler(BaseHTTPRequestHandler):
 
     ``POST /api/refresh/<cis>[?src=user|auto]`` - enqueue a refresh; -> {status, asof?}.
     ``GET  /api/status/<cis>``  - {asof, pending, archived} so the button can poll.
-    ``GET  /api/stats``         - crawl counters by source + queue depth + ETA.
+    ``GET  /api/stats``         - full crawl counters + queue depth + ETA (INTERNAL:
+                                  blocked at the edge, reach it inside the docker net).
+    ``GET  /api/summary``       - curated, public-safe crawl/refresh view for the
+                                  /status page (proxied through Caddy, rate-limited).
     ``GET  /api/health``        - {ok: true} for container healthchecks (never logged).
     """
 
@@ -1071,6 +1108,9 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/api/stats":
             self._send(200, REFRESHER.stats())
+            return
+        if self.path == "/api/summary":  # public curated view for the /status page
+            self._send(200, REFRESHER.public_summary())
             return
         m = re.fullmatch(r"/api/status/(\d{8})", self.path)
         if m:
