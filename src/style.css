@@ -172,6 +172,8 @@ a:hover { text-decoration: underline; }
 .status-sep { height: .6rem; }
 .status-note { margin: .3rem 0; font-size: .9rem; }
 .status-note-off { color: var(--muted); font-style: italic; }
+.status-note-ok { color: var(--status-ok); }
+.status-note-warn { color: var(--status-warn); }
 
 /* --- A-Z browse --- */
 .browse { max-width: var(--maxw); margin: 0 auto; padding: 1.5rem 1.2rem 4rem; }

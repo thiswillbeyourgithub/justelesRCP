@@ -39,6 +39,13 @@
     return Math.round(n).toLocaleString("fr-FR");
   }
 
+  // A pages/min rate string, or null when unknown/zero. One decimal below 10 (small
+  // crawl rates lose all meaning rounded to an integer), integer above.
+  function pm(n) {
+    if (typeof n !== "number" || !isFinite(n) || n <= 0) return null;
+    return (n < 10 ? n.toFixed(1) : num(n)) + " pages/min";
+  }
+
   // A short French duration: up to two units (j/h/min/s), rounded down.
   function dur(seconds) {
     if (typeof seconds !== "number" || !isFinite(seconds) || seconds < 0) return "-";
@@ -154,6 +161,8 @@
         " (" + (gap.embedded_pct || 0).toFixed(1) + " %)"));
       frag.appendChild(metric("En attente d'indexation", num(gap.awaiting_embed),
         gap.awaiting_embed ? "warn" : ""));
+      if (gap.awaiting_embed > 0 && gap.backlog_eta_seconds > 0)
+        frag.appendChild(metric("Résorption du retard estimée", "~ " + dur(gap.backlog_eta_seconds)));
       frag.appendChild(metric("Dernière vérification", "il y a " + dur(gap.scan_age_seconds)));
       frag.appendChild(el("div", "status-sep"));
     }
@@ -163,6 +172,8 @@
       num(b.queue) + " en attente" + (b.running ? ", 1 en cours" : "")));
     frag.appendChild(el("div", "status-sep"));
     frag.appendChild(metric("Pages indexées (depuis le redémarrage)", num(p.embedded)));
+    var idxRate = s.indexing ? pm(s.indexing.pages_per_min) : null;
+    frag.appendChild(metric("Vitesse d'indexation", idxRate || "en cours de mesure"));
     frag.appendChild(metric("Débit moyen", num(p.mean_chars_per_s) + " caractères/s"));
     if (p.skipped) frag.appendChild(metric("Ignorées (déjà à jour)", num(p.skipped)));
     frag.appendChild(metric("Erreurs d'indexation", num(p.errors), p.errors ? "warn" : ""));
@@ -178,6 +189,64 @@
     setBody("body-queries", frag);
   }
 
+  // "Is indexing keeping up with crawling?" - the one gauge that needs BOTH services.
+  // Indexing speed = the embedder's sustained pages/min. Crawl speed = the page
+  // production rate = sum of the enabled lanes STILL SWEEPING (an idle/caught-up lane
+  // adds no new work); when the refresh service is down no crawling happens, so its
+  // production is treated as 0. The ratio + catch-up ETA assume the worst case that
+  // every explored page must be re-indexed (true during a fresh seed / forced
+  // re-crawl, which is exactly when indexing can fall behind).
+  function renderCatchup(crawlS, embedS) {
+    if (!embedS) return;  // embed service down: renderDown already filled body-catchup
+    var frag = document.createDocumentFragment();
+    var gap = embedS.crawl_gap;
+    var idxPm = (embedS.indexing && embedS.indexing.pages_per_min) || 0;
+    var backlog = gap ? gap.awaiting_embed : 0;
+
+    var crawlPm = 0, crawlKnown = !!crawlS;
+    if (crawlS) {
+      [crawlS.crawl, crawlS.crawl_eu].forEach(function (g) {
+        if (g && g.enabled && !g.idle) crawlPm += (g.pages_per_min || 0);
+      });
+    }
+    var net = idxPm - crawlPm;  // pages/min the backlog shrinks by
+
+    var head = el("div", "status-lane-head");
+    head.appendChild(el("h3", "status-lane-title", "L'indexation rattrape-t-elle l'exploration ?"));
+    if (backlog <= 0) head.appendChild(badge("à jour", "ok"));
+    else if (!idxPm) head.appendChild(badge("mesure en cours", "run"));
+    else if (net > 0) head.appendChild(badge("rattrapage en cours", "run"));
+    else head.appendChild(badge("ne rattrape pas", "warn"));
+    frag.appendChild(head);
+
+    frag.appendChild(metric("Vitesse d'indexation", pm(idxPm) || "en cours de mesure"));
+    frag.appendChild(metric("Vitesse d'exploration",
+      crawlKnown ? (pm(crawlPm) || "à l'arrêt (tout est à jour)") : "inconnue (service arrêté)"));
+    if (idxPm > 0 && crawlKnown && crawlPm > 0) {
+      var ratio = idxPm / crawlPm;
+      frag.appendChild(metric("Rapport indexation / exploration",
+        (ratio < 10 ? ratio.toFixed(1) : num(ratio)) + " ×", ratio >= 1 ? "" : "warn"));
+    }
+
+    if (backlog > 0) {
+      frag.appendChild(el("div", "status-sep"));
+      frag.appendChild(metric("Pages en attente d'indexation", num(backlog), "warn"));
+      if (!idxPm) {
+        frag.appendChild(note("Vitesse d'indexation en cours de mesure…"));
+      } else if (net > 0) {
+        frag.appendChild(metric("Rattrapage complet estimé", "~ " + dur(backlog / net * 60)));
+      } else {
+        frag.appendChild(metric("Rattrapage complet estimé", "jamais au rythme actuel", "warn"));
+        frag.appendChild(note("L'exploration produit de nouvelles pages au moins aussi vite " +
+          "que l'indexation ne les traite.", "warn"));
+      }
+    } else {
+      frag.appendChild(note("L'indexation est à jour avec l'exploration : chaque page " +
+        "explorée est indexée peu après.", "ok"));
+    }
+    setBody("body-catchup", frag);
+  }
+
   function renderDown(ids, msg) {
     ids.forEach(function (id) { setBody(id, note(msg, "off")); });
   }
@@ -190,20 +259,25 @@
 
   function tick() {
     var uptimes = [];
+    var crawlS = null, embedS = null;
     var pRefresh = getJSON(SUMMARY_URL).then(function (s) {
-      renderCrawl(s); renderRefresh(s);
+      crawlS = s; renderCrawl(s); renderRefresh(s);
       if (typeof s.uptime_seconds === "number") uptimes.push(s.uptime_seconds);
     }).catch(function () {
+      crawlS = null;
       renderDown(["body-crawl", "body-refresh"], "Service de rafraîchissement indisponible.");
     });
     var pEmbed = getJSON(SEM_URL).then(function (s) {
-      renderEmbed(s); renderQueries(s);
+      embedS = s; renderEmbed(s); renderQueries(s);
       if (typeof s.uptime_seconds === "number") uptimes.push(s.uptime_seconds);
     }).catch(function () {
-      renderDown(["body-embed", "body-queries"], "Service d'indexation indisponible.");
+      embedS = null;
+      renderDown(["body-embed", "body-catchup", "body-queries"], "Service d'indexation indisponible.");
     });
 
     Promise.all([pRefresh, pEmbed]).then(function () {
+      // The catch-up gauge needs both summaries; render it once both have settled.
+      renderCatchup(crawlS, embedS);
       var updated = document.getElementById("status-updated");
       if (!updated) return;
       var t = new Date().toLocaleTimeString("fr-FR");
