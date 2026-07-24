@@ -10,7 +10,7 @@
 
 *Read this in [English](README.en.md).*
 
-**Juste les résumés des caractéristiques du produit.** Un site statique rapide,
+**Juste les RCP**. Un site statique rapide,
 sans pub et sans compte, qui donne accès aux RCP (résumés des caractéristiques du
 produit) des médicaments vendus en France. L'objectif : aider soignants et
 patients à trouver plus vite une information fiable et officielle, sans publicité

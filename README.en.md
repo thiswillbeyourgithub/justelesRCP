@@ -10,8 +10,8 @@
 
 *Lire ceci en [français](README.md).*
 
-**Just the summaries of product characteristics.** A fast, ad-free, no-account
-static site giving access to the RCP (résumés des caractéristiques du produit,
+**Juste les RCP (=Only the SmPC)**. A fast, ad-free, no-account
+static site giving access to the SmPC (Summaries of Product characteristics, french: RCP stands for *résumés des caractéristiques du produit*,
 i.e. the summaries of product characteristics) of medicines sold in France. The
 goal: help clinicians and patients find reliable, official information faster,
 without ads and without sacrificing their privacy. A lightweight alternative to
