@@ -331,8 +331,14 @@
 
   function markSeen() { try { localStorage.setItem(SEEN_KEY, "1"); } catch (e) {} }
 
+  // "A tour is on screen right now". The only other greeter, changelog.js, stands
+  // down on this flag instead of guessing from our localStorage key (which it cannot
+  // read correctly: a reader landing straight on a drug page never sets it).
+  function setActive(on) { window.__TOUR_ACTIVE__ = !!on; }
+
   function endTour() {
     markSeen();
+    setActive(false);
     try { sessionStorage.removeItem(RESUME_KEY); } catch (e) {}
     teardownDom();
     track("tour-fin", {});
@@ -717,7 +723,7 @@
     if (main && main.dataset.cis === QUET_CIS) {
       var resume = false;
       try { resume = sessionStorage.getItem(RESUME_KEY) === "rcp"; } catch (e) {}
-      if (resume || tourParam === "rcp") startRcp();
+      if (resume || tourParam === "rcp") { setActive(true); startRcp(); }
       return;
     }
 
@@ -735,6 +741,7 @@
       // cover the tour (the demo types into it programmatically, no focus needed). This
       // catches the "?tour=1" navigation, which reloads the page and re-fires autofocus.
       if (back || auto) {
+        setActive(true);
         var q = qs("#q");
         if (q) { try { q.blur(); } catch (e) {} }
       }

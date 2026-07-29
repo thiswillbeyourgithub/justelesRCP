@@ -557,7 +557,7 @@ Key facts that aren't obvious from a single file:
   convention), and it may end with the commit sha(s) it came from in brackets
   (`[47a9986, 224f699]`), which the popup turns into GitHub commit links.
   `load_changelog()` compiles every note into `dist/changelog.json`
-  (`{current, commit_url, categories, releases[]}`, newest-first) via
+  (`{commit_url, categories, releases[]}`, newest-first) via
   `write_changelog()`, and is ALSO the release GATE: it is called at the TOP of
   `main()` and `SystemExit`s when the current `__version__` has no notes, so a bump
   can never ship silently and a malformed note fails in a second instead of after a
@@ -568,9 +568,15 @@ Key facts that aren't obvious from a single file:
   and, when `window.__APP_VERSION__` is newer, fetches `changelog.json` and opens a
   modal with EVERY release since the stored one, then stores the new version. A
   FIRST-time visitor sees nothing (no "since" to show, and the tour greets them
-  instead): the version is stored silently. It also stands down while a tour runs
-  (`?tour=` or no `jlrcp_tour_seen`), WITHOUT storing, so the notes survive to the
-  next visit. It fetches `changelog.json` only when it has something to show. The
+  instead): the version is stored silently. It also stands down while a tour runs,
+  WITHOUT storing, so the notes survive to the next visit: `src/tour.js` publishes
+  `window.__TOUR_ACTIVE__` when it actually starts one and clears it in `endTour`,
+  and `changelog.js` reads THAT (never `jlrcp_tour_seen`, which the tour only writes
+  on the home/quetiapine pages: sniffing it suppressed the popup FOREVER for the
+  reader who lands straight on a drug page from a search engine). To make that flag
+  order-proof, `changelog.js` boots on `DOMContentLoaded`, which fires after every
+  deferred script has run, so the `<script>` tag order does not matter.
+  It fetches `changelog.json` only when it has something to show. The
   modal body is the only scrolling part (a long history never outgrows the viewport),
   each release headed by its version + French-formatted date, and a **"Tout afficher"**
   button expands the "since" view into the full history. `[data-changelog]` elements
@@ -582,7 +588,12 @@ Key facts that aren't obvious from a single file:
   gate + the `changelog.js` entry in `static_assets` (build.py), `src/changelog.js`,
   the `<script src="/changelog.js">` tag in all five `src/*.html`, the
   `[data-changelog]` buttons in `src/a-propos.html` + `src/index.html`,
-  `.changelog-*` in `style.css`, and `test_changelog_*` in `src/test_embed.py`.
+  `.changelog-*` in `style.css`, `setActive`/`__TOUR_ACTIVE__` in `src/tour.js`, the
+  changelog skip in `app-init.js`'s delegated click tracker (its own events would
+  otherwise be double-counted, exactly like `.semsearch`), and `test_changelog_*` in
+  `src/test_embed.py`. Note the served JSON carries only the FRENCH half of each
+  bullet + the French category labels: the English lines stay in the markdown for
+  developers, so they are not downloaded by every reader.
 - **`/a-propos` is a static About page** (`src/a-propos.html`, shipped as a
   static asset): what the site is, the author, a privacy/hosting note, and a
   direct link to the GitHub repo. (`SOURCE_URL` still drives the separate "Code

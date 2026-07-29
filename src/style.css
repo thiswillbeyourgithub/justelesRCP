@@ -162,7 +162,6 @@ a:hover { text-decoration: underline; }
 .changelog-items li { margin: .25rem 0; }
 /* Commit link: small, monospace, unobtrusive; for the curious reader only. */
 .changelog-sha { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .75rem; color: var(--muted); }
-.changelog-empty { color: var(--muted); margin: 0; }
 .changelog-foot {
   display: flex; justify-content: flex-end; gap: .6rem;
   padding: .7rem 1.1rem 1rem; border-top: 1px solid var(--line);

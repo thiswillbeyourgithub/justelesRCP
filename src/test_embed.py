@@ -1031,6 +1031,12 @@ def test_changelog_requires_notes_for_the_current_version():
     assert build.__version__ in versions, "the current version must have release notes"
     # Sorting is numeric, not lexicographic (0.9.0 < 0.10.0).
     assert build._version_key("0.9.0") < build._version_key("0.10.0")
+    # The SERVED payload is French-only (the English bullet stays in the markdown, for
+    # developers) and carries no "current": the client keys off window.__APP_VERSION__.
+    assert set(payload) == {"commit_url", "categories", "releases"}
+    assert all(isinstance(v, str) for v in payload["categories"].values())
+    item = payload["releases"][0]["sections"][0]["items"][0]
+    assert set(item) == {"fr", "commits"} and item["fr"]
     try:
         build.load_changelog("99.0.0")
     except SystemExit:

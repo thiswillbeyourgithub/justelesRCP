@@ -434,6 +434,10 @@
       // here so a result snippet (page text) never becomes an event label and nav
       // clicks are not double-counted.
       if (el.closest(".semsearch")) return;
+      // Same deal for the "Quoi de neuf ?" popup: changelog.js emits its own
+      // (changelog-ouvert, changelog-tout-afficher), so skip its opener and its
+      // controls here rather than counting every click twice under two names.
+      if (el.closest(".changelog-overlay") || el.hasAttribute("data-changelog")) return;
       const label = (
         el.getAttribute("data-track") ||
         el.getAttribute("aria-label") ||

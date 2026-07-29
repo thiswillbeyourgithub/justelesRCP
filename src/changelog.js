@@ -25,16 +25,15 @@
   "use strict";
 
   var SEEN_KEY = "jlrcp_changelog_seen"; // last version whose notes were shown here
-  var TOUR_SEEN_KEY = "jlrcp_tour_seen"; // absent = first visit, the tour will run
   var data = null; // the parsed changelog.json, fetched at most once
   var overlay = null; // the open popup, if any
 
-  function ls(get, key, val) {
-    try {
-      return get ? localStorage.getItem(key) : localStorage.setItem(key, val);
-    } catch (e) {
-      return null; // private mode / storage disabled: degrade to "never auto-open"
-    }
+  // private mode / storage disabled: degrade to "never auto-open"
+  function lsGet(key) {
+    try { return localStorage.getItem(key); } catch (e) { return null; }
+  }
+  function lsSet(key, val) {
+    try { localStorage.setItem(key, val); } catch (e) {}
   }
   function track(name, extra) {
     try {
@@ -70,16 +69,18 @@
   // ---- rendering -----------------------------------------------------------
   function renderRelease(rel) {
     var box = el("section", "changelog-release");
-    var h = el("h3", "changelog-version");
-    h.appendChild(el("span", "changelog-num", "Version " + rel.version));
+    // .changelog-version is a flex row, so the bare version text is already an
+    // item next to the date; it needs no wrapper span of its own.
+    var h = el("h3", "changelog-version", "Version " + rel.version);
     h.appendChild(el("span", "changelog-date", frDate(rel.date)));
     box.appendChild(h);
     (rel.sections || []).forEach(function (sec) {
-      var cat = (data.categories || {})[sec.key] || {};
-      box.appendChild(el("h4", "changelog-cat", cat.fr || cat.en || sec.key));
+      // The French category labels ride in the JSON (build.py CHANGELOG_CATEGORIES),
+      // so this file keeps no copy of that table.
+      box.appendChild(el("h4", "changelog-cat", (data.categories || {})[sec.key] || sec.key));
       var ul = el("ul", "changelog-items");
       (sec.items || []).forEach(function (it) {
-        var li = el("li", null, it.fr || it.en);
+        var li = el("li", null, it.fr);
         (it.commits || []).forEach(function (sha) {
           var a = el("a", "changelog-sha", sha.slice(0, 7));
           a.href = (data.commit_url || "") + sha;
@@ -97,22 +98,21 @@
   }
 
   // `since` = show only releases newer than that version (null = show everything).
+  // Built into a fragment and inserted once, so the "Tout afficher" expansion (which
+  // refills an already-displayed, scrolling body) costs one insertion, not one per release.
   function fill(body, since) {
-    body.textContent = "";
-    var shown = 0;
+    var frag = document.createDocumentFragment();
     (data.releases || []).forEach(function (rel) {
-      if (since && cmp(rel.version, since) <= 0) return;
-      body.appendChild(renderRelease(rel));
-      shown++;
+      if (!since || cmp(rel.version, since) > 0) frag.appendChild(renderRelease(rel));
     });
-    if (!shown) body.appendChild(el("p", "changelog-empty", "Aucune nouveauté à afficher."));
-    return shown;
+    body.textContent = "";
+    body.appendChild(frag);
   }
 
   function close() {
     if (!overlay) return;
     document.removeEventListener("keydown", onKey, true);
-    if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+    overlay.remove();
     overlay = null;
   }
 
@@ -196,22 +196,25 @@
 
     var cur = window.__APP_VERSION__;
     if (!cur) return; // app-version.js missing (dev): nothing to compare against
-    var seen = ls(true, SEEN_KEY);
-    if (!seen) { ls(false, SEEN_KEY, cur); return; } // first visit: store, stay quiet
+    var seen = lsGet(SEEN_KEY);
+    if (!seen) { lsSet(SEEN_KEY, cur); return; } // first visit: store, stay quiet
     if (cmp(seen, cur) >= 0) return; // up to date (or a rollback): nothing to say
-    // Don't stack a popup on top of the guided tour.
-    var tourParam = null;
-    try { tourParam = new URLSearchParams(window.location.search).get("tour"); } catch (e) {}
-    if (tourParam || !ls(true, TOUR_SEEN_KEY)) return; // keep the notes for next time
+    // Don't stack a popup on top of the guided tour: tour.js publishes this flag when
+    // it actually starts one (WITHOUT storing our version, so the notes survive to the
+    // next visit). We ask whether a tour is running now, not whether one was ever seen.
+    if (window.__TOUR_ACTIVE__) return;
     load(function () {
-      ls(false, SEEN_KEY, cur);
+      lsSet(SEEN_KEY, cur);
       open(seen);
     });
   }
 
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", boot);
-  } else {
+  // Boot on DOMContentLoaded, never inline: deferred scripts all run BEFORE that event,
+  // so tour.js has set (or not set) __TOUR_ACTIVE__ by the time we read it, whatever the
+  // order of the <script> tags on the page.
+  if (document.readyState === "complete") {
     boot();
+  } else {
+    document.addEventListener("DOMContentLoaded", boot);
   }
 })();

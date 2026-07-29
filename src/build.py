@@ -52,7 +52,7 @@ from lxml import html as lxml_html
 
 import bdpm  # shared, pure-stdlib BDPM tokenising + frequency scoring
 
-__version__ = "0.55.0"  # single source of truth; bump patch/minor per change
+__version__ = "0.55.1"  # single source of truth; bump patch/minor per change
 
 # This script lives in ``src/`` (alongside the frontend templates it renders), so the
 # repo root is its parent's parent; data/, src/ and dist/ all hang off that root. In the
@@ -1793,8 +1793,8 @@ CHANGELOG_DIR = ROOT / "docs" / "changelog"
 # hardcode the repo (same repo as the "Code source" link on /a-propos).
 COMMIT_URL = "https://github.com/thiswillbeyourgithub/justelesRCP/commit/"
 # The only four categories a release note may use, in display order: (key, the H2 the
-# markdown must use, the French label the popup shows). Both labels ride in the JSON
-# so the client has no copy of this table.
+# markdown must use, the French label the popup shows). The French label rides in the
+# JSON so the client has no copy of this table; the English H2 is authoring grammar.
 CHANGELOG_CATEGORIES = (
     ("features", "New features", "Nouveautés"),
     ("improvements", "Improvements", "Améliorations"),
@@ -1825,8 +1825,8 @@ def parse_changelog(text: str, version: str, where: str = "changelog") -> dict:
     `[sha]` / `[sha, sha]` is optional. Raises ValueError on anything else."""
     labels = {en: key for key, en, _ in CHANGELOG_CATEGORIES}
     date = ""
-    sections: list[dict] = []
-    section: dict | None = None
+    buckets: dict[str, list[dict]] = {}  # category key -> its bullets, one bucket per '##'
+    items: list[dict] | None = None  # the bucket the bullets currently land in
     item: dict | None = None
     for num, raw in enumerate(text.splitlines(), 1):
         line = raw.strip()
@@ -1849,13 +1849,12 @@ def parse_changelog(text: str, version: str, where: str = "changelog") -> dict:
                     f"{pos}: unknown category {title!r}; use one of "
                     + ", ".join(repr(en) for _, en, _ in CHANGELOG_CATEGORIES)
                 )
-            if any(s["key"] == labels[title] for s in sections):
+            if labels[title] in buckets:
                 raise ValueError(f"{pos}: category {title!r} appears twice")
-            section = {"key": labels[title], "items": []}
-            sections.append(section)
+            items = buckets[labels[title]] = []
             item = None
         elif line.startswith("- "):
-            if section is None:
+            if items is None:
                 raise ValueError(f"{pos}: bullet outside any '## <category>' section")
             body = line[2:].strip()
             commits: list[str] = []
@@ -1866,7 +1865,7 @@ def parse_changelog(text: str, version: str, where: str = "changelog") -> dict:
             if not body:
                 raise ValueError(f"{pos}: empty bullet")
             item = {"en": body, "fr": "", "commits": commits}
-            section["items"].append(item)
+            items.append(item)
         elif line.startswith("fr:"):
             if item is None:
                 raise ValueError(f"{pos}: 'fr:' line before any bullet")
@@ -1879,16 +1878,20 @@ def parse_changelog(text: str, version: str, where: str = "changelog") -> dict:
             raise ValueError(f"{pos}: unexpected line {line[:60]!r}")
     if not date:
         raise ValueError(f"{where}: missing '# <version> - <YYYY-MM-DD>' title")
-    if not sections:
+    if not buckets:
         raise ValueError(f"{where}: no '## <category>' section")
-    for s in sections:
-        if not s["items"]:
-            raise ValueError(f"{where}: category {s['key']!r} has no bullet")
-        for it in s["items"]:
+    # Emit in the canonical CHANGELOG_CATEGORIES order, whatever order the file used.
+    sections = []
+    for key, _, _ in CHANGELOG_CATEGORIES:
+        got = buckets.get(key)
+        if got is None:
+            continue
+        if not got:
+            raise ValueError(f"{where}: category {key!r} has no bullet")
+        for it in got:
             if not it["fr"]:
                 raise ValueError(f"{where}: bullet {it['en'][:40]!r} has no 'fr:' line")
-    order = [key for key, _, _ in CHANGELOG_CATEGORIES]
-    sections.sort(key=lambda s: order.index(s["key"]))
+        sections.append({"key": key, "items": got})
     return {"version": version, "date": date, "sections": sections}
 
 
@@ -1915,11 +1918,24 @@ def load_changelog(current: str = __version__) -> dict:
             f"docs/changelog/{current}/changelog.md (see an existing one for the format)"
         )
     releases.sort(key=lambda r: _version_key(r["version"]), reverse=True)
+    # Only the French half is served: the site is French, so a bullet's English line is
+    # authoring material (it stays in the markdown, where a developer reads it) and would
+    # be dead weight in every reader's download. The client keys off window.__APP_VERSION__,
+    # so the payload carries no "current" version of its own.
+    def served(rel: dict) -> dict:
+        sections = [
+            {
+                "key": s["key"],
+                "items": [{"fr": it["fr"], "commits": it["commits"]} for it in s["items"]],
+            }
+            for s in rel["sections"]
+        ]
+        return {"version": rel["version"], "date": rel["date"], "sections": sections}
+
     return {
-        "current": current,
         "commit_url": COMMIT_URL,
-        "categories": {key: {"en": en, "fr": fr} for key, en, fr in CHANGELOG_CATEGORIES},
-        "releases": releases,
+        "categories": {key: fr for key, _, fr in CHANGELOG_CATEGORIES},
+        "releases": [served(r) for r in releases],
     }
 
 
