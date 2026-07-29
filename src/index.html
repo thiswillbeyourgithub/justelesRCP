@@ -50,9 +50,10 @@
   (BDPM, ANSM), réutilisée sous <a href="https://www.etalab.gouv.fr/licence-ouverte-open-licence/" target="_blank" rel="noopener">Licence Ouverte / Etalab 2.0</a>.
   Réutilisation sans caractère officiel, non affiliée à l'ANSM. Ne remplace pas un avis médical. Généré avec l'aide de Claude Code.</p>
   <p class="credit">par <a href="https://olicorne.org/fr" rel="noopener">Olivier Cornelis</a></p>
-  <p><a href="/?tour=1">Visite guidée</a> · <a href="/status">Statut du service</a>
-  · <button type="button" class="changelog-link" data-changelog>Nouveautés</button></p>
-  <p class="ver" data-app-version></p>
+  <p><a href="/?tour=1">Visite guidée</a> · <a href="/status">Statut du service</a></p>
+  <!-- The version slot is its own span: app-init.js sets its textContent, which would
+       wipe the "Nouveautés" button if the button were nested inside it. -->
+  <p class="ver"><span data-app-version></span> · <button type="button" class="changelog-link" data-changelog>Nouveautés</button></p>
 </footer>
 <script src="/search.js" defer></script>
 <script src="/tour.js" defer></script>

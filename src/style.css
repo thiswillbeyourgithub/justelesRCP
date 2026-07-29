@@ -153,7 +153,17 @@ a:hover { text-decoration: underline; }
 }
 .changelog-close:hover { color: var(--fg); }
 .changelog-sub { margin: 0; padding: 0 1.1rem; color: var(--muted); font-size: .85rem; }
-.changelog-body { overflow-y: auto; padding: .8rem 1.1rem; }
+/* overscroll-behavior: contain stops the scroll from CHAINING to the page once this
+   box hits its top/bottom end (the reported bug: keep scrolling the notes and the
+   page slid up behind the popup). The other half of that fix is body.changelog-open
+   below, which freezes the page for a wheel anywhere ELSE over the popup (the title
+   row, the footer), where there is no scrollable box under the pointer at all.
+   min-height: 0 lets this shrink below its content as a column flex item, so the
+   overflow lands here rather than growing the card. */
+.changelog-body {
+  overflow-y: auto; overscroll-behavior: contain; min-height: 0;
+  padding: .8rem 1.1rem;
+}
 .changelog-release + .changelog-release { border-top: 1px solid var(--line); margin-top: 1.1rem; padding-top: 1.1rem; }
 .changelog-version { display: flex; flex-wrap: wrap; align-items: baseline; gap: .5rem; margin: 0 0 .4rem; font-size: 1.05rem; }
 .changelog-date { color: var(--muted); font-size: .82rem; font-weight: 400; }
@@ -715,7 +725,9 @@ a:hover { text-decoration: underline; }
 /* Full-screen overlay showing a figure at full size, opened by clicking any image in
    the drug body. The backdrop (cursor: zoom-out) dismisses on click; the image itself
    does not (so pinch-zoom / drag work on mobile). */
-body.lb-open { overflow: hidden; } /* freeze the page behind the overlay */
+/* Freeze the page behind any full-screen overlay (the lightbox, the changelog popup).
+   One rule for both, so a third overlay only has to add its class here. */
+body.lb-open, body.changelog-open { overflow: hidden; }
 .lightbox {
   position: fixed; inset: 0; z-index: 2147483000;
   display: flex; align-items: center; justify-content: center;

@@ -112,6 +112,7 @@
   function close() {
     if (!overlay) return;
     document.removeEventListener("keydown", onKey, true);
+    document.body.classList.remove("changelog-open");
     overlay.remove();
     overlay = null;
   }
@@ -169,6 +170,7 @@
 
     overlay.appendChild(card);
     document.body.appendChild(overlay);
+    document.body.classList.add("changelog-open"); // freeze the page behind the overlay
     document.addEventListener("keydown", onKey, true);
     ok.focus();
     track("changelog-ouvert", { depuis: since || "tout" });
