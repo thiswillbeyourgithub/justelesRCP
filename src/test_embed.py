@@ -162,6 +162,73 @@ def test_merge_small_chunks():
     print("ok  test_merge_small_chunks")
 
 
+def test_merged_chunk_snippet_spans_its_paragraph_run():
+    """A merged chunk's snippet must resolve to the WHOLE run of source paragraphs.
+
+    Regression for the VERATRAN bug: _merge_small folds a short paragraph into its
+    neighbour, so one embedded chunk covers several sibling <p>s. The client's locate()
+    used to return the single block matching the snippet's first 40 chars and
+    displayText() then showed only THAT block, so searching "Fraction de liaison aux
+    protéines" surfaced the right chunk at rank #1 but printed the 42-char paragraph
+    merged in front of it ("Le volume de distribution est de 3,5 l/kg."), hiding the
+    answer. locate() now walks forward consuming the snippet block by block, which only
+    works because the body is a SINGLE-SPACE join of the paragraphs; this test pins both
+    halves of that contract.
+    """
+    paras = [
+        "Le volume de distribution est de 3,5 l/kg.",
+        "La liaison aux proteines est importante, en moyenne de 98 %.",
+        "La demi-vie d'elimination plasmatique du clotiazepam est de 4 heures.",
+        "L'etat d'equilibre des concentrations plasmatiques est atteint des la 5eme dose.",
+    ]
+    sample = (
+        '<div id="textDocument">'
+        '<p class="AmmAnnexeTitre1">5. PROPRIETES PHARMACOLOGIQUES</p>'
+        '<p class="AmmAnnexeTitre3">Distribution</p>'
+        + "".join(f'<p class="AmmCorpsTexte">{p}</p>' for p in paras)
+        + "</div>"
+    )
+    chunks = build.section_chunks(sample)
+    hit = [c for c in chunks if "liaison aux proteines" in c[2]]
+    assert len(hit) == 1, chunks
+    sec_id, snippet, _text = hit[0]
+    assert sec_id == "sec-0", sec_id
+
+    # The short lead paragraph was merged in, so the snippet reaches past it. Without
+    # this the bug cannot occur at all and the rest of the test would be vacuous.
+    assert snippet.startswith(paras[0]), snippet
+    assert len(snippet) > len(paras[0]), snippet
+
+    # Re-implement locate()'s consume-walk over the rendered paragraphs (see
+    # rcp-semsearch.js). It must land on the run that actually holds the answer.
+    needle = snippet[:40]
+    run, rest = [], ""
+    for i, para in enumerate(paras):
+        at = para.find(needle)
+        if at == -1:
+            continue
+        run = [para]
+        rest = snippet[len(para) - at:].strip()
+        for nxt in paras[i + 1:]:
+            if not rest:
+                break
+            if rest.startswith(nxt):        # wholly inside the snippet: keep walking
+                run.append(nxt)
+                rest = rest[len(nxt):].strip()
+            elif nxt.startswith(rest):      # the truncated tail lands here: last block
+                run.append(nxt)
+                rest = ""
+                break
+            else:
+                break
+        break
+    assert run[0] == paras[0], run
+    assert any("liaison aux proteines" in p for p in run), run
+    # displayText() joins the run, so the reader sees the sentence they searched for.
+    assert "liaison aux proteines" in " ".join(run)
+    print("ok  test_merged_chunk_snippet_spans_its_paragraph_run")
+
+
 def test_dsfr_backtotop_chrome_stripped():
     # Fresh ANSM scrapes carry DSFR back-to-top links + tooltip spans whose visible
     # text is "Redirection vers le haut de page". They must not pollute the chunks.
@@ -1054,6 +1121,7 @@ if __name__ == "__main__":
     test_heading_only_section_yields_no_chunk()
     test_heading_path_context_prefix()
     test_merge_small_chunks()
+    test_merged_chunk_snippet_spans_its_paragraph_run()
     test_dsfr_backtotop_chrome_stripped()
     test_filler_paragraphs_dropped()
     test_empty_and_untitled()

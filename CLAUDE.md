@@ -921,9 +921,27 @@ Key facts that aren't obvious from a single file:
   50% similarity") to drop weak matches. Keep the `EMBED_SEM_FLOOR` env in sync across
   `Embedder.sem_floor`/`embed_query`/the `--sem-floor` option (embed-service.py), the
   `floor` field consumed in `src/rcp-semsearch.js`, and `docker/env.example` +
-  `docker/docker-compose.yml`. Each surviving hit
-  shows the FULL on-page passage it resolves to (read from that DOM paragraph via
-  `displayText`; a table-row/heading-resolved hit keeps the stored snippet) plus its
+  `docker/docker-compose.yml`. **A hit resolves to a RUN of DOM blocks, not one
+  paragraph.** One embedded chunk routinely covers several sibling `<p>`s (`_merge_small`
+  folds short paragraphs into their neighbour, and `_sentence_chunks` groups sentences
+  across the whole section body), so `locate(sec, snippet)` anchors on the block holding
+  the snippet's first 40 chars and then WALKS FORWARD consuming the snippet block by
+  block (a block wholly inside it is consumed and the walk continues; the block the
+  TRUNCATED `_SEC_SNIPPET_CHARS` tail lands in ends the run; `MAX_RUN_BLOCKS` bounds it),
+  returning `[el, ...]` (or `[heading]` for a table-row/non-contiguous chunk). That walk
+  only works because build.py joins a chunk body with SINGLE spaces (`_norm_ws(" ".join
+  (...))`); `test_merged_chunk_snippet_spans_its_paragraph_run` pins both halves. Resolving
+  to ONE block was a real bug: on VERATRAN, "Fraction de liaison aux protéines" ranked #1
+  yet displayed as the 42-char paragraph merged in front of it ("Le volume de distribution
+  est de 3,5 l/kg."), hiding the answer. So `hits[]` carries `els` (an array, `els[0]` is
+  the scroll anchor); `displayText` joins EVERY block of the run, `renderHits` tints them
+  all with `.semsearch-hit` but puts `data-semrank` on `els[0]` ALONE (hence the
+  `.semsearch-hit[data-semrank]::after` badge selector in `style.css`: without the
+  attribute gate the other blocks of a run would each print a bare "#"), `setCurrent`
+  marks the whole run `.semsearch-current`, and the `seen` dedup rejects a chunk whose run
+  OVERLAPS an already-claimed block, so every element belongs to exactly one hit. Each
+  surviving hit shows that full passage (a table-row/heading-resolved hit keeps the stored
+  snippet) plus its
   blended relevance small + muted as a percentage (`.semsearch-score`, clamped to 100%,
   tooltip `Score hybride ...` naming BOTH the semantic proximity and the keyword match).
   Consecutive hits from the SAME section print the heading once (`.semsearch-cont`

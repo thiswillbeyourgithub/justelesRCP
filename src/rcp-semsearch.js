@@ -177,7 +177,7 @@
   let pageDim = 0; // dim of this page's section vectors, to guard a model/dim mismatch
   let readyPromise = null;
   let queryController = null; // aborts a superseded /api/sem/embed
-  let hits = []; // [{sec, snippet, score, cosine, lexical, el}]
+  let hits = []; // [{sec, snippet, score, cosine, lexical, els}] (els = the block RUN, see locate)
   let current = -1;
   let highlighted = []; // elements currently tagged, for cleanup
   let lastRanked = ""; // the query behind the current hit list (Enter = next vs search)
@@ -540,9 +540,11 @@
       };
     });
     scored.sort((a, b) => b.score - a.score);
-    // Resolve each to a DOM block, deduping by target element (Set compares by
-    // identity) so two chunks in one paragraph count once; keep up to MAX_RESULTS
-    // distinct passages that clear the semantic floor.
+    // Resolve each to its run of DOM blocks, deduping by target element (Set compares by
+    // identity) so two chunks sharing a paragraph count once; keep up to MAX_RESULTS
+    // distinct passages that clear the semantic floor. Any overlap disqualifies the
+    // later (lower-scoring) chunk, so every highlighted element belongs to exactly one
+    // hit and its #rank badge stays unambiguous.
     clearHits();
     const seen = new Set();
     for (const s of scored) {
@@ -550,16 +552,16 @@
       // Gate on the raw cosine, and `continue` (not `break`): the list is sorted by the
       // HYBRID score, so a lower-cosine item can sit above a higher-cosine one.
       if (s.cosine < semFloor) continue;
-      const el = locate(s.sec, s.snippet);
-      if (!el || seen.has(el)) continue;
-      seen.add(el);
+      const els = locate(s.sec, s.snippet);
+      if (!els || !els.length || els.some((el) => seen.has(el))) continue;
+      for (const el of els) seen.add(el);
       hits.push({
         sec: s.sec,
         snippet: s.snippet,
         score: s.score,
         cosine: s.cosine,
         lexical: s.lexical,
-        el: el,
+        els: els,
       });
     }
     renderHits();
@@ -582,19 +584,56 @@
     setStatus("Cliquez un passage, ou naviguez avec ‹ ›.");
   }
 
-  // Find the block element for a hit: the paragraph within section `secId` whose text
-  // contains the chunk snippet, else the section heading as a fallback (e.g. a
+  // Find the block elements for a hit: the RUN of consecutive paragraphs within section
+  // `secId` that the chunk snippet spans, else [section heading] as a fallback (e.g. a
   // linearised table-row chunk whose text isn't a contiguous DOM string).
+  //
+  // A chunk is NOT one paragraph: build.py's _merge_small folds paragraphs shorter than
+  // _SEC_MERGE_MIN_CHARS into their neighbour, and _sentence_chunks groups whole
+  // sentences across the section body, so one embedded chunk routinely covers several
+  // sibling <p>s. Resolving it to a single element showed the reader only its FIRST
+  // (typically shortest) paragraph and hid the rest: on VERATRAN, "Fraction de liaison
+  // aux protéines" ranked #1 but displayed as "Le volume de distribution est de
+  // 3,5 l/kg.", the 42-char paragraph merged in front of the answer.
+  //
+  // So: anchor on the block holding the snippet's head, then walk forward consuming the
+  // snippet block by block. The stored snippet is TRUNCATED (_SEC_SNIPPET_CHARS), so the
+  // last block only has to START with whatever is left of it. Blocks are joined with a
+  // single space, exactly as build.py's _norm_ws(" ".join(...)) built the body.
+  const MAX_RUN_BLOCKS = 12; // a chunk is ~500 chars; a longer run means we mis-tracked
   function locate(secId, snippet) {
     const head = document.getElementById(secId);
     if (!head) return null;
-    const needle = norm(snippet).slice(0, 40);
+    const hay = norm(snippet);
+    const needle = hay.slice(0, 40);
     if (needle.length >= 8) {
-      for (const el of sectionBlocks(head)) {
-        if (norm(el.textContent).indexOf(needle) !== -1) return el;
+      const blocks = sectionBlocks(head);
+      for (let i = 0; i < blocks.length; i++) {
+        const t0 = norm(blocks[i].textContent);
+        const at = t0.indexOf(needle);
+        if (at === -1) continue;
+        const run = [blocks[i]];
+        // What this first block contributes: from the snippet's head to its own end.
+        let rest = hay.slice(t0.length - at).trim();
+        for (let j = i + 1; rest && j < blocks.length && run.length < MAX_RUN_BLOCKS; j++) {
+          const t = norm(blocks[j].textContent);
+          if (!t) continue; // an empty block breaks no run
+          if (rest.indexOf(t) === 0) {
+            // Wholly inside the snippet: consume it and keep walking.
+            run.push(blocks[j]);
+            rest = rest.slice(t.length).trim();
+          } else if (t.indexOf(rest) === 0) {
+            // The truncated snippet tail lands inside this block: it is the last one.
+            run.push(blocks[j]);
+            break;
+          } else {
+            break; // the snippet does not continue here
+          }
+        }
+        return run;
       }
     }
-    return head; // fallback: scroll to the section title
+    return [head]; // fallback: scroll to the section title
   }
 
   // The leaf-ish block elements belonging to a section: the heading's following
@@ -645,14 +684,17 @@
     nav.hidden = true;
   }
 
-  // The text shown for a hit: the FULL on-page passage it resolved to (chunks are
-  // small, so we show the whole paragraph, not a truncated excerpt). When locate() fell
-  // back to the section heading (a linearised table-row / non-contiguous chunk has no
-  // single paragraph, so hit.el IS the heading and carries the sec-N id), there is
-  // nothing sensible to expand, so use the stored snippet.
+  // The text shown for a hit: the FULL on-page passage it resolved to, i.e. EVERY block
+  // of the run (chunks are small, so we show them whole rather than a truncated
+  // excerpt). Showing only the first block would hide most of what was embedded, which
+  // is exactly the bug locate() now fixes. When locate() fell back to the section
+  // heading (a linearised table-row / non-contiguous chunk has no paragraph run, so the
+  // single element IS the heading and carries the sec-N id), there is nothing sensible
+  // to expand, so use the stored snippet.
   function displayText(hit) {
-    if (hit.el && hit.el.id !== hit.sec) {
-      const full = collapseWs(hit.el.textContent);
+    const first = hit.els[0];
+    if (first && first.id !== hit.sec) {
+      const full = collapseWs(hit.els.map((el) => el.textContent).join(" "));
       if (full) return full;
     }
     return collapseWs(hit.snippet);
@@ -685,11 +727,15 @@
     highlighted = [];
     let prevSec = null; // group consecutive hits that share a section heading
     hits.forEach((hit, i) => {
-      hit.el.classList.add("semsearch-hit");
-      // Floating rank badge on the passage in the text (CSS ::after reads this), so its
-      // relevance rank (#1 best) is visible while scrolling the RCP, not only in the list.
-      hit.el.setAttribute("data-semrank", i + 1);
-      highlighted.push(hit.el);
+      hit.els.forEach((el, k) => {
+        el.classList.add("semsearch-hit");
+        // Floating rank badge on the passage in the text (CSS ::after reads this), so
+        // its relevance rank (#1 best) is visible while scrolling the RCP, not only in
+        // the list. ONE badge per hit: it goes on the run's first block, so a chunk
+        // spanning three paragraphs does not print "#1" three times.
+        if (k === 0) el.setAttribute("data-semrank", i + 1);
+        highlighted.push(el);
+      });
       const sameSection = hit.sec === prevSec;
       const li = document.createElement("li");
       if (sameSection) li.className = "semsearch-cont";
@@ -740,21 +786,21 @@
     if (!hits.length) return;
     current = ((i % hits.length) + hits.length) % hits.length;
     hits.forEach((hit, j) => {
-      hit.el.classList.toggle("semsearch-current", j === current);
+      for (const el of hit.els) el.classList.toggle("semsearch-current", j === current);
     });
     [...results.children].forEach((li, j) => {
       li.classList.toggle("semsearch-current-item", j === current);
     });
     counter.textContent = current + 1 + " / " + hits.length;
     if (scroll) {
-      const hit = hits[current];
+      const target = hits[current].els[0]; // the run's first block is the scroll anchor
       // Open any collapsed <details> ancestor so the target is actually visible.
-      let p = hit.el.parentElement;
+      let p = target.parentElement;
       while (p) {
         if (p.tagName === "DETAILS") p.open = true;
         p = p.parentElement;
       }
-      hit.el.scrollIntoView({ block: "center", behavior: "smooth" });
+      target.scrollIntoView({ block: "center", behavior: "smooth" });
     }
   }
 

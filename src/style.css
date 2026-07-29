@@ -519,8 +519,10 @@ a:hover { text-decoration: underline; }
 /* Floating rank badge (#1, #2 ...) pinned to the top-right of each highlighted passage
    IN THE RCP TEXT (not in the results list), so a reader scrolling the drug body can
    judge each highlighted spot's relevance at a glance. The number mirrors the ordered
-   results list; rcp-semsearch.js sets data-semrank as it tags each paragraph. */
-.semsearch-hit::after {
+   results list; rcp-semsearch.js sets data-semrank on the FIRST block of each hit's
+   paragraph run (a chunk can span several <p>s), so the attribute selector is what
+   keeps the other blocks of the run from each printing a badge of their own. */
+.semsearch-hit[data-semrank]::after {
   content: "#" attr(data-semrank);
   position: absolute; top: -.55rem; right: 0; z-index: 2;
   padding: .02rem .35rem; border-radius: .7rem;
@@ -534,7 +536,7 @@ a:hover { text-decoration: underline; }
   box-shadow: inset 3px 0 0 var(--accent); scroll-margin: 5rem;
 }
 /* The passage the reader is currently on: ring its badge so "you are here" stands out. */
-.semsearch-current::after { outline: 2px solid var(--bg); box-shadow: 0 1px 5px rgba(0, 0, 0, .45); }
+.semsearch-current[data-semrank]::after { outline: 2px solid var(--bg); box-shadow: 0 1px 5px rgba(0, 0, 0, .45); }
 /* Cross-drug backlinks: inline links to other drugs' pages injected into the RCP
    body by build.py (_linkify), and the "Médicaments liés" list at the foot
    (_xref_html). Inline links get a dotted underline so a reader can tell they
