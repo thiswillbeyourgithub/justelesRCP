@@ -30,6 +30,14 @@
     <ul id="results" class="results" role="listbox"></ul>
   </div>
   <p id="status" class="status">Chargement de l'index…</p>
+  <!-- Full results page: filled by search.js when the URL carries a query (/?q=sertraline,
+       ?query= accepted as an alias) or when the reader hits Enter without picking a
+       dropdown entry. That URL is the shareable "all the sertraline drugs" link. -->
+  <section id="searchpage" class="searchpage" hidden>
+    <h2 id="searchpage-title" class="searchpage-title"></h2>
+    <p id="searchpage-note" class="searchpage-note"></p>
+    <ol id="searchpage-results" class="results open searchpage-results"></ol>
+  </section>
   <p class="browse-link"><a href="/?tour=1">Suivre la visite guidée</a></p>
   <p class="browse-link">Exemple : <a href="/rcp/60424338-amoxicilline-viatris-500-mg-gelule">amoxicilline Viatris 500 mg, gélule</a></p>
   <p class="browse-link"><a href="/browse/">Parcourir tous les médicaments de A à Z</a></p>

@@ -131,6 +131,30 @@ Key facts that aren't obvious from a single file:
   architecture). Keep the `sub`/`ret` contract in sync across the search-index
   enrichment (build.py), `search.js`, and `.result-sub`/`.result-name`/
   `.result-retired` in `style.css`.
+  **Two views, one matcher: the dropdown and the shareable results page.** The
+  as-you-type dropdown (`#results`, top 15) is the quick-pick list; the RESULTS PAGE
+  (`#searchpage` in `src/index.html`, up to `PAGE_MAX` = 300 rows + an exact match
+  count) is the linkable "every sertraline drug" view, so an outside page can link
+  to `/?q=sertraline` instead of a single drug (`?query=` is accepted as an alias,
+  `q` is what we write). It is NOT a separate build output: it is a hidden `<section>`
+  on the home page that `search.js` fills, so the site stays static and the SEO story
+  is unchanged (the home canonical still points at `/`, so a query URL is not a
+  duplicate page). Both views render rows through the SAME `resultItem()` and rank
+  through the SAME `search(term, limit, full)` (`full` scans the whole index for the
+  exact count; the dropdown stops early), so they can never drift. It shows on
+  arrival at a `?q=` URL, and on **Enter with no arrow-selected suggestion**
+  (arrow-selecting a drug and pressing Enter still opens that drug); `showPage()`
+  pushes the `/?q=…` URL so the view is bookmarkable and Back works (a `popstate`
+  handler restores it), sets the document title to "<term> - Recherche -
+  justelesRCP", blurs the input (mobile keyboard) and adds `body.searching` (which
+  tightens the hero). Arriving on a `?q=`/`?query=` URL ALSO suppresses the tour's
+  first-visit auto-popup in `src/tour.js` (`boot()`'s `shared`/`auto`): someone
+  following a shared result list must not get a modal over it; an explicit `?tour=1`
+  still runs. The `WebSite`/`SearchAction` JSON-LD `urlTemplate` `/?q={search_term_string}`
+  (build.py `_website_jsonld`) now resolves to this page. Keep the results-page
+  contract in sync across `search.js` (`urlTerm`/`search`/`resultItem`/`renderPage`/
+  `showPage`), the `#searchpage` markup in `src/index.html`, `.searchpage*` +
+  `.home.searching` in `style.css`, and the auto-start gate in `src/tour.js`.
 - **Names come from `CIS_bdpm.txt`**, falling back to the `AmmDenomination`
   parsed from the RCP HTML when the mapping is missing. See `load_names()`.
 - **Cross-drug backlinks link one RCP to another.** `build_xref_index()` builds,
@@ -974,7 +998,9 @@ Key facts that aren't obvious from a single file:
   its target into view (`afterScrollSettles` polls the scroll offset, gated by `revealPending`
   + a `scrollGen` token) and only fades in once the page is stationary, so the rect appears
   at rest instead of chasing the target across a moving page.
-  Triggers: auto on first landing visit (`localStorage['jlrcp_tour_seen']`), `?tour=1`
+  Triggers: auto on first landing visit (`localStorage['jlrcp_tour_seen']`, but NOT
+  when the URL carries a `q`/`query` search term: a reader following a shared results
+  link must not get a modal over it, see the results-page bullet), `?tour=1`
   on the landing page (always), or `?tour=rcp` directly on the quetiapine page. It
   drives the closure-encapsulated semantic search purely via the DOM (set `.open`, set
   `.semsearch-input.value` + dispatch `input`, then click the `.semsearch-go` button to

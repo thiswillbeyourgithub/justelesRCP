@@ -113,6 +113,16 @@ a:hover { text-decoration: underline; }
    warn-tinted, so the reader sees at a glance the page is our archived 2022 copy. */
 .result-retired { color: #b45309; font-size: .82em; font-weight: 600; }
 .status { color: var(--muted); font-size: .85rem; margin-top: 1.2rem; }
+/* Full results page (/?q=term, #searchpage in index.html): the same rows as the
+   dropdown (it reuses .results, so borders/padding/DCI subtitle stay identical),
+   just a long left-aligned list under the box instead of a short overlay. The hero
+   tightens up while it is shown (body.searching) so the list starts near the top. */
+.searchpage { text-align: left; margin-top: 1.4rem; }
+.searchpage-title { font-size: 1.1rem; font-weight: 600; margin: 0 0 .3rem; }
+.searchpage-note { color: var(--muted); font-size: .85rem; margin: 0 0 .6rem; }
+.searchpage-results { margin: 0; }
+.home.searching .hero { padding-top: 4vh; }
+.home.searching .tag { display: none; }
 .browse-link { margin-top: 1.6rem; font-size: .95rem; }
 
 /* --- about --- */

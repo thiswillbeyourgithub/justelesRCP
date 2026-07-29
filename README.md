@@ -22,6 +22,9 @@ lents et à but lucratif.
 - Recherche instantanée sur ~15 600 médicaments, plus des pages de navigation
   A-Z pensées pour les moteurs de recherche (plan du site, liens canoniques,
   données structurées et fil d'Ariane sur chaque page).
+- Page de résultats partageable : `justelesrcp.olicorne.org/?q=sertraline` liste tous les
+  médicaments correspondants (nom commercial ou substance active). C'est aussi ce
+  qui s'affiche si vous appuyez sur Entrée sans choisir de suggestion.
 - Visite guidée intégrée : au premier passage (ou via le lien « Visite guidée » en
   bas de page, ou l'adresse `?tour=1`), un tour interactif présente la recherche,
   puis, sur un exemple concret, les dates de mise à jour, la source officielle, le

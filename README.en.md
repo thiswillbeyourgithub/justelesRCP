@@ -22,6 +22,9 @@ slow, for-profit medicine sites.
 - Instant search over ~15,600 medicines, plus crawlable A-Z browse pages
   built for search engines (sitemap, canonical links, structured data and a
   breadcrumb on every page).
+- Shareable results page: `justelesrcp.olicorne.org/?q=sertraline` lists every matching
+  medicine (by brand name or active substance). It is also what you get by
+  pressing Enter without picking a suggestion.
 - Built-in guided tour: on a first visit (or via the "Visite guidée" footer link,
   or the `?tour=1` URL), an interactive walkthrough introduces the search, then, on
   a concrete example, the update dates, the official source, the table of contents,
