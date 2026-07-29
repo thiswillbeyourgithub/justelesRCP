@@ -17,6 +17,8 @@
 <script src="/app-version.js" defer></script>
 <script src="/app-init.js" defer></script>
 <script src="/dev-banner.js" defer></script>
+<!-- "Quoi de neuf ?" popup: shows the release notes since the reader's last visit. -->
+<script src="/changelog.js" defer></script>
 </head>
 <body>
 <header class="topbar">
@@ -95,6 +97,11 @@
   <p>Le code est ouvert et disponible sur
   <a href="https://github.com/thiswillbeyourgithub/justelesRCP" target="_blank" rel="noopener">GitHub</a>.
   Ce projet a été réalisé avec l'aide de Claude Code.</p>
+
+  <h2>Nouveautés</h2>
+  <p>Les changements de chaque version sont résumés dans le journal des versions :
+  <button type="button" class="changelog-link" data-changelog>voir les nouveautés</button>.
+  Il s'affiche aussi tout seul après une mise à jour du site.</p>
 
   <p><a href="/">← Retour à la recherche</a></p>
   <p class="ver" data-app-version></p>

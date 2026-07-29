@@ -973,6 +973,72 @@ def test_record_hash_changes_when_archived():
     print("ok  test_record_hash_changes_when_archived")
 
 
+def test_changelog_parses_bilingual_bullets_and_shas():
+    """A well-formed release note yields ordered categories, both languages and shas."""
+    md = """# 1.2.3 - 2026-07-29
+
+## Bug fixes
+- Fixed the thing. [abc1234, def5678]
+  fr: Correction du truc.
+
+## New features
+- Added the other thing.
+  fr: Ajout de l'autre truc.
+"""
+    rel = build.parse_changelog(md, "1.2.3")
+    assert rel["version"] == "1.2.3" and rel["date"] == "2026-07-29"
+    # Categories come back in the canonical display order, not the file order.
+    assert [s["key"] for s in rel["sections"]] == ["features", "fixes"]
+    feat = rel["sections"][0]["items"][0]
+    assert feat["en"] == "Added the other thing."
+    assert feat["fr"] == "Ajout de l'autre truc."
+    assert feat["commits"] == []
+    fix = rel["sections"][1]["items"][0]
+    assert fix["en"] == "Fixed the thing." and fix["commits"] == ["abc1234", "def5678"]
+    print("ok  test_changelog_parses_bilingual_bullets_and_shas")
+
+
+def test_changelog_rejects_malformed_notes():
+    """Every authoring mistake must fail the build, not ship a broken popup."""
+    good = "# 1.2.3 - 2026-07-29\n## New features\n- Thing.\n  fr: Truc.\n"
+    build.parse_changelog(good, "1.2.3")  # sanity: the base case parses
+    bad = {
+        "version mismatch": ("# 1.2.4 - 2026-07-29\n## New features\n- T.\n  fr: T.\n", "1.2.3"),
+        "no date": ("# 1.2.3\n## New features\n- T.\n  fr: T.\n", "1.2.3"),
+        "unknown category": ("# 1.2.3 - 2026-07-29\n## Random\n- T.\n  fr: T.\n", "1.2.3"),
+        "missing fr line": ("# 1.2.3 - 2026-07-29\n## New features\n- T.\n", "1.2.3"),
+        "bullet with no category": ("# 1.2.3 - 2026-07-29\n- T.\n  fr: T.\n", "1.2.3"),
+        "empty category": ("# 1.2.3 - 2026-07-29\n## New features\n", "1.2.3"),
+        "no title": ("## New features\n- T.\n  fr: T.\n", "1.2.3"),
+    }
+    for label, (text, version) in bad.items():
+        try:
+            build.parse_changelog(text, version)
+        except ValueError:
+            continue
+        raise AssertionError(f"malformed note accepted: {label}")
+    print("ok  test_changelog_rejects_malformed_notes")
+
+
+def test_changelog_requires_notes_for_the_current_version():
+    """The release gate: bumping __version__ with no notes must stop the build."""
+    payload = build.load_changelog(build.__version__)  # the real repo notes
+    assert payload["releases"], "no release notes found in docs/changelog"
+    assert payload["releases"][0]["version"] == max(
+        (r["version"] for r in payload["releases"]), key=build._version_key
+    ), "releases must come newest-first"
+    versions = [r["version"] for r in payload["releases"]]
+    assert build.__version__ in versions, "the current version must have release notes"
+    # Sorting is numeric, not lexicographic (0.9.0 < 0.10.0).
+    assert build._version_key("0.9.0") < build._version_key("0.10.0")
+    try:
+        build.load_changelog("99.0.0")
+    except SystemExit:
+        print("ok  test_changelog_requires_notes_for_the_current_version")
+        return
+    raise AssertionError("a version with no release notes did not fail the build")
+
+
 if __name__ == "__main__":
     test_load_cap_meta_excludes_decentralised()
     test_clean_substance_strips_salt_hydrate()
@@ -1007,4 +1073,7 @@ if __name__ == "__main__":
     test_rcp_archived_detects_zero_byte_overlay()
     test_iter_rcp_raw_serves_delisted_baseline()
     test_record_hash_changes_when_archived()
+    test_changelog_parses_bilingual_bullets_and_shas()
+    test_changelog_rejects_malformed_notes()
+    test_changelog_requires_notes_for_the_current_version()
     print("\nAll tests passed.")

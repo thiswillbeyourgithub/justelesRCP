@@ -52,7 +52,7 @@ from lxml import html as lxml_html
 
 import bdpm  # shared, pure-stdlib BDPM tokenising + frequency scoring
 
-__version__ = "0.54.0"  # single source of truth; bump patch/minor per change
+__version__ = "0.55.0"  # single source of truth; bump patch/minor per change
 
 # This script lives in ``src/`` (alongside the frontend templates it renders), so the
 # repo root is its parent's parent; data/, src/ and dist/ all hang off that root. In the
@@ -1780,6 +1780,158 @@ def write_robots() -> None:
     compress(out)
 
 
+# --- changelog: docs/changelog/<version>/changelog.md -> dist/changelog.json ---
+# Release notes are AUTHORED per version (one directory per release, so a version's
+# notes land in the same commit as the version bump) and COMPILED here into one small
+# JSON the "Quoi de neuf ?" popup (src/changelog.js) fetches. Notes are written for a
+# casual reader, not for developers: short bullets, four fixed categories, bilingual
+# (the English line is the bullet, the `fr:` line under it the French one the site
+# shows), each bullet carrying the commit sha(s) it came from so the popup can link
+# straight to GitHub for anyone who wants the detail.
+CHANGELOG_DIR = ROOT / "docs" / "changelog"
+# Base of a commit permalink; the compiled JSON carries it so changelog.js does not
+# hardcode the repo (same repo as the "Code source" link on /a-propos).
+COMMIT_URL = "https://github.com/thiswillbeyourgithub/justelesRCP/commit/"
+# The only four categories a release note may use, in display order: (key, the H2 the
+# markdown must use, the French label the popup shows). Both labels ride in the JSON
+# so the client has no copy of this table.
+CHANGELOG_CATEGORIES = (
+    ("features", "New features", "Nouveautés"),
+    ("improvements", "Improvements", "Améliorations"),
+    ("fixes", "Bug fixes", "Corrections"),
+    ("docs", "Documentation", "Documentation"),
+)
+_CL_H1 = re.compile(r"^#\s+v?(\d+\.\d+\.\d+)\s+[-–]\s+(\d{4}-\d{2}-\d{2})\s*$")
+_CL_SHAS = re.compile(r"\[([0-9a-f]{7,40}(?:\s*,\s*[0-9a-f]{7,40})*)\]$")
+
+
+def _version_key(version: str) -> tuple[int, ...]:
+    """Sort key for a `major.minor.patch` string (so 0.9.0 sorts below 0.10.0)."""
+    return tuple(int(p) for p in version.split("."))
+
+
+def parse_changelog(text: str, version: str, where: str = "changelog") -> dict:
+    """Parse ONE release-notes markdown file into {version, date, sections}.
+
+    Grammar (deliberately tiny, so a malformed note fails the build instead of
+    silently shipping an empty popup)::
+
+        # 0.54.0 - 2026-07-29
+        ## New features
+        - Shareable results page. [47a9986]
+          fr: Page de résultats partageable.
+
+    Every bullet needs its French `fr:` line (the site is French); the trailing
+    `[sha]` / `[sha, sha]` is optional. Raises ValueError on anything else."""
+    labels = {en: key for key, en, _ in CHANGELOG_CATEGORIES}
+    date = ""
+    sections: list[dict] = []
+    section: dict | None = None
+    item: dict | None = None
+    for num, raw in enumerate(text.splitlines(), 1):
+        line = raw.strip()
+        pos = f"{where}:{num}"
+        if not line:
+            continue
+        if line.startswith("# "):
+            m = _CL_H1.match(line)
+            if not m:
+                raise ValueError(f"{pos}: title must be '# <version> - <YYYY-MM-DD>'")
+            if m.group(1) != version:
+                raise ValueError(
+                    f"{pos}: title version {m.group(1)} != directory version {version}"
+                )
+            date = m.group(2)
+        elif line.startswith("## "):
+            title = line[3:].strip()
+            if title not in labels:
+                raise ValueError(
+                    f"{pos}: unknown category {title!r}; use one of "
+                    + ", ".join(repr(en) for _, en, _ in CHANGELOG_CATEGORIES)
+                )
+            if any(s["key"] == labels[title] for s in sections):
+                raise ValueError(f"{pos}: category {title!r} appears twice")
+            section = {"key": labels[title], "items": []}
+            sections.append(section)
+            item = None
+        elif line.startswith("- "):
+            if section is None:
+                raise ValueError(f"{pos}: bullet outside any '## <category>' section")
+            body = line[2:].strip()
+            commits: list[str] = []
+            m = _CL_SHAS.search(body)
+            if m:
+                commits = [s.strip() for s in m.group(1).split(",")]
+                body = body[: m.start()].strip()
+            if not body:
+                raise ValueError(f"{pos}: empty bullet")
+            item = {"en": body, "fr": "", "commits": commits}
+            section["items"].append(item)
+        elif line.startswith("fr:"):
+            if item is None:
+                raise ValueError(f"{pos}: 'fr:' line before any bullet")
+            if item["fr"]:
+                raise ValueError(f"{pos}: bullet already has an 'fr:' line")
+            item["fr"] = line[3:].strip()
+            if not item["fr"]:
+                raise ValueError(f"{pos}: empty 'fr:' line")
+        else:
+            raise ValueError(f"{pos}: unexpected line {line[:60]!r}")
+    if not date:
+        raise ValueError(f"{where}: missing '# <version> - <YYYY-MM-DD>' title")
+    if not sections:
+        raise ValueError(f"{where}: no '## <category>' section")
+    for s in sections:
+        if not s["items"]:
+            raise ValueError(f"{where}: category {s['key']!r} has no bullet")
+        for it in s["items"]:
+            if not it["fr"]:
+                raise ValueError(f"{where}: bullet {it['en'][:40]!r} has no 'fr:' line")
+    order = [key for key, _, _ in CHANGELOG_CATEGORIES]
+    sections.sort(key=lambda s: order.index(s["key"]))
+    return {"version": version, "date": date, "sections": sections}
+
+
+def load_changelog(current: str = __version__) -> dict:
+    """Compile docs/changelog/*/changelog.md into the payload served as changelog.json.
+
+    Releases come out newest-first. This is also the build's release-notes GATE:
+    bumping __version__ without writing that version's notes fails the build here,
+    before anything is rendered, so a release can never ship silently."""
+    releases = []
+    if CHANGELOG_DIR.is_dir():
+        for d in sorted(CHANGELOG_DIR.iterdir()):
+            md = d / "changelog.md"
+            if not md.is_file():
+                continue
+            if not re.fullmatch(r"\d+\.\d+\.\d+", d.name):
+                raise ValueError(f"{md}: directory name is not a version")
+            releases.append(
+                parse_changelog(md.read_text(encoding="utf-8"), d.name, str(md))
+            )
+    if not any(r["version"] == current for r in releases):
+        raise SystemExit(
+            f"no release notes for version {current}: write "
+            f"docs/changelog/{current}/changelog.md (see an existing one for the format)"
+        )
+    releases.sort(key=lambda r: _version_key(r["version"]), reverse=True)
+    return {
+        "current": current,
+        "commit_url": COMMIT_URL,
+        "categories": {key: {"en": en, "fr": fr} for key, en, fr in CHANGELOG_CATEGORIES},
+        "releases": releases,
+    }
+
+
+def write_changelog(payload: dict) -> None:
+    """Write dist/changelog.json (+ .gz/.br), fetched by changelog.js on demand."""
+    out = DIST / "changelog.json"
+    out.write_text(
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8"
+    )
+    compress(out)
+
+
 # --- semantic-search: the served .vec.json sidecar -------------------------
 # Per-drug section vectors are computed server-side now (the warm ONNX encoder in
 # embed-service.py, or embed-rcp.py offline), NOT baked from data/emb here. These two
@@ -2864,6 +3016,11 @@ def main() -> None:
         sys.exit(f"missing {CSV_PATH} and {RCP_OVERLAY_DIR} (see README / scripts/download-data.sh)")
 
     print(f"build justelesRCP v{__version__}")
+    # Release-notes gate: parse + validate every docs/changelog/<version>/changelog.md
+    # BEFORE any rendering, so a version bump with no (or malformed) notes fails in a
+    # second instead of after a full rebuild.
+    changelog = load_changelog()
+    print(f"changelog: {len(changelog['releases'])} documented releases")
     names = load_names()
     # CIS that actually render a page (non-empty baseline cell or overlay). Link
     # targets are restricted to this set so a backlink never points at a pageless
@@ -3054,6 +3211,7 @@ def main() -> None:
         "rcp-semsearch.js",
         "theme.js",  # light/dark/auto theme toggle; loaded synchronously in every page head
         "tour.js",  # guided product tour (landing + one drug page); loaded by index.html + rcp.html
+        "changelog.js",  # "Quoi de neuf ?" popup; fetches changelog.json (written below)
         "lightbox.js",  # click-to-zoom for figures in the drug body; loaded by rcp.html
         "logo.svg",  # the site logo (favicon + README); SVG text, so it compresses well
     )
@@ -3071,6 +3229,8 @@ def main() -> None:
             (DIST / asset).write_text(html, encoding="utf-8")
         else:
             shutil.copy(src, DIST / asset)
+    # Release notes for the "Quoi de neuf ?" popup (validated at the top of main()).
+    write_changelog(changelog)
     for f in (*static_assets, "app-version.js", "search-index.json"):
         compress(DIST / f)
     # og.png (the social-card image for og:image / twitter:image) is a raster already
