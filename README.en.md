@@ -25,6 +25,9 @@ slow, for-profit medicine sites.
 - Shareable results page: `justelesrcp.olicorne.org/?q=sertraline` lists every matching
   medicine (by brand name or active substance). It is also what you get by
   pressing Enter without picking a suggestion.
+- Release notes: after the site is updated, a "Quoi de neuf ?" popup sums up in plain
+  language what changed since your last visit (reachable any time from the About
+  page).
 - Built-in guided tour: on a first visit (or via the "Visite guidée" footer link,
   or the `?tour=1` URL), an interactive walkthrough introduces the search, then, on
   a concrete example, the update dates, the official source, the table of contents,

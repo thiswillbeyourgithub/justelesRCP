@@ -25,6 +25,9 @@ lents et à but lucratif.
 - Page de résultats partageable : `justelesrcp.olicorne.org/?q=sertraline` liste tous les
   médicaments correspondants (nom commercial ou substance active). C'est aussi ce
   qui s'affiche si vous appuyez sur Entrée sans choisir de suggestion.
+- Journal des versions : après une mise à jour du site, une fenêtre « Quoi de neuf ? »
+  résume en langage clair ce qui a changé depuis votre dernière visite (consultable à
+  tout moment depuis la page « À propos »).
 - Visite guidée intégrée : au premier passage (ou via le lien « Visite guidée » en
   bas de page, ou l'adresse `?tour=1`), un tour interactif présente la recherche,
   puis, sur un exemple concret, les dates de mise à jour, la source officielle, le

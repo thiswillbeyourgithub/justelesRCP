@@ -30,7 +30,9 @@ change truly should hit only one type, the request will say so explicitly.
 
 **Versioning:** the project version is `__version__` in `build.py` (single
 source of truth, printed at build start). There are no git tags; bump it
-patch/minor per change. The version is NOT baked into page HTML: `build.py`
+patch/minor per change. A bump MUST come with that version's user-facing release
+notes in `docs/changelog/<version>/changelog.md` (same commit): the build refuses
+to run without them, see the release-notes bullet below. The version is NOT baked into page HTML: `build.py`
 writes `dist/app-version.js` (`window.__APP_VERSION__`) and `src/app-init.js`
 injects it into every `[data-app-version]` slot (RCP sidebar, About page, home
 and browse footers). This keeps page content independent of the version so a
@@ -541,6 +543,46 @@ Key facts that aren't obvious from a single file:
   `{{ASOF}}` + `{{MORE_BOTTOM}}` slots in `src/rcp.html`,
   `.rcp-more`/`.rcp-more-title`/`.rcp-refs`/
   `.ref-pill` in `style.css`, and the refresh service's `_init_worker` call.
+- **Release notes are authored per version and shown as a "Quoi de neuf ?" popup.**
+  One directory per release, `docs/changelog/<version>/changelog.md` (so a version's
+  notes land in the SAME commit as the `__version__` bump), written for a casual
+  reader (a nurse, a patient), NOT a developer. `docs/changelog/README.md` is the
+  authoring guide. The grammar is deliberately tiny and validated
+  (`parse_changelog` in build.py): a `# <version> - <YYYY-MM-DD>` title whose version
+  MUST match the directory name (the date is the release date the popup shows), then
+  ONLY the four categories `## New features` / `## Improvements` / `## Bug fixes` /
+  `## Documentation` (rendered in that fixed order, whatever the file order), then
+  bullets. Each bullet is BILINGUAL: the `- ` line is English, the `fr:` line under
+  it is the French the site actually shows (both required, per the language
+  convention), and it may end with the commit sha(s) it came from in brackets
+  (`[47a9986, 224f699]`), which the popup turns into GitHub commit links.
+  `load_changelog()` compiles every note into `dist/changelog.json`
+  (`{current, commit_url, categories, releases[]}`, newest-first) via
+  `write_changelog()`, and is ALSO the release GATE: it is called at the TOP of
+  `main()` and `SystemExit`s when the current `__version__` has no notes, so a bump
+  can never ship silently and a malformed note fails in a second instead of after a
+  full rebuild. Not every historical version needs an entry (the notes start at
+  0.37.0, the guided tour); only the current one is mandatory.
+  `src/changelog.js` (loaded on EVERY page, after `app-version.js`) decides when to
+  show them: it keeps the last version it showed in `localStorage['jlrcp_changelog_seen']`
+  and, when `window.__APP_VERSION__` is newer, fetches `changelog.json` and opens a
+  modal with EVERY release since the stored one, then stores the new version. A
+  FIRST-time visitor sees nothing (no "since" to show, and the tour greets them
+  instead): the version is stored silently. It also stands down while a tour runs
+  (`?tour=` or no `jlrcp_tour_seen`), WITHOUT storing, so the notes survive to the
+  next visit. It fetches `changelog.json` only when it has something to show. The
+  modal body is the only scrolling part (a long history never outgrows the viewport),
+  each release headed by its version + French-formatted date, and a **"Tout afficher"**
+  button expands the "since" view into the full history. `[data-changelog]` elements
+  open it in full-history mode: the "Nouveautés" section of `/a-propos` and the home
+  footer link. CSP-safe (same-origin script, no inline handlers, no `innerHTML`).
+  Keep the contract in sync across `docs/changelog/*/changelog.md` +
+  `docs/changelog/README.md`, `parse_changelog`/`load_changelog`/`write_changelog`/
+  `CHANGELOG_DIR`/`CHANGELOG_CATEGORIES`/`COMMIT_URL`/`_version_key` + the `main()`
+  gate + the `changelog.js` entry in `static_assets` (build.py), `src/changelog.js`,
+  the `<script src="/changelog.js">` tag in all five `src/*.html`, the
+  `[data-changelog]` buttons in `src/a-propos.html` + `src/index.html`,
+  `.changelog-*` in `style.css`, and `test_changelog_*` in `src/test_embed.py`.
 - **`/a-propos` is a static About page** (`src/a-propos.html`, shipped as a
   static asset): what the site is, the author, a privacy/hosting note, and a
   direct link to the GitHub repo. (`SOURCE_URL` still drives the separate "Code
