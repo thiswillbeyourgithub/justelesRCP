@@ -726,11 +726,15 @@
       try { back = sessionStorage.getItem(RESUME_KEY) === "home"; } catch (e) {}
       var seen = null;
       try { seen = localStorage.getItem(SEEN_KEY); } catch (e) {}
+      // A reader arriving on a shared results URL (/?q=… , search.js's results page)
+      // came for that list: never auto-pop the tour over it. An explicit ?tour=1 still runs.
+      var shared = params && (params.get("q") || params.get("query"));
+      var auto = tourParam === "1" || (!seen && !shared);
       // The landing page autofocuses #q, which pops the on-screen keyboard on mobile.
       // When a tour is about to run, blur the field right away so the keyboard does not
       // cover the tour (the demo types into it programmatically, no focus needed). This
       // catches the "?tour=1" navigation, which reloads the page and re-fires autofocus.
-      if (back || tourParam === "1" || !seen) {
+      if (back || auto) {
         var q = qs("#q");
         if (q) { try { q.blur(); } catch (e) {} }
       }
@@ -739,7 +743,7 @@
         homeSearch(); // resumed by "Precedent" from the first RCP step
         return;
       }
-      if (tourParam === "1" || !seen) startHome();
+      if (auto) startHome();
     }
   }
 
