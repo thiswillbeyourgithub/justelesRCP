@@ -11,6 +11,20 @@
 # module proxy), so it runs on whatever host does `docker compose up --build`.
 # There is NO COPY from the build context, so the context can stay tiny (compose
 # points it at this docker/ dir, not the repo root the refresh/embed images use).
+#
+# That network access is the fragile part, and it is why deploy.sh does NOT rebuild
+# this image on an ordinary deploy (only with --rebuild-web): everything this
+# container serves is a bind mount (Caddyfile, entrypoint.sh, ../dist), so the image
+# is just the binary and a deploy never needs a fresh one. On a VPS whose Docker
+# bridge advertises IPv6 without a route, xcaddy dies with
+#   go: module github.com/mholt/caddy-ratelimit: Get "https://proxy.golang.org/...":
+#   dial tcp [2a00:...]:443: connect: network is unreachable
+# If you do need to rebuild there, either make the module proxy reachable (build with
+# the host network: `docker compose build --no-cache web` after adding
+# `network: host` under the web service's `build:`) or build the image on a machine
+# with working egress and ship it (`docker save justelesrcp-web | ssh VPS 'sudo
+# docker load'`). Rebuilding on a laptop and shipping is also the reproducible option
+# given the unpinned plugin below.
 ARG CADDY_VERSION=2
 
 FROM caddy:${CADDY_VERSION}-builder-alpine AS builder

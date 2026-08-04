@@ -1223,8 +1223,19 @@ Restart is not needed (Caddy reads the mounted dir live), but a
   which caps the aggregate) and its per-CIS min-interval floor; keep all three.
   The `order rate_limit before reverse_proxy` global option is required (the plugin
   directive is non-standard). `web.Dockerfile` leaves the plugin version UNPINNED
-  (a TODO): pin it for reproducible builds. Rebuild with `up --build` after any
-  Caddyfile/web.Dockerfile change. Keep the contract in sync across
+  (a TODO): pin it for reproducible builds. **The `web` image is ONLY that binary**:
+  the Caddyfile, `entrypoint.sh` and `../dist` are all bind mounts, so a Caddyfile
+  change needs a `restart`/`up --force-recreate`, NOT a rebuild. Rebuild it (`up
+  --build web`, or `deploy.sh --rebuild-web`) only after a `web.Dockerfile` change or
+  to pick up a newer Caddy/plugin. That distinction matters because the xcaddy build
+  is the ONE step needing outbound internet on the deploy host (Go module proxy), and
+  it fails on a VPS whose Docker bridge advertises IPv6 without a route ("dial tcp
+  [2a00:…]:443: network is unreachable"); rebuilding it on every deploy also re-ran
+  silently whenever upstream published a new `caddy:2-builder-alpine` (cache bust).
+  So `deploy.sh` builds `refresh embed` explicitly and leaves `web` alone by default;
+  `web.Dockerfile`'s header documents the two escape hatches (`network: host` on the
+  build, or build elsewhere and `docker save | ssh … docker load`). Keep the contract
+  in sync across
   `docker/web.Dockerfile`, the global block + the `/api/*` and `/api/sem/*`
   `handle`s in `docker/Caddyfile`, the `web` `build:` in `docker/docker-compose.yml`,
   and the rate-limit knobs in `docker/env.example`.
