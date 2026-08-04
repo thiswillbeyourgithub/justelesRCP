@@ -959,8 +959,25 @@ Key facts that aren't obvious from a single file:
   the ToC), so a reader can search a long RCP without scrolling back up; its offset
   (`top: 7.2rem` on all viewports now the sidebar is gone) stacks under the sticky top
   bar + collapsed Sommaire bar (`.semsearch` in `style.css`), and its results list scrolls
-  internally (`max-height: 40vh`) so the stuck panel never outgrows the screen. Both the
-  search box and the ToC use the native
+  internally so the stuck panel never outgrows the screen. **Opening it is tuned for a
+  phone**, where the box is typically tapped half-way down the screen and the panel would
+  otherwise sit in the bottom sliver: (1) `scrollBoxToTop()` scrolls the page by the box's
+  distance to its OWN sticky offset (read off `getComputedStyle`, not hardcoded), so the
+  box settles at the top of the usable area and the screen below it becomes reading room
+  (a no-op when it is already stuck); (2) `fitResults()` replaces the static
+  `max-height: 60dvh` CSS cap with the space ACTUALLY left under the panel's chrome, via
+  CSSOM (CSP-safe), measured from the sticky offset (not the live rect, which is still
+  moving during the open scroll) and off `visualViewport` (which is what shrinks when the
+  mobile keyboard opens); it re-runs on `resize`/`visualViewport resize` and at the end of
+  `renderHits`/`clearHits` (the nav row entering/leaving changes the chrome height); (3)
+  the field is FOCUSED on open, but ONLY when `hits` is empty: with results on screen the
+  reader most likely reopened the box to re-read them, and a focus would throw the keyboard
+  over half of them. The focus rides on a `summary` CLICK handler that drives the open
+  itself (`preventDefault` + `box.open = true`) because `<details>` fires `toggle`
+  asynchronously, i.e. outside the tap's user-gesture window, and mobile browsers only
+  raise the keyboard for a focus made inside it. All three stand down while
+  `window.__TOUR_ACTIVE__` (the tour does its own scrolling and keeps keyboards down on
+  purpose). Both the search box and the ToC use the native
   `<details>` disclosure triangle as their collapse affordance (`list-style-position:
   inside`), kept consistent on purpose. If the embed service is absent, `/api/sem/*` 502s
   and the box degrades to "indisponible". **The offline pre-bake** `embed-rcp.py` (optional; warms

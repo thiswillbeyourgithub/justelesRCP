@@ -682,6 +682,7 @@
     current = -1;
     results.replaceChildren();
     nav.hidden = true;
+    fitResults(); // the nav row just left/entered the panel: re-measure the list
   }
 
   // The text shown for a hit: the FULL on-page passage it resolved to, i.e. EVERY block
@@ -780,6 +781,7 @@
       results.append(capped);
     }
     nav.hidden = hits.length === 0;
+    fitResults(); // the nav row just left/entered the panel: re-measure the list
   }
 
   function setCurrent(i, scroll) {
@@ -853,16 +855,65 @@
   });
   searchBtn.addEventListener("click", triggerSearch);
 
-  // Warm the readiness path the first time the reader opens the box (never on load).
-  box.addEventListener("toggle", function warm() {
-    if (box.open) {
-      box.removeEventListener("toggle", warm);
-      ensureReady().catch(() => {});
-    }
+  // --- opening the box ------------------------------------------------------
+  // On a phone the box is usually opened half-way down the screen, which leaves the
+  // panel (and the results below it) squeezed into the bottom sliver of the viewport.
+  // The box is position:sticky, so its resting place is exactly its own `top` offset:
+  // scroll the page so it settles there and the whole screen below it becomes reading
+  // room. Already stuck (or within a pixel of it) means nothing to do.
+  function scrollBoxToTop() {
+    const delta = box.getBoundingClientRect().top - stickyTop();
+    if (Math.abs(delta) > 1) window.scrollBy({ top: delta, behavior: "smooth" });
+  }
+
+  function stickyTop() {
+    return parseFloat(getComputedStyle(box).top) || 0;
+  }
+
+  // The results list is bounded so the sticky panel never outgrows the screen; the CSS
+  // cap is only a static guess. Once the box is open we know the real numbers, so give
+  // the list everything left under the panel's own chrome. We measure from the STICKY
+  // offset rather than the live rect because scrollBoxToTop may still be animating (and
+  // that offset is where the box ends up anyway). visualViewport is what shrinks when a
+  // mobile keyboard opens, so the list stays fully reachable then too.
+  const RESULTS_MIN_PX = 140; // never squeeze it below a couple of hits
+  const RESULTS_GAP_PX = 16; // breathing room under the panel
+  function fitResults() {
+    if (!box.open) return;
+    const vv = window.visualViewport;
+    const viewH = (vv && vv.height) || window.innerHeight || 0;
+    if (!viewH) return;
+    // Height of everything above the list inside the box (summary, field, status, nav).
+    const chrome = results.getBoundingClientRect().top - box.getBoundingClientRect().top;
+    const avail = viewH - stickyTop() - chrome - RESULTS_GAP_PX;
+    results.style.maxHeight = Math.max(RESULTS_MIN_PX, Math.round(avail)) + "px";
+  }
+  window.addEventListener("resize", fitResults);
+  if (window.visualViewport) window.visualViewport.addEventListener("resize", fitResults);
+
+  // Put the cursor in the field on opening, so the reader can type straight away. It is
+  // deliberately CONDITIONAL: with results already on screen the box was most likely
+  // reopened to re-read them, and on a phone focusing would throw the keyboard over half
+  // of them. <details> fires `toggle` asynchronously, i.e. outside the tap's user-gesture
+  // window, and mobile browsers only raise the keyboard for a focus() made inside it: so
+  // the summary click drives the open itself (preventDefault + set .open) to keep the
+  // focus synchronous with the tap. The "?" badge stops its own click from getting here.
+  summary.addEventListener("click", (ev) => {
+    if (box.open) return; // collapsing: let the browser handle it
+    ev.preventDefault();
+    box.open = true; // still fires `toggle` below, just asynchronously
+    if (window.__TOUR_ACTIVE__) return; // the tour keeps mobile keyboards down on purpose
+    if (!hits.length) input.focus({ preventScroll: true });
   });
 
-  // A fresh open is a new search session for the "used" event (see rank()).
+  let warmed = false;
   box.addEventListener("toggle", () => {
-    if (!box.open) usageTracked = false;
+    // A fresh open is a new search session for the "used" event (see rank()).
+    if (!box.open) { usageTracked = false; return; }
+    // Warm the readiness path the first time the reader opens the box (never on load).
+    if (!warmed) { warmed = true; ensureReady().catch(() => {}); }
+    if (window.__TOUR_ACTIVE__) return; // the tour does its own scrolling/spotlighting
+    scrollBoxToTop();
+    fitResults();
   });
 })();

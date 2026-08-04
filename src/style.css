@@ -473,8 +473,11 @@ a:hover { text-decoration: underline; }
 .semsearch-counter { color: var(--muted); font-size: .85rem; margin: 0 auto; }
 .semsearch-results {
   list-style: none; margin: .4rem 0 .2rem; padding: 0;
-  /* Bounded + scrollable so the sticky panel stays compact with many hits. */
-  max-height: 40vh; overflow-y: auto;
+  /* Bounded + scrollable so the sticky panel never outgrows the screen. This is only
+     the static default: on open, rcp-semsearch.js (fitResults) replaces it via CSSOM
+     with the space actually left under the panel, having first scrolled the box to its
+     sticky offset. dvh, so a mobile URL bar doesn't make the guess too tall. */
+  max-height: 60vh; max-height: 60dvh; overflow-y: auto;
 }
 .semsearch-results li + li { border-top: 1px solid var(--line); }
 /* Consecutive hits from the SAME section: heading printed once, the rest are
