@@ -210,6 +210,23 @@ class Embedder:
             return None  # zero-byte sentinel: scraped, no body
         return None
 
+    def _scraped_empty(self, cis: str) -> bool:
+        """True when an overlay FILE exists but is EMPTY: the drug was delisted from
+        BDPM ("scraped, no RCP", see build.rcp_archived). Its page still renders from
+        the frozen 2022 baseline, which we deliberately never embed, so there is nothing
+        to index and re-crawling would only re-confirm the deletion. Distinguishing this
+        from a never-crawled (baseline-only) page is what lets request_page answer
+        "archived" instead of parking the reader on an endless "crawling" poll."""
+        for _subdir, odir in build.OVERLAY_LANES:
+            path = build._overlay_path(cis, odir)
+            if path is None:
+                continue
+            try:
+                return path.stat().st_size == 0
+            except OSError:
+                return False
+        return False
+
     # Page resolution + vec-meta reading live in build.py (shared with embed-rcp.py's
     # offline pre-bake, so the two never disagree); these are thin adapters.
     def _dist_page(self, cis: str, subdir: str) -> Path | None:
@@ -359,8 +376,12 @@ class Embedder:
         queued = 0
         overlays = 0  # crawled pages seen on disk this pass
         stale = 0     # of those, how many lack a fresh .vec.json (the embed backlog)
+        # ONE directory scan per lane, not a glob per CIS (see build.dist_pages_index):
+        # the per-CIS glob cost ~10 minutes of CPU per pass on the full catalog.
+        pages = {subdir: build.dist_pages_index(subdir)
+                 for subdir, _odir in build.OVERLAY_LANES}
         for cis, ov, subdir in build.iter_overlay_paths():
-            page = self._dist_page(cis, subdir)
+            page = pages.get(subdir, {}).get(cis)
             if page is None:
                 continue
             overlays += 1
@@ -404,10 +425,15 @@ class Embedder:
     # -- request handlers (called from the HTTP threads) -------------------
     def request_page(self, cis: str, source: str = "user") -> dict:
         """Ensure this page gets embedded. Returns {status}:
-        fresh|queued|crawling|unavailable|busy."""
+        fresh|queued|crawling|archived|unavailable|busy."""
         source = source if source in _SOURCES else "user"
         ov = self._overlay_for(cis)
         if ov is None:
+            if self._scraped_empty(cis):
+                # Delisted drug: the page is a 2022 archive copy, which we never embed.
+                # Say so instead of triggering a crawl that can only re-confirm the
+                # deletion and leaving the reader polling until the budget runs out.
+                return {"status": "archived"}
             # No overlay yet (baseline-only): ask refresh to crawl it; the resulting
             # overlay-write notify (or the reconcile sweep) then drives the embed.
             return {"status": self._trigger_crawl(cis)}

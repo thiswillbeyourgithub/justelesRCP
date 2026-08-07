@@ -383,6 +383,13 @@
     if (st === "unavailable") {
       throw fail("Recherche sémantique indisponible pour cette page.");
     }
+    if (st === "archived") {
+      // Delisted drug: this page is a 2022 archive copy, which is never indexed.
+      // Without this branch the reader would poll for nothing until the budget ran out.
+      throw fail(
+        "Médicament retiré : cette page est une copie d'archive, non indexée pour la recherche sémantique."
+      );
+    }
     if (st === "fresh") {
       // already embedded: straight to the vectors.
     } else if (st === "crawling") {
