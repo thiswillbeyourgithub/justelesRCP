@@ -52,7 +52,7 @@ from lxml import html as lxml_html
 
 import bdpm  # shared, pure-stdlib BDPM tokenising + frequency scoring
 
-__version__ = "0.55.7"  # single source of truth; bump patch/minor per change
+__version__ = "0.55.8"  # single source of truth; bump patch/minor per change
 
 # This script lives in ``src/`` (alongside the frontend templates it renders), so the
 # repo root is its parent's parent; data/, src/ and dist/ all hang off that root. In the
@@ -2006,6 +2006,26 @@ def dist_page_for(cis: str, subdir: str) -> Path | None:
     return hits[0] if hits else None
 
 
+def dist_pages_index(subdir: str) -> dict[str, Path]:
+    """``{cis: page path}`` for every rendered page in ``dist/<subdir>``, from ONE
+    directory scan.
+
+    ``dist_page_for`` globs the directory per CIS, which is O(entries) EACH time: fine
+    for a single lookup, but the embed service's reconcile sweep resolves ~15k CIS
+    against a ~40k-entry directory (the .gz/.br siblings inflate it), i.e. ~10 minutes
+    of pure globbing per pass, which pinned a core and made the sweep look stalled.
+    Same tie-break as ``dist_page_for`` (lowest slug wins) so the two never disagree."""
+    index: dict[str, Path] = {}
+    d = DIST / subdir
+    if not d.is_dir():
+        return index
+    for page in sorted(d.glob("*.html")):
+        cis = page.name.split("-", 1)[0]
+        if CIS_RE.match(cis):
+            index.setdefault(cis, page)
+    return index
+
+
 def vec_path_for(page: Path) -> Path:
     """The ``.vec.json`` sidecar path next to a rendered page."""
     return page.parent / (page.stem + ".vec.json")
@@ -2065,13 +2085,21 @@ def vec_is_fresh(vec: Path, overlay: Path, model: str, *, check_model: bool,
 
 
 def iter_overlay_paths():
-    """Yield ``(cis, path, subdir)`` for every overlay FILE: one per CIS in ``data/rcp``
-    (subdir ``"rcp"``) and ``data/eu`` (subdir ``"eu"``), taking the newest of the
-    plain/.gz pair (``_overlay_path``). This is the path-level enumeration (no content
-    read), the SINGLE source of "which overlays exist" shared by ``iter_overlay_raw``
-    (which then reads + keeps non-empty overlays) and the embed service's reconcile
-    sweep (which only needs the path to stat its mtime), so the two never disagree on
-    the set. NEVER touches the frozen 2022 baseline CSV."""
+    """Yield ``(cis, path, subdir)`` for every NON-EMPTY overlay FILE: one per CIS in
+    ``data/rcp`` (subdir ``"rcp"``) and ``data/eu`` (subdir ``"eu"``), taking the newest
+    of the plain/.gz pair (``_overlay_path``). This is the path-level enumeration (no
+    content read), the SINGLE source of "which overlays exist" shared by
+    ``iter_overlay_raw`` (which then reads them) and the embed service's reconcile sweep
+    (which only needs the path to stat its mtime), so the two never disagree on the set.
+    NEVER touches the frozen 2022 baseline CSV.
+
+    A ZERO-BYTE overlay is the "scraped, no RCP" sentinel (the drug was delisted from
+    BDPM, see ``rcp_archived``): its page still renders from the frozen 2022 baseline,
+    but there is no fresh text to embed, ever. It is dropped HERE, at the shared
+    enumeration, so it stays out of BOTH consumers: ``iter_overlay_raw`` would drop it
+    anyway after a read, and the embed sweep would otherwise count it as a permanently
+    stale page and re-enqueue it on every pass (its ``.vec.json`` can never appear),
+    pinning a phantom "en retard de N pages" backlog on /status forever."""
     for subdir, odir in OVERLAY_LANES:
         if not odir.is_dir():
             continue
@@ -2082,8 +2110,14 @@ def iter_overlay_paths():
                 continue
             seen.add(cis)
             path = _overlay_path(cis, odir)
-            if path is not None:
-                yield cis, path, subdir
+            if path is None:
+                continue
+            try:
+                if path.stat().st_size == 0:
+                    continue
+            except OSError:
+                continue
+            yield cis, path, subdir
 
 
 def iter_overlay_raw(paths=None):

@@ -569,18 +569,23 @@ def test_vec_is_fresh_gate():
 
 def test_overlay_iterators_agree():
     # iter_overlay_paths (path-level, shared by the embed sweep) and iter_overlay_raw
-    # (content-level, shared by embed-rcp) must agree: raw yields exactly the non-empty
-    # subset of the valid-CIS overlays paths enumerates, from the same lanes. This is
-    # the single "which overlays exist" definition both the runtime and offline embed
-    # paths build on.
+    # (content-level, shared by embed-rcp) must agree on the SAME set: the non-empty
+    # valid-CIS overlays of both lanes. This is the single "which overlays exist"
+    # definition both the runtime and offline embed paths build on.
+    #
+    # A zero-byte overlay ("scraped, no RCP": drug delisted from BDPM) must be dropped by
+    # BOTH. Regression: paths used to enumerate it, so the embed service's reconcile
+    # sweep counted it stale on EVERY pass (its .vec.json can never be written) and
+    # re-enqueued it forever, showing a permanent "en retard de 351 pages" on /status.
     with tempfile.TemporaryDirectory() as d:
         d = Path(d)
         rcp = d / "rcp"; rcp.mkdir()
         eu = d / "eu"; eu.mkdir()
         (rcp / "11111111.html").write_text("<div id='textDocument'>a</div>")
-        (rcp / "22222222.html").write_text("")            # zero-byte body -> not in raw
+        (rcp / "22222222.html").write_text("")            # zero-byte body -> dropped
         (rcp / "notacis.html").write_text("<div>x</div>")  # non-CIS name -> skipped
         (eu / "33333333.html").write_text("<div id='textDocument'>b</div>")
+        (eu / "44444444.html.gz").write_bytes(b"")        # zero-byte .gz -> dropped too
         saved = build.OVERLAY_LANES
         build.OVERLAY_LANES = (("rcp", rcp), ("eu", eu))
         try:
@@ -588,14 +593,36 @@ def test_overlay_iterators_agree():
             raws = list(build.iter_overlay_raw())
         finally:
             build.OVERLAY_LANES = saved
-        # Every valid-CIS overlay file is enumerated (incl. the empty one); the non-CIS
-        # name is skipped.
-        assert {c for c, _, _ in paths} == {"11111111", "22222222", "33333333"}
-        # raw keeps only the NON-empty overlays, tagged with the right subdir.
+        # Only the embeddable overlays are enumerated: no empty sentinel, no non-CIS name.
+        assert {c for c, _, _ in paths} == {"11111111", "33333333"}
+        # raw agrees exactly, tagged with the right subdir.
         assert {(c, s) for c, _, s in raws} == {("11111111", "rcp"), ("33333333", "eu")}
-        # ...and raw is a strict subset of paths (never a page paths didn't list).
-        assert {c for c, _, _ in raws} <= {c for c, _, _ in paths}
+        assert {c for c, _, _ in raws} == {c for c, _, _ in paths}
     print("ok  test_overlay_iterators_agree")
+
+
+def test_dist_pages_index_matches_dist_page_for():
+    # The reconcile sweep resolves ~15k CIS per pass; dist_page_for globs the directory
+    # each time (minutes of CPU per pass), so the sweep uses dist_pages_index (one scan).
+    # The two MUST resolve every CIS identically, tie-break included.
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        (d / "rcp").mkdir()
+        for name in ("11111111-aaa.html", "11111111-zzz.html",  # tie -> lowest slug wins
+                     "22222222-bbb.html", "notacis-ccc.html"):
+            (d / "rcp" / name).write_text("<html></html>")
+        (d / "rcp" / "22222222-bbb.html.gz").write_bytes(b"")  # sibling, never a page
+        saved = build.DIST
+        build.DIST = d
+        try:
+            index = build.dist_pages_index("rcp")
+            assert set(index) == {"11111111", "22222222"}
+            for cis in index:
+                assert index[cis] == build.dist_page_for(cis, "rcp")
+            assert build.dist_pages_index("nolane") == {}
+        finally:
+            build.DIST = saved
+    print("ok  test_dist_pages_index_matches_dist_page_for")
 
 
 def test_iter_overlay_raw_honors_caller_order():
@@ -1135,6 +1162,7 @@ if __name__ == "__main__":
     test_raw_hash_is_the_staleness_key()
     test_vec_is_fresh_gate()
     test_overlay_iterators_agree()
+    test_dist_pages_index_matches_dist_page_for()
     test_iter_overlay_raw_honors_caller_order()
     test_sentence_chunks_group_and_fallbacks()
     test_long_section_tail_survives_raised_cap()
