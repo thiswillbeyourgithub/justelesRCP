@@ -10,9 +10,9 @@
 
 *Read this in [English](README.en.md).*
 
-**Juste les RCP**. Un site statique rapide,
-sans pub et sans compte, qui donne accès aux RCP (résumés des caractéristiques du
-produit) des médicaments vendus en France. L'objectif : aider soignants et
+**Juste les RCP (résumés des caractéristiques du produit) de tous les médicaments
+français et européens**. Un site statique rapide, sans pub et sans compte, qui
+donne accès aux RCP publiés par l'ANSM et par l'EMA. L'objectif : aider soignants et
 patients à trouver plus vite une information fiable et officielle, sans publicité
 et sans sacrifier leur vie privée. Une alternative légère aux sites de médicaments
 lents et à but lucratif.
