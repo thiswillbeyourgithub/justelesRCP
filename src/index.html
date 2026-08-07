@@ -24,7 +24,7 @@
 <main class="hero">
   <h1>justelesRCP</h1>
   <p class="byline">par <a href="https://olicorne.org/fr" rel="noopener">Olivier Cornelis</a></p>
-  <p class="tag">Juste les RCP (résumés des caractéristiques du produit) de tous les médicaments français et européens. Rapide, sans pub, sans compte.</p>
+  <p class="tag">Juste les RCP (résumés des caractéristiques du produit) de tous les médicaments français et européens.<br>Rapide, sans pub, sans compte.</p>
   <div class="searchbox">
     <input id="q" type="search" autocomplete="off" autofocus
            placeholder="Rechercher un médicament (ex. doliprane, amoxicilline…)"
@@ -32,6 +32,16 @@
     <ul id="results" class="results" role="listbox"></ul>
   </div>
   <p id="status" class="status">Chargement de l'index…</p>
+  <!-- Provenance/licence/credit notice. On the HOME page it lives here, right under the
+       index count, instead of in the footer (the page is short enough that the footer
+       copy would repeat it a few lines below); every other template keeps it in .foot. -->
+  <p class="home-source">Source : <a href="https://base-donnees-publique.medicaments.gouv.fr" target="_blank" rel="noopener">Base de données publique des médicaments</a>
+  (BDPM, ANSM), réutilisée sous <a href="https://www.etalab.gouv.fr/licence-ouverte-open-licence/" target="_blank" rel="noopener">Licence Ouverte / Etalab 2.0</a> ;
+  code du site sous <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">licence AGPL v3</a>.
+  Réutilisation sans caractère officiel, non affiliée à l'ANSM. Ne remplace pas un avis médical.
+  Site créé par <a href="https://olicorne.org/fr" rel="noopener">Olivier Cornelis</a> avec l'aide de
+  <a href="https://claude.com/claude-code" target="_blank" rel="noopener">Claude Code</a> ;
+  le code de <a href="https://github.com/thiswillbeyourgithub/justelesRCP" target="_blank" rel="noopener">justelesRCP</a> est sur GitHub.</p>
   <!-- Full results page: filled by search.js when the URL carries a query (/?q=sertraline,
        ?query= accepted as an alias) or when the reader hits Enter without picking a
        dropdown entry. That URL is the shareable "all the sertraline drugs" link. -->
@@ -46,13 +56,8 @@
   <p class="browse-link"><a href="/a-propos">À propos de ce site</a></p>
 </main>
 <footer class="foot">
-  <p>Source : <a href="https://base-donnees-publique.medicaments.gouv.fr" target="_blank" rel="noopener">Base de données publique des médicaments</a>
-  (BDPM, ANSM), réutilisée sous <a href="https://www.etalab.gouv.fr/licence-ouverte-open-licence/" target="_blank" rel="noopener">Licence Ouverte / Etalab 2.0</a> ;
-  code du site sous <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">licence AGPL v3</a>.
-  Réutilisation sans caractère officiel, non affiliée à l'ANSM. Ne remplace pas un avis médical.
-  Site créé par <a href="https://olicorne.org/fr" rel="noopener">Olivier Cornelis</a> avec l'aide de
-  <a href="https://claude.com/claude-code" target="_blank" rel="noopener">Claude Code</a> ;
-  <a href="https://github.com/thiswillbeyourgithub/justelesRCP" target="_blank" rel="noopener">code source sur GitHub</a>.</p>
+  <!-- The source/licence/credit notice is NOT repeated here: on the home page it sits in
+       the hero, right under the index count (see .home-source above). -->
   <p><a href="/browse/">Tous les médicaments</a> · <a href="/?tour=1">Visite guidée</a> · <a href="/a-propos">À propos</a> · <a href="/status">Statut du service</a></p>
   <!-- The version slot is its own span: app-init.js sets its textContent, which would
        wipe the "Nouveautés" button if the button were nested inside it. -->

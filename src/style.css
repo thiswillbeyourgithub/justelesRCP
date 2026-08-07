@@ -113,6 +113,12 @@ a:hover { text-decoration: underline; }
    warn-tinted, so the reader sees at a glance the page is our archived 2022 copy. */
 .result-retired { color: #b45309; font-size: .82em; font-weight: 600; }
 .status { color: var(--muted); font-size: .85rem; margin-top: 1.2rem; }
+/* Provenance/licence/credit notice under the home index count; same muted small type as
+   the footer copy the other templates carry (the home footer has no copy of it). */
+.hero .home-source {
+  max-width: 44rem; margin: 1rem auto 0;
+  color: var(--muted); font-size: .78rem; line-height: 1.5;
+}
 /* Full results page (/?q=term, #searchpage in index.html): the same rows as the
    dropdown (it reuses .results, so borders/padding/DCI subtitle stay identical),
    just a long left-aligned list under the box instead of a short overlay. The hero
