@@ -84,8 +84,10 @@ services:
       args:
         # Stamp the built image with the deploying commit so deploy.sh can verify
         # what is actually live on the VPS (see refresh.Dockerfile's git.sha
-        # LABEL). deploy.sh exports GIT_SHA into the `docker compose up --build`
-        # environment; a plain local build with no GIT_SHA set falls back to
+        # LABEL). The stamp is baked by `docker compose build`, so GIT_SHA must be
+        # in THAT command's environment (deploy.sh runs `sudo env GIT_SHA=... docker
+        # compose build ...`, since sudo strips it otherwise); passing it only to
+        # `up` stamps nothing. A plain local build with no GIT_SHA set falls back to
         # "unknown". This is build-time only: it is NOT a runtime env var, so it
         # deliberately stays out of env_file / env.example.
         GIT_SHA: ${GIT_SHA:-unknown}
@@ -171,8 +173,9 @@ services:
       dockerfile: docker/embed.Dockerfile
       args:
         # Same build-time git stamp as refresh (see refresh.Dockerfile's git.sha
-        # LABEL). deploy.sh exports GIT_SHA; a plain local build falls back to
-        # "unknown". Build-time only, so it stays out of env_file / env.example.
+        # LABEL). deploy.sh passes GIT_SHA to `docker compose build` itself (see the
+        # refresh service above); a plain local build falls back to "unknown".
+        # Build-time only, so it stays out of env_file / env.example.
         GIT_SHA: ${GIT_SHA:-unknown}
     container_name: justelesrcp-embed
     restart: unless-stopped
