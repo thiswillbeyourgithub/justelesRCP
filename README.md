@@ -36,7 +36,10 @@ lents et à but lucratif.
   telle que « puis-je le prendre enceinte ? » et la page met en avant les
   passages qui répondent au *sens* de votre question, pas seulement aux mots
   exacts. Votre question est analysée sur notre propre serveur puis aussitôt
-  oubliée : jamais enregistrée, jamais transmise à un tiers.
+  oubliée : jamais enregistrée, jamais transmise à un tiers. Le modèle utilisé
+  par défaut est
+  [Snowflake/snowflake-arctic-embed-l-v2.0](https://huggingface.co/Snowflake/snowflake-arctic-embed-l-v2.0)
+  (libre, multilingue, exécuté localement en ONNX).
 - Liens croisés entre médicaments : chaque page relie automatiquement les noms de
   médicaments et de substances qu'elle cite vers leurs propres pages (jamais un
   lien mort). Ces liens sont ajoutés par justelesRCP et ne font pas partie du

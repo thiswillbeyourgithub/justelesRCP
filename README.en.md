@@ -37,7 +37,9 @@ slow, for-profit medicine sites.
   while pregnant?" and the page surfaces the passages that answer the *meaning*
   of your question, not just the exact words. Your question is analysed on our
   own server and immediately forgotten: never logged, never shared with a third
-  party.
+  party. The default model is
+  [Snowflake/snowflake-arctic-embed-l-v2.0](https://huggingface.co/Snowflake/snowflake-arctic-embed-l-v2.0)
+  (open-weights, multilingual, run locally through ONNX).
 - Cross-drug backlinks: each page automatically links the drug and substance
   names it mentions to those drugs' own pages (never a dead link). These links
   are added by justelesRCP and are not part of the official text.
