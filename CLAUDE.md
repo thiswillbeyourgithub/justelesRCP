@@ -372,8 +372,10 @@ Key facts that aren't obvious from a single file:
   `_record_hash`/`_retired_banner_html`/`render_record`/the `ret` tag in `main()`
   (build.py), `status_of`/`_rcp_archived`/`request`/`_process_ansm` (refresh-service.py),
   the button state machine + `bakedRetired` in `src/app-init.js`, the `ret` branch in
-  `src/search.js`, and `.rcp-retired`/`.result-retired`/`.rcp-refresh .msg.msg-note` in
-  `style.css`.
+  `src/search.js`, `_scraped_empty` + the `archived` status of `request_page`
+  (embed-service.py) with its `archived` branch in `src/rcp-semsearch.js` (a delisted
+  drug's page is never embedded, so its search box says so instead of polling), and
+  `.rcp-retired`/`.result-retired`/`.rcp-refresh .msg.msg-note` in `style.css`.
   If the service is absent, `/api/*` just 502s and the button degrades gracefully,
   so static-only deploys omit it entirely. Both `build.py` and `scrape-rcp.py`
   guard `__main__`, so importing them must stay import-safe (no side effects at
@@ -883,7 +885,20 @@ Key facts that aren't obvious from a single file:
   manifest. A search on a never-crawled (baseline-only) page returns `crawling`: the
   service asks the refresh service (`REFRESH_TRIGGER_URL`) to crawl it first, then
   embeds it when the overlay lands (driven by the refresh service's `EMBED_NOTIFY_URL`
-  ping, with a periodic reconcile scan as backstop). The reconcile scan's cheap enqueue
+  ping, with a periodic reconcile scan as backstop). A DELISTED drug is the other
+  never-embeddable case and answers `archived` instead (`_scraped_empty`: an overlay
+  file exists but is zero-byte, so the page is the 2022 archive copy we never embed);
+  without that branch the reader polled a crawl that could only re-confirm the deletion,
+  until the poll budget ran out. **A zero-byte overlay is dropped by
+  `build.iter_overlay_paths` itself** (the shared "which overlays exist" enumeration),
+  so it is neither embedded nor counted: it used to be enumerated, and since its
+  `.vec.json` can never be written, the reconcile sweep re-enqueued all ~351 of them on
+  EVERY pass and `/status` showed a permanent "en retard de 351 page(s)" that no amount
+  of embedding could clear. The sweep resolves each CIS to its rendered page through
+  `build.dist_pages_index(subdir)` (ONE directory scan per lane), NOT `dist_page_for`
+  (which globs per CIS: ~10 minutes of CPU per pass over the full catalog, which is what
+  made the sweep look stalled); keep `dist_page_for` for single lookups, the two agree
+  by construction (same lowest-slug tie-break). The reconcile scan's cheap enqueue
   gate is `build.vec_is_fresh` (stat-only mtime), but its FIRST pass runs with
   `check_model=True` so a MODEL swap (which leaves each already-embedded `.vec.json`
   newer than its unchanged overlay, hiding the mismatch from a pure mtime gate) is
@@ -988,7 +1003,7 @@ Key facts that aren't obvious from a single file:
   stay the same weights (query and passage vectors must match). Keep the contract in
   sync across `section_chunks`/`_heading_context`/`_titre_level`/`_merge_small`/
   `quantize_int8`/`raw_hash`/`iter_overlay_paths`/
-  `iter_overlay_raw`/`dist_page_for`/`read_vec_meta`/`vec_is_fresh`/`vec_payload`/
+  `iter_overlay_raw`/`dist_page_for`/`dist_pages_index`/`read_vec_meta`/`vec_is_fresh`/`vec_payload`/
   `write_vec_json`/`embed_page_to_vec` (+ the shared `OVERLAY_LANES`/`CIS_RE`)
   (build.py), `onnx_embed.py`, `embed-service.py`, `embed-rcp.py`,
   `src/rcp-semsearch.js`, the `<script>` in `src/rcp.html`, `.semsearch*` in
