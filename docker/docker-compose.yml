@@ -266,6 +266,31 @@ services:
         max-file: "3"
 
 networks:
+  # PINNED SUBNETS, and they are not decoration.
+  #
+  # Docker hands a new bridge network a subnet from its default pool: 172.17.0.0/16
+  # through 172.31.0.0/16 first, then a 192.168 fallback. The host these two
+  # projects live on already runs enough stacks to have taken every /16 in the
+  # first range, so when naming the Compose projects created two fresh networks,
+  # both landed in the 192.168 fallback, and both lost outbound network entirely
+  # while every 172.x network on the same host kept working. The site went dark
+  # because docker/entrypoint.sh treats an unreachable ANALYTICS_URL as fatal.
+  #
+  # 172.16.0.0/16 is the one part of the pool's first range Docker allocates last,
+  # so it was still free. Pinning into it takes the choice away from a pool whose
+  # state depends on which other stacks happen to exist. Changing a subnet means
+  # the network has to be recreated, which deploy.sh detects and does.
+  #
+  # Allocation across both repos, kept here so neither can pick a colliding one:
+  #   172.16.240.0/24  justeles-embed        (shared, created by deploy.sh)
+  #   172.16.241.0/24  justelesrcp_default
+  #   172.16.242.0/24  justelesrecos_default
+  #   172.16.250.0/24  scripts/diagnose_network.sh's throwaway probe network
+  default:
+    ipam:
+      config:
+        - subnet: 172.16.241.0/24
+
   # Created by hand once on the host, and by both projects' deploy.sh if missing:
   #
   #   sudo docker network create justeles-embed
