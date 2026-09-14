@@ -5,6 +5,23 @@
 # Runtime config (privacy-friendly umami metrics + the optional DEV banner) comes
 # from docker/.env; see docker/env.example for the keys. The entrypoint renders
 # it into /gen/app-config.js at startup and Caddy serves that for /app-config.js.
+# The Compose PROJECT name, set explicitly because the default is wrong here.
+#
+# Compose names a project after the directory holding its compose file unless
+# told otherwise. That directory is `docker/` in this repo and also in the
+# sibling `justelesrecos`, which is deployed to the same host, so both stacks
+# were one project named `docker`. Compose finds a service's running container
+# by the labels com.docker.compose.project + com.docker.compose.service, and both
+# projects call their Caddy service `web`, so `docker compose up --force-recreate`
+# in either one replaced the other's web container: deploying one site took the
+# other offline while every remaining container stayed up, which reads as a
+# networking fault rather than as what it was.
+#
+# The default network becomes justelesrcp_default rather than docker_default.
+# Nothing refers to it by name (Caddy reaches `embed:8461` by service name, which
+# is per-network and unaffected).
+name: justelesrcp
+
 services:
   web:
     # Custom Caddy image (docker/web.Dockerfile): the stock caddy:2-alpine has no
