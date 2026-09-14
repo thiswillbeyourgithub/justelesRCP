@@ -163,7 +163,7 @@ services:
   # (POST /api/sem/embed) so the browser downloads no model, and (2) (re-)embeds each
   # CRAWLED page's sections in the background, writing the served <slug>.vec.json
   # sidecars (never the frozen 2022 baseline). Caddy reverse-proxies /api/sem/* to it
-  # (see Caddyfile); never exposed to the host (no ports:). Kept separate from `web`
+  # (see Caddyfile). Kept separate from `web`
   # (read-only) and given only the narrow writable mounts it needs (dist/rcp,
   # dist/eu). Entirely optional: leave it out (docker compose ... up web refresh) and
   # the search box degrades to "indisponible", the site staying 100% static.
@@ -179,6 +179,32 @@ services:
         GIT_SHA: ${GIT_SHA:-unknown}
     container_name: justelesrcp-embed
     restart: unless-stopped
+    ports:
+      # The encoder is ~1 GB resident and this host may hold only one copy of it,
+      # so the sibling project justelesrecos has no embedder of its own and reaches
+      # THIS one. That needs a host-side address, since the two projects are
+      # separate compose stacks and do not share a network. Caddy still reaches it
+      # as `embed:8461` over this project's own network; the mapping below exists
+      # only for that neighbour.
+      #
+      # Default is loopback: nothing is added to the host's public surface, and the
+      # port is reachable for a curl or an `ssh -L` tunnel.
+      #
+      # CAVEAT THAT DECIDES WHETHER THE NEIGHBOUR WORKS: a port published on
+      # 127.0.0.1 is NOT reachable from another CONTAINER. Traffic from a container
+      # to the host arrives on the Docker bridge (172.17.0.1 and friends), not on
+      # loopback, so a loopback-only publish answers the host and refuses every
+      # container. If justelesrecos runs in Docker on this host, set
+      # EMBED_BIND_ADDR to the bridge address instead, which is still not a public
+      # interface:
+      #
+      #   ip -4 addr show docker0 | awk '/inet /{print $2}'   # e.g. 172.17.0.1/16
+      #   EMBED_BIND_ADDR=172.17.0.1:                         # in docker/.env
+      #
+      # Empty means all interfaces, which on a VPS means the internet unless a
+      # firewall says otherwise. Do not leave it empty: this endpoint runs a model
+      # on every request.
+      - "${EMBED_BIND_ADDR:-127.0.0.1:}8461:8461"
     # Match the host user that owns ../dist so the .vec.json files the service writes
     # stay owned by you and sync cleanly (same rationale as refresh). Defaults to
     # 1000:1000; override with EMBED_UID/EMBED_GID in docker/.env if your host uid
