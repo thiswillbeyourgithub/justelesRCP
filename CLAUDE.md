@@ -1360,6 +1360,8 @@ Restart is not needed (Caddy reads the mounted dir live), but a
 
 ## Gotchas
 
+- **The `embed` service is shared with the sibling project `../justelesrecos`, which ships no encoder of its own** (one copy of a ~1 GB model is all the VPS has room for). It reaches this one by container name over a Docker network called `justeles-embed`, declared `external: true` in both compose files, so nothing is published on the host. Removing that `networks:` block, or renaming the `justelesrcp-embed` container, takes the other site's search down with a 502 on every query while every container stays up and healthy. Two host-based routes were tried first and cannot work: a port published on 127.0.0.1 is unreachable from another container, and compose's `ports:` accepts an IP and never a hostname, so `host.docker.internal` there is rejected at parse time.
+- `docker-compose.yml` sets `name: justelesrcp` for the same class of reason: without it Compose names the project after the directory holding the compose file, which is `docker/` here AND in `../justelesrecos`, and since both projects call their Caddy service `web`, deploying either one replaced the other's web container.
 - `data/` and `dist/` are gitignored and large (~1GB source). Never commit them.
 - `build.py` raises the csv field-size limit because single RCP HTML blobs can be
   megabytes; don't remove that.
