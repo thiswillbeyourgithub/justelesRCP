@@ -196,32 +196,23 @@ services:
         GIT_SHA: ${GIT_SHA:-unknown}
     container_name: justelesrcp-embed
     restart: unless-stopped
-    ports:
-      # The encoder is ~1 GB resident and this host may hold only one copy of it,
-      # so the sibling project justelesrecos has no embedder of its own and reaches
-      # THIS one. That needs a host-side address, since the two projects are
-      # separate compose stacks and do not share a network. Caddy still reaches it
-      # as `embed:8461` over this project's own network; the mapping below exists
-      # only for that neighbour.
+    networks:
+      # This project's own network, which every service joins by default. Listing
+      # it explicitly is required: naming any network here replaces the default
+      # membership, and Caddy reaches this service as `embed:8461` over it.
+      - default
+      # The shared network, so the sibling project justelesrecos can reach this
+      # container by name. That project ships no embedder (one copy of a ~1 GB
+      # model per host) and proxies its search here.
       #
-      # Default is loopback: nothing is added to the host's public surface, and the
-      # port is reachable for a curl or an `ssh -L` tunnel.
-      #
-      # CAVEAT THAT DECIDES WHETHER THE NEIGHBOUR WORKS: a port published on
-      # 127.0.0.1 is NOT reachable from another CONTAINER. Traffic from a container
-      # to the host arrives on the Docker bridge (172.17.0.1 and friends), not on
-      # loopback, so a loopback-only publish answers the host and refuses every
-      # container. If justelesrecos runs in Docker on this host, set
-      # EMBED_BIND_ADDR to the bridge address instead, which is still not a public
-      # interface:
-      #
-      #   ip -4 addr show docker0 | awk '/inet /{print $2}'   # e.g. 172.17.0.1/16
-      #   EMBED_BIND_ADDR=172.17.0.1:                         # in docker/.env
-      #
-      # Empty means all interfaces, which on a VPS means the internet unless a
-      # firewall says otherwise. Do not leave it empty: this endpoint runs a model
-      # on every request.
-      - "${EMBED_BIND_ADDR:-127.0.0.1:}8461:8461"
+      # This replaces a published host port, which was tried first and does not
+      # work: `ports:` takes an IP, never a hostname, so host.docker.internal is
+      # rejected outright, and a port published on 127.0.0.1 is unreachable from
+      # another container anyway because container traffic arrives on the Docker
+      # bridge rather than on loopback. Publishing on the bridge address works but
+      # hardcodes an address that changes with the daemon's config. A shared
+      # network needs none of that and exposes nothing to the host.
+      - justeles-embed
     # Match the host user that owns ../dist so the .vec.json files the service writes
     # stay owned by you and sync cleanly (same rationale as refresh). Defaults to
     # 1000:1000; override with EMBED_UID/EMBED_GID in docker/.env if your host uid
@@ -273,3 +264,16 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+networks:
+  # Created by hand once on the host, and by both projects' deploy.sh if missing:
+  #
+  #   sudo docker network create justeles-embed
+  #
+  # `external: true` means compose does not create or delete it, which is what
+  # makes it safe to share: neither project can remove the other's route by going
+  # down. The name is hardcoded rather than taken from an environment variable
+  # because it has to match in two repos, and two variables in two .env files is
+  # one more thing that can drift apart.
+  justeles-embed:
+    external: true
