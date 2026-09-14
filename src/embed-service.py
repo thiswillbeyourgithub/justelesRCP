@@ -485,13 +485,18 @@ class Embedder:
     def release_query_slot(self) -> None:
         self._query_slots.release()
 
-    def embed_query(self, q: str) -> dict:
+    def embed_query(self, q: str, dim: int | None = None) -> dict:
         """Embed ONE query -> int8 base64 vector (same wire format as the passage
         vectors, so the client dequantises both with decodeVec). The query text is
         never logged or persisted. Call under acquire_query_slot()/release_query_slot()
         so concurrent encodes stay bounded."""
         t0 = time.perf_counter()
-        vec = self.encoder.encode_query(q)
+        # `dim` lets ONE encoder serve two indexes baked at two widths. This host has
+        # room for one copy of the model, and the sibling site justelesrecos ships a
+        # 1024-dim index while this project's .vec.json files are 256, so the width
+        # cannot be a server-wide setting any more. It stays a QUERY-side choice only:
+        # nothing here changes what gets stored, so no re-embed is ever triggered by it.
+        vec = self.encoder.encode_query(q, dim=dim)
         qi = build.quantize_int8(vec.tolist())
         b64 = base64.b64encode(struct.pack(f"{len(qi)}b", *qi)).decode("ascii")
         with self._lock:
@@ -576,7 +581,7 @@ class Embedder:
 class _Handler(BaseHTTPRequestHandler):
     """JSON API under /api/sem/*:
 
-    ``POST /api/sem/embed`` {q}              -> {q: base64-int8 vec, dim, query_prefix}
+    ``POST /api/sem/embed`` {q, dim?}        -> {q: base64-int8 vec, dim, query_prefix}
     ``POST /api/sem/page/<cis>[?src=user|crawl]`` -> {status}
     ``GET  /api/sem/page/<cis>``             -> {embedded, pending}
     ``GET  /api/sem/stats``                  -> full counters + RAM gauge (INTERNAL:
@@ -691,9 +696,25 @@ class _Handler(BaseHTTPRequestHandler):
         try:
             data = json.loads(raw or b"{}")
             q = (data.get("q") or "").strip()
+            requested = data.get("dim")
         except (ValueError, AttributeError):
             self._send(400, {"error": "invalid json"})
             return
+        # Optional per-request MRL width. Absent means the server's configured
+        # out_dim, which is what every existing client sends, so this is additive.
+        # Validated rather than clamped: a client that asks for a width it cannot
+        # get must find out here, not by silently ranking against a mismatched
+        # index, which produces confident nonsense rather than an error.
+        dim = None
+        if requested is not None:
+            native = EMBEDDER.encoder.full_dim or 0
+            if not isinstance(requested, int) or isinstance(requested, bool) or requested <= 0:
+                self._send(400, {"error": "dim must be a positive integer"})
+                return
+            if native and requested > native:
+                self._send(400, {"error": f"dim {requested} exceeds the model's {native}"})
+                return
+            dim = requested
         if len(q) < EMBEDDER.min_chars or len(q) > EMBEDDER.max_chars:
             self._send(400, {"error": f"query must be {EMBEDDER.min_chars}"
                                       f"-{EMBEDDER.max_chars} chars"})
@@ -704,7 +725,7 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(503, {"error": "busy"})
             return
         try:
-            self._send(200, EMBEDDER.embed_query(q))
+            self._send(200, EMBEDDER.embed_query(q, dim=dim))
         finally:
             EMBEDDER.release_query_slot()
 
@@ -741,9 +762,12 @@ class _QuietHTTPServer(ThreadingHTTPServer):
 @click.option("--out-dim", type=int, default=256, show_default=True,
               envvar="EMBED_OUT_DIM",
               help="Matryoshka (MRL) embedding width to truncate to (env EMBED_OUT_DIM). "
-                   "256 suits arctic-embed-l-v2.0; 0 keeps the full model width. Changing "
-                   "it re-embeds the whole catalog (the width is baked into each .vec.json "
-                   "and gated on, so query and passage vectors always share one width).")
+                   "256 suits arctic-embed-l-v2.0; 0 keeps the full model width. This is "
+                   "the PASSAGE width and the default query width. Changing it re-embeds "
+                   "the whole catalog (the width is baked into each .vec.json and gated "
+                   "on), which is why a client that wants another width sends `dim` in "
+                   "its /api/sem/embed body instead: query width is free, passage width "
+                   "is not.")
 @click.option("--sem-floor", type=float, default=0.0, show_default=True,
               envvar="EMBED_SEM_FLOOR",
               help="Minimum raw cosine (-1..1) for a section to be a search candidate "

@@ -864,12 +864,23 @@ Key facts that aren't obvious from a single file:
   env in sync across `Encoder`/`_profile` (onnx_embed.py), `read_vec_meta`/`vec_is_fresh`/
   `embed_page_to_vec` (build.py), the `--out-dim` option + `_is_embedded`/`_scan_and_enqueue`
   (embed-service.py), `--out-dim` (embed-rcp.py), and `docker/env.example` +
-  `docker/docker-compose.yml`. `build.quantize_int8`
+  `docker/docker-compose.yml`. `EMBED_OUT_DIM` is the PASSAGE width and the DEFAULT query
+  width; it is not a cap on the query width. `POST /api/sem/embed` takes an optional `dim`
+  (`Encoder.encode_query(q, dim=...)` -> `Encoder.encode(..., width=...)`) and truncates the
+  query vector to it, which is what lets the sibling justelesrecos bake its index at another
+  width against this one shared encoder without re-embedding this catalog. It is free: the
+  query cache stores the FULL-width vector and truncates per request, exact because
+  truncating an L2-normalised vector and renormalising equals truncating the raw one and
+  normalising. Out of range or not an integer is a 400, deliberately, since a width mismatch
+  gives meaningless cosines rather than merely worse ones. Watch the shadowing that broke the
+  first version: `Encoder.encode`'s batch loop has a local for the padded token length
+  (`seq_len`), and when it was also called `width` every vector came back as wide as the
+  batch had tokens; `src/onnx_embed.py`'s `__main__` self-test now asserts the widths. `build.quantize_int8`
   (symmetric `q=round(v*127)`, dequant `q/127`) is the ONE canonical formula, mirrored
   in JS `decodeVec`. **The embed service** (`embed-service.py`, behind Caddy's
   same-origin `/api/sem/*`, mirrors `refresh-service.py`: `ThreadingHTTPServer`,
   `_lock`, a priority queue, ONE background worker) embeds the query on request
-  (`POST /api/sem/embed` -> `{q: base64-int8, dim}`, on a request thread so it never
+  (`POST /api/sem/embed` `{q, dim?}` -> `{q: base64-int8, dim}`, on a request thread so it never
   waits behind the worker; bounded LRU; `>= EMBED_MIN_QUERY_CHARS` / `<=
   EMBED_MAX_QUERY_CHARS` else 400; a `BoundedSemaphore` of `EMBED_MAX_CONCURRENT_QUERIES`
   bounds concurrent encodes so a query flood can't pin every core, shedding past it with

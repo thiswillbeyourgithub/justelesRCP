@@ -170,16 +170,21 @@ class Encoder:
             self._out_dim = prof["out_dim"]
         else:
             self._out_dim = out_dim if out_dim > 0 else None
+        # The model's NATIVE width, before any MRL truncation. Read separately from
+        # self.dim because a per-request width (encode(width=...)) has to be
+        # validated against what the model can actually produce, and self.dim is
+        # the SERVED width, which is usually narrower. 0 means "not known yet",
+        # and the first full-width encode fills it in.
+        self.full_dim = 0
+        cfg = model_dir / "config.json"
+        if cfg.is_file():
+            try:
+                self.full_dim = int(json.loads(cfg.read_text())["hidden_size"])
+            except Exception:
+                pass
         # Served vector width: the MRL truncation length if set (arctic -> 256), else the
         # model's hidden size from config.json (fallback 384). Re-confirmed on 1st encode.
-        self.dim = self._out_dim or 384
-        if not self._out_dim:
-            cfg = model_dir / "config.json"
-            if cfg.is_file():
-                try:
-                    self.dim = int(json.loads(cfg.read_text())["hidden_size"])
-                except Exception:
-                    pass
+        self.dim = self._out_dim or self.full_dim or 384
         # Bounded, TIME-LIMITED LRU of query-HASH -> (vector, expiry), so repeated/edited
         # queries (common as the reader types) recompute nothing. Keyed by a hash of the
         # query text, NOT the text itself, so no plaintext query is ever retained in the
@@ -196,22 +201,38 @@ class Encoder:
 
     # -- core --------------------------------------------------------------
     def encode(
-        self, texts: list[str], prefix: str = "", batch_size: int = 32, max_len: int = 192
+        self, texts: list[str], prefix: str = "", batch_size: int = 32, max_len: int = 192,
+        width: int | None = None
     ) -> np.ndarray:
         """Embed texts -> float32 (N, dim): pooled per the model (CLS for arctic, mean for
         e5), optionally MRL-truncated (arctic -> 256), then L2-normalised (so cosine == dot
         product). ``prefix`` is prepended to each text (pass ``self.passage_prefix`` for
-        documents, ``self.query_prefix`` for queries). Empty input -> (0, dim)."""
+        documents, ``self.query_prefix`` for queries). Empty input -> (0, dim).
+
+        ``width`` overrides the MRL truncation FOR THIS CALL ONLY: None (default) uses
+        the configured out_dim, 0 keeps the model's full width, a positive int truncates
+        to that many dims. It exists so one encoder can serve two indexes baked at
+        different widths, which is what /api/sem/embed's per-request ``dim`` needs. A
+        call that passes ``width`` explicitly does NOT update ``self.dim``: that attribute
+        is the SERVED passage width and the staleness gate reads it, so letting a query
+        at another width move it would silently invalidate the whole catalog."""
         if not texts:
             return np.zeros((0, self.dim), dtype=np.float32)
+        # Resolve the MRL width ONCE, here, and never inside the batch loop. The
+        # loop needs a local for the padded token length, and when that local was
+        # also called `width` it shadowed this parameter: `truncate` became the
+        # number of TOKENS in the batch, so every vector came back 6 or 13 dims
+        # wide and the service reported those as its output width. Hence
+        # `seq_len` below, and hence this line living outside the loop.
+        truncate = self._out_dim if width is None else (width or None)
         out: list[np.ndarray] = []
         for start in range(0, len(texts), batch_size):
             batch = [prefix + t for t in texts[start : start + batch_size]]
             encs = self.tokenizer.encode_batch(batch)
             ids_list = [e.ids[:max_len] for e in encs]
-            width = max((len(x) for x in ids_list), default=1) or 1
-            input_ids = np.zeros((len(batch), width), dtype=np.int64)
-            attention = np.zeros((len(batch), width), dtype=np.int64)
+            seq_len = max((len(x) for x in ids_list), default=1) or 1
+            input_ids = np.zeros((len(batch), seq_len), dtype=np.int64)
+            attention = np.zeros((len(batch), seq_len), dtype=np.int64)
             for row, ids in enumerate(ids_list):
                 input_ids[row, : len(ids)] = ids
                 attention[row, : len(ids)] = 1
@@ -226,12 +247,17 @@ class Encoder:
                 summed = (hidden * mask).sum(axis=1)
                 counts = np.clip(mask.sum(axis=1), 1e-9, None)
                 vecs = summed / counts  # mean-pool over the attention mask: e5
-            if self._out_dim and vecs.shape[1] > self._out_dim:
-                vecs = vecs[:, : self._out_dim]  # MRL: truncate BEFORE normalising
+            if truncate and vecs.shape[1] > truncate:
+                vecs = vecs[:, :truncate]  # MRL: truncate BEFORE normalising
             norms = np.clip(np.linalg.norm(vecs, axis=1, keepdims=True), 1e-12, None)
             out.append((vecs / norms).astype(np.float32))
         result = np.vstack(out)
-        self.dim = int(result.shape[1])
+        if width is None:
+            self.dim = int(result.shape[1])
+        elif not width:
+            # A full-width pass is the cheapest place to learn the native size,
+            # and it costs nothing: truncation happens after the forward pass.
+            self.full_dim = int(result.shape[1])
         return result
 
     def encode_passages(self, texts: list[str]) -> np.ndarray:
@@ -254,29 +280,51 @@ class Encoder:
             self._q_cache.pop(k, None)
         return len(dead)
 
-    def encode_query(self, query: str) -> np.ndarray:
+    def encode_query(self, query: str, dim: int | None = None) -> np.ndarray:
         """Embed ONE query (adds the query prefix), memoised in the TTL-bounded LRU.
-        Returns a 1-D float32 vector of length ``dim``. The cache is keyed by a hash of
-        the query so the plaintext text stays a local that is dropped when this returns;
-        only a hash -> vector pair lives in the LRU (never the query itself), and only
-        until it expires (query_ttl)."""
+
+        Returns a 1-D float32 vector of length ``dim``, or of ``self.dim`` when ``dim``
+        is None. The cache is keyed by a hash of the query so the plaintext text stays a
+        local that is dropped when this returns; only a hash -> vector pair lives in the
+        LRU (never the query itself), and only until it expires (query_ttl).
+
+        THE CACHE HOLDS THE FULL-WIDTH VECTOR and this truncates on the way out, which
+        is why two sites wanting two different widths share one cache entry and one
+        forward pass. That is exact, not an approximation: truncating an L2-normalised
+        vector and renormalising gives the same result as truncating the raw vector and
+        normalising, because the first normalisation is a positive scalar. It is the
+        same identity that lets embed.py store one full-width matrix and sweep every
+        width for free (see evaluate.py's ``narrow``).
+        """
         text = query.strip()
         key = hashlib.blake2b(text.encode("utf-8"), digest_size=16).digest()
         now = time.monotonic()
+
+        def fit(vec: np.ndarray) -> np.ndarray:
+            """Truncate the cached full-width vector to the requested width."""
+            want = self.dim if dim is None else (dim or vec.shape[0])
+            if want >= vec.shape[0]:
+                return vec
+            cut = vec[:want]
+            return (cut / max(float(np.linalg.norm(cut)), 1e-12)).astype(np.float32)
+
         cached = self._q_cache.get(key)
         if cached is not None:
             vec, exp = cached
             if not self._q_ttl or now < exp:
                 self._q_cache.move_to_end(key)
-                return vec
+                return fit(vec)
             self._q_cache.pop(key, None)  # expired: forget this query's derived data
-        vec = self.encode([text], prefix=self.query_prefix)[0]
+        # width=0: encode at the model's native width regardless of out_dim, so the
+        # cached vector can serve any requested width. Same forward pass, same cost;
+        # MRL truncation happens after it.
+        vec = self.encode([text], prefix=self.query_prefix, width=0)[0]
         if self._q_cache_max:
             self.purge_expired_queries(now)  # cheap sweep (<= cache_max entries)
             self._q_cache[key] = (vec, now + self._q_ttl if self._q_ttl else float("inf"))
             while len(self._q_cache) > self._q_cache_max:
                 self._q_cache.popitem(last=False)
-        return vec
+        return fit(vec)
 
 
 if __name__ == "__main__":
@@ -290,3 +338,23 @@ if __name__ == "__main__":
     dt = (time.perf_counter() - t0) * 1000
     print(f"model={enc.model_name} dim={enc.dim} |v|={np.linalg.norm(v):.4f} "
           f"first-query={dt:.1f} ms")
+
+    # Per-request width, checked here because the first version of it was wrong
+    # in a way nothing else would have caught: the `width` parameter was shadowed
+    # by a loop local holding the padded TOKEN COUNT, so every vector came back 6
+    # or 13 dims wide and /api/sem/embed reported that as its output width. The
+    # assertion is on the width, so any future shadowing fails loudly here.
+    assert enc.full_dim, "native width should be known after a query encode"
+    for want in (enc.full_dim, enc.full_dim // 2, enc.dim):
+        got = enc.encode_query(q, dim=want)
+        assert len(got) == want, f"asked for {want} dims, got {len(got)}"
+        assert abs(float(np.linalg.norm(got)) - 1.0) < 1e-4, "not unit length"
+    # MRL identity: truncating the cached full-width vector and renormalising is
+    # the same vector as a fresh narrow encode, which is what lets ONE cached
+    # query vector serve every requested width.
+    narrow = Encoder(intra_threads=1, out_dim=enc.dim, query_cache=0)
+    direct = narrow.encode([q], prefix=narrow.query_prefix, width=enc.dim)[0]
+    cos = float(enc.encode_query(q, dim=enc.dim) @ direct)
+    assert cos > 0.9999, f"MRL identity broken: cos={cos}"
+    print(f"per-request width ok (native={enc.full_dim}, default={enc.dim}), "
+          f"MRL identity cos={cos:.6f}")
