@@ -143,9 +143,19 @@ class Embedder:
                  reconcile_seconds: float, queue_max: int, refresh_url: str,
                  timeout: float, min_chars: int, max_chars: int,
                  max_concurrent_queries: int = 8, query_wait: float = 2.0,
-                 sem_floor: float = 0.0, model_rss: float | None = None) -> None:
+                 sem_floor: float = 0.0, quant: str = "int8",
+                 model_rss: float | None = None) -> None:
         self.encoder = encoder
         self.model = model
+        # Passage quantisation baked into every .vec.json this service writes (see
+        # build.VEC_QUANTS). Like the model and the width, it is part of the staleness
+        # key: flipping it re-embeds the catalog, because the reader decodes by what the
+        # file declares and bytes read under the wrong scheme are noise, not a worse
+        # answer. Rejected loudly here rather than defaulted, for the same reason.
+        if quant not in build.VEC_QUANTS:
+            raise ValueError(f"unknown EMBED_VEC_QUANT {quant!r}, expected one of "
+                             f"{build.VEC_QUANTS}")
+        self.quant = quant
         # Candidate relevance floor (raw cosine) applied CLIENT-SIDE: a section below it is
         # not a search candidate. Ranking runs in the browser, so we only carry the value
         # and hand it out in each embed response (see embed_query); the gate itself lives
@@ -253,7 +263,8 @@ class Embedder:
         meta = self._read_vec_meta(self._vec_path(page))
         return bool(meta and meta["src_hash"] == build.raw_hash(raw)
                     and meta["model"] == self.model
-                    and meta.get("dim") in (0, self.encoder.dim))
+                    and meta.get("dim") in (0, self.encoder.dim)
+                    and (meta.get("dim") == 0 or meta.get("quant") == self.quant))
 
     # -- queue -------------------------------------------------------------
     def _enqueue(self, cis: str, source: str, front: bool) -> str:
@@ -318,7 +329,7 @@ class Embedder:
         if info is not None:
             info["lane"] = subdir
         return build.embed_page_to_vec(cis, raw, subdir, self.encoder,
-                                       model=self.model, stats=info)
+                                       model=self.model, quant=self.quant, stats=info)
 
     def _worker(self) -> None:
         while True:
@@ -387,7 +398,7 @@ class Embedder:
             overlays += 1
             vec = self._vec_path(page)
             if build.vec_is_fresh(vec, ov, self.model, check_model=check_model,
-                                  dim=self.encoder.dim):
+                                  dim=self.encoder.dim, quant=self.quant):
                 continue
             stale += 1
             if self._enqueue(cis, "sweep", front=False) == "queued":
@@ -511,7 +522,7 @@ class Embedder:
     def stats(self) -> dict:
         with self._lock:
             base = {"enabled": self.backlog, "model": self.model,
-                    "dim": self.encoder.dim,
+                    "dim": self.encoder.dim, "quant": self.quant,
                     "queue": len(self._queue), "pending": len(self._pending),
                     "running": self._running, **self._stats}
         # RAM + throughput, so the operator can size the box and estimate speed without
@@ -546,6 +557,7 @@ class Embedder:
         pages_per_min = round(60.0 / cadence, 1) if (embedded and cadence > 0) else 0.0
         summary = {
             "enabled": s["enabled"], "model": s["model"], "dim": s["dim"],
+            "quant": s["quant"],
             "uptime_seconds": round(time.monotonic() - self._started, 1),
             # Since last reboot.
             "pages": {"embedded": s["embedded"], "skipped": s["skipped"],
@@ -768,6 +780,15 @@ class _QuietHTTPServer(ThreadingHTTPServer):
                    "on), which is why a client that wants another width sends `dim` in "
                    "its /api/sem/embed body instead: query width is free, passage width "
                    "is not.")
+@click.option("--vec-quant", type=click.Choice(build.VEC_QUANTS), default="int8",
+              show_default=True, envvar="EMBED_VEC_QUANT",
+              help="Passage quantisation baked into each .vec.json (env "
+                   "EMBED_VEC_QUANT). 'int8' is one byte per dimension; 'binary' is one "
+                   "BIT per dimension (its sign), 8x narrower at the same width, which "
+                   "is what makes a wide EMBED_OUT_DIM affordable to serve. Changing it "
+                   "RE-EMBEDS the whole catalog (it is part of the per-.vec.json "
+                   "staleness gate), and readers running an older src/rcp-semsearch.js "
+                   "cannot decode 'binary', so deploy the site before flipping this.")
 @click.option("--sem-floor", type=float, default=0.0, show_default=True,
               envvar="EMBED_SEM_FLOOR",
               help="Minimum raw cosine (-1..1) for a section to be a search candidate "
@@ -835,8 +856,8 @@ class _QuietHTTPServer(ThreadingHTTPServer):
                   case_sensitive=False),
               help="Minimum log level (env EMBED_LOG_LEVEL). /api/sem/health is never "
                    "logged; query text is never logged.")
-def main(host, port, model_dir, out_dim, sem_floor, intra_threads, min_query_chars,
-         max_query_chars, query_cache, query_cache_ttl, backlog, backlog_rate,
+def main(host, port, model_dir, out_dim, vec_quant, sem_floor, intra_threads,
+         min_query_chars, max_query_chars, query_cache, query_cache_ttl, backlog, backlog_rate,
          reconcile_seconds, queue_max, max_concurrent_queries, refresh_url, timeout,
          log_level) -> None:
     """Run the semantic-search embedder (see module docstring)."""
@@ -874,7 +895,7 @@ def main(host, port, model_dir, out_dim, sem_floor, intra_threads, min_query_cha
         reconcile_seconds=reconcile_seconds, queue_max=queue_max, refresh_url=refresh_url,
         timeout=timeout, min_chars=min_query_chars, max_chars=max_query_chars,
         max_concurrent_queries=max_concurrent_queries, sem_floor=sem_floor,
-        model_rss=model_rss,
+        quant=vec_quant, model_rss=model_rss,
     )
     EMBEDDER.start()
 
@@ -882,9 +903,10 @@ def main(host, port, model_dir, out_dim, sem_floor, intra_threads, min_query_cha
     # container) can never take this one down; we have nothing to re-arm here.
     signal.signal(signal.SIGHUP, signal.SIG_IGN)
 
-    logger.info("embed service on {}:{} (model={}, backlog={}, reconcile={}s, "
-                "min/max query chars={}/{}, sem-floor={})", host, port,
-                onnx_embed.RUNTIME_MODEL, "on" if backlog else "off", reconcile_seconds,
+    logger.info("embed service on {}:{} (model={}, dim={} {}, backlog={}, "
+                "reconcile={}s, min/max query chars={}/{}, sem-floor={})", host, port,
+                onnx_embed.RUNTIME_MODEL, encoder.dim, EMBEDDER.quant,
+                "on" if backlog else "off", reconcile_seconds,
                 min_query_chars, max_query_chars, EMBEDDER.sem_floor)
     _QuietHTTPServer((host, port), _Handler).serve_forever()
 

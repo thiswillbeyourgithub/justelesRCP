@@ -145,6 +145,14 @@ onnx_embed = _load_module("onnx_embed.py", "onnx_embed")  # warm ONNX encoder (n
               help="Matryoshka (MRL) width to truncate to (env EMBED_OUT_DIM); 0 keeps the "
                    "full model width. MUST match the embed service's EMBED_OUT_DIM, else "
                    "the service re-embeds these pages (the width is gated per .vec.json).")
+@click.option("--vec-quant", type=click.Choice(build.VEC_QUANTS), default="int8",
+              show_default=True, envvar="EMBED_VEC_QUANT",
+              help="Passage quantisation baked into each .vec.json (env "
+                   "EMBED_VEC_QUANT): 'int8' is one byte per dimension, 'binary' one "
+                   "BIT (its sign). MUST match the embed service's EMBED_VEC_QUANT for "
+                   "the same reason as EMBED_OUT_DIM: it is part of the per-.vec.json "
+                   "staleness gate, so a mismatch makes the service re-embed on the "
+                   "spot everything this pre-bake just wrote.")
 @click.option("--intra-threads", type=int, default=4, show_default=True,
               help="onnxruntime intra-op threads for the passage encode (CPU path).")
 @click.option("--gpu/--no-gpu", default=True, show_default=True,
@@ -154,7 +162,8 @@ onnx_embed = _load_module("onnx_embed.py", "onnx_embed")  # warm ONNX encoder (n
               help="Passage encode batch size; raise (e.g. 128) to feed a GPU better.")
 @click.option("--force", is_flag=True,
               help="Re-embed even if the content hash and model are unchanged.")
-def main(limit, do_all, only, eu, model_dir, out_dim, intra_threads, gpu, batch_size, force):
+def main(limit, do_all, only, eu, model_dir, out_dim, vec_quant, intra_threads, gpu,
+         batch_size, force):
     """Pre-bake dist/<rcp|eu>/<slug>.vec.json for crawled pages (warms the backlog)."""
     only_set = {c.strip() for c in only if c.strip()}
     if only_set:
@@ -182,8 +191,9 @@ def main(limit, do_all, only, eu, model_dir, out_dim, intra_threads, gpu, batch_
     model = encoder.model_name  # same string the service bakes, so the gate agrees
     # get_providers() reports what actually registered, so a silent GPU-load failure
     # (CUDA libs missing) is visible: it will read CPUExecutionProvider only.
-    logger.info("execution provider(s): {} | batch={} | dim={}",
-                ", ".join(encoder.session.get_providers()), batch_size, encoder.dim)
+    logger.info("execution provider(s): {} | batch={} | dim={} {}",
+                ", ".join(encoder.session.get_providers()), batch_size, encoder.dim,
+                vec_quant)
 
     # Progress-bar total: the path-level overlay count (a cheap dir scan, no content
     # reads). It slightly over-counts what actually embeds (iter_overlay_raw skips
@@ -210,7 +220,7 @@ def main(limit, do_all, only, eu, model_dir, out_dim, intra_threads, gpu, batch_
             continue
         try:
             result = build.embed_page_to_vec(cis, raw, subdir, encoder,
-                                             model=model, force=force)
+                                             model=model, quant=vec_quant, force=force)
         except Exception as exc:  # never let one bad page abort the batch
             errors += 1
             bar.write(f"cis {cis} failed: {exc}")  # write() keeps the bar intact
