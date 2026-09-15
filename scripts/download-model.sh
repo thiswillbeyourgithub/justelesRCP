@@ -21,6 +21,22 @@ MODEL_REPO="Snowflake/snowflake-arctic-embed-l-v2.0"
 ONNX_FILE="model_int8.onnx"
 HF_BASE="https://huggingface.co/${MODEL_REPO}/resolve/main"
 
+# --fp16 ALSO fetches onnx/model_fp16.onnx (~1.1 GB), which is NOT what the service runs.
+# It exists for one job: an offline GPU bake (src/embed-rcp.py --weights model_fp16.onnx).
+# The int8 graph gains nothing from a GPU, because its quantised operators have no CUDA
+# kernels and onnxruntime splits the graph around them ("336 Memcpy nodes are added");
+# measured on an RTX 3090 Ti, 4.2 sections/s against 3.8 on six CPU cores. fp16 is a real
+# GPU artefact. The trade, measured in the sibling justelesrecos: fp16-baked passages
+# reorder about 10% of a top 10 against int8-baked ones and change retrieval by nothing
+# 117 queries can resolve, while the queries keep coming from the int8 weights.
+WANT_FP16=0
+for arg in "$@"; do
+  case "$arg" in
+    --fp16) WANT_FP16=1 ;;
+    *) echo "unknown argument: $arg (only --fp16 is understood)" >&2; exit 2 ;;
+  esac
+done
+
 mkdir -p "models/${MODEL_REPO}/onnx"
 
 # The int8-quantised ${ONNX_FILE} is the ~570 MB payload; config.json + tokenizer.json
@@ -37,6 +53,11 @@ done
 if [ ! -f "models/${MODEL_REPO}/onnx/${ONNX_FILE}" ]; then
   echo "Downloading ${MODEL_REPO}/onnx/${ONNX_FILE} (~570 MB, one time)..."
   wget -O "models/${MODEL_REPO}/onnx/${ONNX_FILE}" "${HF_BASE}/onnx/${ONNX_FILE}"
+fi
+
+if [ "$WANT_FP16" = "1" ] && [ ! -f "models/${MODEL_REPO}/onnx/model_fp16.onnx" ]; then
+  echo "Downloading ${MODEL_REPO}/onnx/model_fp16.onnx (~1.1 GB, for offline GPU bakes)..."
+  wget -O "models/${MODEL_REPO}/onnx/model_fp16.onnx" "${HF_BASE}/onnx/model_fp16.onnx"
 fi
 
 echo "Done. models/${MODEL_REPO} ready (mounted read-only into the embed container)."

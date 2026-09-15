@@ -274,15 +274,28 @@ class Encoder:
         providers: list[str] | None = None,
         passage_batch_size: int = 32,
         out_dim: int | None = None,
+        weights: str | None = None,
     ) -> None:
         model_dir = Path(model_dir)
         prof = _profile(model_name)
-        onnx_path = model_dir / "onnx" / prof["onnx"]
+        # ``weights`` overrides which ONNX file under <model_dir>/onnx/ is loaded, leaving
+        # every other field of the profile (pooling, prefixes, MRL width) alone. The
+        # runtime service never passes it: the VPS embeds queries with the profile's int8
+        # weights, and a passage vector has to come from the same recipe. The OFFLINE
+        # bakes do, to reach model_fp16.onnx, which is the only way a GPU helps here. The
+        # int8 graph has no CUDA kernels for its quantised operators, so onnxruntime
+        # splits it and reports "336 Memcpy nodes are added to the graph": measured on
+        # this machine over 256 real sections, an RTX 3090 Ti does 4.2 sections/s against
+        # 3.8 on six CPU cores, i.e. nothing. fp16 is a real GPU artefact and the sibling
+        # justelesrecos measured its bake at roughly 50x the int8 CPU rate. The catch it
+        # also measured: fp16-baked passages reorder about 10% of a top 10 against
+        # int8-baked ones, while changing retrieval by nothing 117 queries could resolve.
+        onnx_path = model_dir / "onnx" / (weights or prof["onnx"])
         tok_path = model_dir / "tokenizer.json"
         if not onnx_path.is_file() or not tok_path.is_file():
             raise FileNotFoundError(
                 f"model not found under {model_dir} (run ./scripts/download-model.sh): "
-                f"need onnx/{prof['onnx']} + tokenizer.json"
+                f"need onnx/{weights or prof['onnx']} + tokenizer.json"
             )
         opts = ort.SessionOptions()
         # intra_threads may be negative (relative to the CPU count); resolve it here so

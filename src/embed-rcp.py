@@ -102,6 +102,16 @@ onnx_embed = _load_module("onnx_embed.py", "onnx_embed")  # warm ONNX encoder (n
                    "the same reason as EMBED_OUT_DIM: it is part of the per-.vec.json "
                    "staleness gate, so a mismatch makes the service re-embed on the "
                    "spot everything this pre-bake just wrote.")
+@click.option("--weights", default="", show_default=False,
+              help="ONNX file under <model-dir>/onnx/ to encode with. Empty means the "
+                   "model profile's default, model_int8.onnx, which is what the VPS "
+                   "embeds QUERIES with. Pass model_fp16.onnx (fetch it with "
+                   "./scripts/download-model.sh --fp16) for a GPU bake that is worth "
+                   "doing: measured here, the int8 graph runs at 4.2 sections/s on an "
+                   "RTX 3090 Ti against 3.8 on six CPU cores, because its quantised "
+                   "operators have no CUDA kernels. The trade is a passage/query weights "
+                   "mismatch, which justelesrecos measured as reordering ~10% of a top "
+                   "10 and changing retrieval by nothing 117 queries could resolve.")
 @click.option("--intra-threads", type=int, default=4, show_default=True,
               help="onnxruntime intra-op threads for the passage encode (CPU path).")
 @click.option("--gpu/--no-gpu", default=True, show_default=True,
@@ -111,8 +121,8 @@ onnx_embed = _load_module("onnx_embed.py", "onnx_embed")  # warm ONNX encoder (n
               help="Passage encode batch size; raise (e.g. 128) to feed a GPU better.")
 @click.option("--force", is_flag=True,
               help="Re-embed even if the content hash and model are unchanged.")
-def main(limit, do_all, only, eu, model_dir, out_dim, vec_quant, intra_threads, gpu,
-         batch_size, force):
+def main(limit, do_all, only, eu, model_dir, out_dim, vec_quant, weights, intra_threads,
+         gpu, batch_size, force):
     """Pre-bake dist/<rcp|eu>/<slug>.vec.json for crawled pages (warms the backlog)."""
     only_set = {c.strip() for c in only if c.strip()}
     if only_set:
@@ -141,13 +151,13 @@ def main(limit, do_all, only, eu, model_dir, out_dim, vec_quant, intra_threads, 
     logger.info("loading encoder from {} (~500 MB int8 weights, takes a moment)", model_dir)
     encoder = onnx_embed.Encoder(model_dir=model_dir, intra_threads=intra_threads,
                                  providers=providers, passage_batch_size=batch_size,
-                                 out_dim=out_dim)
+                                 out_dim=out_dim, weights=weights or None)
     model = encoder.model_name  # same string the service bakes, so the gate agrees
     # get_providers() reports what actually registered, so a silent GPU-load failure
     # (CUDA libs missing) is visible: it will read CPUExecutionProvider only.
-    logger.info("execution provider(s): {} | batch={} | dim={} {}",
+    logger.info("execution provider(s): {} | batch={} | dim={} {} | weights={}",
                 ", ".join(encoder.session.get_providers()), batch_size, encoder.dim,
-                vec_quant)
+                vec_quant, weights or "profile default (int8)")
 
     # Progress-bar total: the path-level overlay count (a cheap dir scan, no content
     # reads). It slightly over-counts what actually embeds (iter_overlay_raw skips
