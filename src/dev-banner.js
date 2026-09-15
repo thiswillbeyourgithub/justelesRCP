@@ -17,6 +17,10 @@
 // (localStorage) scoped to the current STARTED_AT, so it stays closed across page
 // navigations and browser restarts and only reappears after the next container
 // restart (new deployment).
+//
+// It also retires itself five days after that restart (MAX_AGE_SECONDS): a
+// deployment nobody has touched in a week is not news, and the next restart brings
+// the notice back on its own.
 (function () {
   const cfg = window.__APP_CONFIG__ || {};
   // Enabled only on an exact "1" so an unset/placeholder value never trips it.
@@ -24,6 +28,17 @@
 
   const startedAt = Number(cfg.startedAt);
   const hasStart = Number.isFinite(startedAt) && startedAt > 0;
+  const elapsedSeconds = () => Date.now() / 1000 - startedAt;
+
+  // Stop showing the banner once the container has been up this long. The notice says
+  // "prototype, and here is how fresh this deployment is", which stops being news after
+  // a few days: past the cutoff the site simply looks normal again, and the next restart
+  // stamps a new STARTED_AT and brings it back. Without a stamp the age is unknowable,
+  // so the notice shows: a missing STARTED_AT means a deploy in flight, not an old one.
+  // justelesrecos uses the same cutoff (src/site.js); keep the two in step, the banner
+  // is meant to read the same on both sites.
+  const MAX_AGE_SECONDS = 5 * 24 * 60 * 60;
+  if (hasStart && elapsedSeconds() > MAX_AGE_SECONDS) return;
 
   // Persisted dismissal, scoped to THIS deployment. The token is the container's
   // STARTED_AT: dismissing stores it in localStorage (so the banner stays closed on
@@ -76,7 +91,7 @@
   function render() {
     // Client clock vs container clock can differ slightly; close enough for a
     // human "redémarré il y a ~X" cue. Clamp negatives (skewed clocks) to 0.
-    const elapsed = hasStart ? Date.now() / 1000 - startedAt : 0;
+    const elapsed = hasStart ? elapsedSeconds() : 0;
     const when = hasStart
       ? `Dernier redémarrage il y a ${humanAgo(elapsed)}.`
       : "Déploiement en cours.";
@@ -97,8 +112,19 @@
   render();
   document.body.prepend(banner);
 
-  // Keep the "il y a X" fresh without a reload while the tab stays open.
-  const timer = hasStart ? setInterval(render, 60 * 1000) : null;
+  // Keep the "il y a X" fresh without a reload while the tab stays open, and retire the
+  // banner the moment it crosses the cutoff rather than leaving a stale one on a tab that
+  // has been open for days.
+  const timer = hasStart
+    ? setInterval(() => {
+        if (elapsedSeconds() > MAX_AGE_SECONDS) {
+          banner.remove();
+          clearInterval(timer);
+          return;
+        }
+        render();
+      }, 60 * 1000)
+    : null;
 
   // Clicking hides it and remembers the dismissal on this device (see isDismissed):
   // it stays closed across page navigations and browser restarts, and only returns
