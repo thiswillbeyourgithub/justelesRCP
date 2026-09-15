@@ -18,8 +18,10 @@
 # NVIDIA driver + the CUDA 12 runtime + cuDNN 9 the installed onnxruntime-gpu expects.
 # If cuDNN is missing you'll see "libcudnn.so.9: cannot open shared object file" and it
 # falls back to CPU (logged). Two no-root ways to supply them without a system install:
-#   * add the pip wheels for THIS run (uv puts them in the same env; _preload_cuda_libs
-#     below then makes onnxruntime find them):
+#   * add the pip wheels for THIS run (uv puts them in the same env; onnx_embed's
+#     preload_cuda_libs + ensure_cudnn_visible then make onnxruntime find them, the
+#     latter by re-executing this process with LD_LIBRARY_PATH set, because onnxruntime
+#     1.30 asks dlopen for an unversioned libcudnn.so that the wheel does not ship):
 #       uv run --with nvidia-cudnn-cu12 --with nvidia-cublas-cu12 \
 #              --with nvidia-cuda-runtime-cu12 --with nvidia-cufft-cu12 \
 #              --with nvidia-curand-cu12 src/embed-rcp.py --all --batch-size 128
@@ -62,60 +64,6 @@ from tqdm import tqdm
 HERE = Path(__file__).resolve().parent
 
 
-def _preload_cuda_libs() -> None:
-    """Make the CUDA/cuDNN shared libraries from the ``nvidia-*-cu12`` pip wheels loadable
-    by onnxruntime's CUDA provider. Its ``.so`` does NOT search ``site-packages`` on its
-    own, so wheels installed via ``uv run --with nvidia-cudnn-cu12 ...`` are present on
-    disk yet invisible to it (the "libcudnn.so.9: cannot open shared object file" failure).
-    onnxruntime>=1.21 exposes ``preload_dlls()`` which loads them from the nvidia packages;
-    on older builds we ctypes-preload the wheels' libs ``RTLD_GLOBAL`` in dependency order
-    (cudart/cublas before cudnn) so the provider's later ``dlopen`` resolves their symbols.
-    A no-op when neither the wheels nor system libs are present (the provider then just
-    fails to register and we fall back to CPU, already handled). Must run BEFORE onnxruntime
-    probes CUDA (``get_available_providers``/session build), so ``main`` calls it first."""
-    preload = getattr(ort, "preload_dlls", None)
-    if callable(preload):
-        try:
-            preload()  # official path: loads CUDA + cuDNN from the nvidia-*-cu12 wheels
-            return
-        except Exception as exc:  # pragma: no cover - depends on ort version/env
-            logger.debug("ort.preload_dlls() failed ({}); trying manual preload", exc)
-    import ctypes
-    import glob
-    import site
-
-    bases = list(site.getsitepackages())
-    user = site.getusersitepackages()
-    if user:
-        bases.append(user)
-    lib_dirs: list[str] = []
-    for base in dict.fromkeys(bases):  # de-dup, keep order
-        lib_dirs.extend(glob.glob(str(Path(base) / "nvidia" / "*" / "lib")))
-    # Load order matters: cudnn needs cudart + cublas, so pull those in first, each
-    # RTLD_GLOBAL so the CUDA provider's own dlopen later sees their symbols.
-    for pattern in ("libcudart.so*", "libcublasLt.so*", "libcublas.so*",
-                    "libcufft.so*", "libcurand.so*", "libcudnn*.so*"):
-        for libdir in lib_dirs:
-            for so in sorted(glob.glob(str(Path(libdir) / pattern))):
-                try:
-                    ctypes.CDLL(so, mode=ctypes.RTLD_GLOBAL)
-                except OSError:  # pragma: no cover - best effort
-                    pass
-
-
-def _select_providers(want_gpu: bool) -> tuple[list[str], list[str]]:
-    """Pick onnxruntime execution providers. With ``want_gpu``, prefer a GPU provider
-    (CUDA, then ROCm) IF the installed onnxruntime exposes it, always appending CPU as a
-    fallback so an unsupported int8 op or an absent GPU degrades instead of erroring.
-    Returns ``(chosen, available)`` for logging."""
-    available = list(ort.get_available_providers())
-    if want_gpu:
-        for gpu in ("CUDAExecutionProvider", "ROCMExecutionProvider"):
-            if gpu in available:
-                return [gpu, "CPUExecutionProvider"], available
-    return ["CPUExecutionProvider"], available
-
-
 def _load_module(filename: str, name: str):
     """Import a sibling ``foo-bar.py`` script by path (its ``-`` name isn't a valid
     import). All targets are import-safe (``__main__``-guarded)."""
@@ -140,12 +88,13 @@ onnx_embed = _load_module("onnx_embed.py", "onnx_embed")  # warm ONNX encoder (n
 @click.option("--model-dir", default=str(onnx_embed.DEFAULT_MODEL_DIR), show_default=True,
               envvar="EMBED_MODEL_DIR",
               help="Directory of the ONNX model + tokenizer (run ./scripts/download-model.sh).")
-@click.option("--out-dim", type=int, default=256, show_default=True,
+@click.option("--out-dim", type=int, default=1024, show_default=True,
               envvar="EMBED_OUT_DIM",
-              help="Matryoshka (MRL) width to truncate to (env EMBED_OUT_DIM); 0 keeps the "
-                   "full model width. MUST match the embed service's EMBED_OUT_DIM, else "
-                   "the service re-embeds these pages (the width is gated per .vec.json).")
-@click.option("--vec-quant", type=click.Choice(build.VEC_QUANTS), default="int8",
+              help="Matryoshka (MRL) width to truncate to (env EMBED_OUT_DIM); 0 also keeps "
+                   "the full model width, which 1024 is for arctic-embed-l-v2.0. MUST match "
+                   "the embed service's EMBED_OUT_DIM, else the service re-embeds these "
+                   "pages (the width is gated per .vec.json).")
+@click.option("--vec-quant", type=click.Choice(build.VEC_QUANTS), default="binary",
               show_default=True, envvar="EMBED_VEC_QUANT",
               help="Passage quantisation baked into each .vec.json (env "
                    "EMBED_VEC_QUANT): 'int8' is one byte per dimension, 'binary' one "
@@ -170,10 +119,15 @@ def main(limit, do_all, only, eu, model_dir, out_dim, vec_quant, intra_threads, 
         force = True
 
     # Make any nvidia-*-cu12 wheels (uv --with) findable BEFORE onnxruntime probes CUDA,
-    # else the CUDA provider can't load them and never registers (see _preload_cuda_libs).
+    # else the CUDA provider either never registers or, worse, registers and then dies on
+    # the first inference because it dlopens an UNVERSIONED libcudnn.so that no wheel
+    # ships. Both helpers live in onnx_embed.py, shared with justelesrecos's offline bake;
+    # ensure_cudnn_visible may RE-EXECUTE this process with LD_LIBRARY_PATH set, so it
+    # runs before anything expensive has been done.
     if gpu:
-        _preload_cuda_libs()
-    providers, available = _select_providers(gpu)
+        onnx_embed.ensure_cudnn_visible(log=logger.info)
+        onnx_embed.preload_cuda_libs(log=logger.debug)
+    providers, available = onnx_embed.select_providers(gpu)
     if gpu and providers[0] == "CPUExecutionProvider":
         logger.warning("no GPU execution provider available (have: {}); using CPU. For "
                        "NVIDIA you need the driver + CUDA 12 + cuDNN 9; a missing "

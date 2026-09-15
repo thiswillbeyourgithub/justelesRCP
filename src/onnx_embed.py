@@ -22,10 +22,13 @@ Deliberately depends on ``onnxruntime`` + ``tokenizers`` ONLY (NOT torch /
 sentence-transformers): that is the difference between a ~300 MB and a ~2 GB image,
 and it lets the hardened, read-only runtime container stay tiny. It runs the int8
 ``Snowflake/snowflake-arctic-embed-l-v2.0`` ONNX weights (CLS-pooled, L2-normalised,
-MRL-truncated to 256 dims), driven by a per-model recipe (``_profile``) so the query
+MRL-truncated to 1024 dims, i.e. its full width), driven by a per-model recipe
+(``_profile``) so the query
 and passage sides always share one backend + one set of weights.
 
-Pure + import-safe (``__main__`` guard); no filesystem writes, no network.
+Pure + import-safe (``__main__`` guard); no network, and no filesystem writes except
+the one ``ensure_cudnn_visible`` makes on demand (a symlink under the temp dir, only
+when an offline GPU bake asks for it; the runtime service never calls it).
 """
 
 from __future__ import annotations
@@ -72,13 +75,168 @@ def _profile(model_name: str) -> dict:
     n = model_name.lower()
     if "arctic-embed" in n:
         return {"onnx": "model_int8.onnx", "pooling": "cls",
-                "query": "query: ", "passage": "", "out_dim": 256}
+                "query": "query: ", "passage": "", "out_dim": 1024}
     if "e5" in n:
         return {"onnx": "model_quantized.onnx", "pooling": "mean",
                 "query": "query: ", "passage": "passage: ", "out_dim": None}
     # Unknown model: safe defaults (mean pool, no prefixes, full width, common ONNX name).
     return {"onnx": "model_quantized.onnx", "pooling": "mean",
             "query": "", "passage": "", "out_dim": None}
+
+
+# --- CUDA / cuDNN plumbing for the OFFLINE bakes -------------------------------
+# These three live here, in the module BOTH projects already import, rather than in
+# either bake script. justelesrecos's scripts/embed.py and this repo's src/embed-rcp.py
+# had byte-identical copies of the first two, with a comment in the former saying the
+# clean fix was to move them here: its dependencies (onnxruntime, tokenizers, numpy) are
+# exactly what they need, while importing embed-rcp.py would drag in build.py and the
+# crawler's lxml + brotli. The runtime embed service imports this module too and simply
+# never calls them (it is CPU-only by design), which costs nothing: they do no work at
+# import time.
+#
+# ``log`` is an optional callable taking one string. loguru is NOT a dependency here, so
+# each caller passes its own logger and a silent default keeps this module importable in
+# the container.
+
+
+def preload_cuda_libs(log=None) -> None:
+    """Make the CUDA and cuDNN libraries from the ``nvidia-*-cu12`` wheels loadable.
+
+    Parameters
+    ----------
+    log : callable, optional
+        Called with one diagnostic string when the official preload path fails.
+
+    Notes
+    -----
+    onnxruntime's ``.so`` does not search ``site-packages``, so wheels installed with
+    ``uv run --with nvidia-cudnn-cu12 ...`` are present on disk yet invisible to it,
+    which surfaces as "libcudnn.so.9: cannot open shared object file" and a silent fall
+    back to CPU. onnxruntime >= 1.21 exposes ``preload_dlls()``; on older builds the
+    wheels' libraries are ctypes-loaded RTLD_GLOBAL in dependency order (cudart and
+    cublas before cudnn) so the provider's later ``dlopen`` resolves their symbols. A
+    no-op when neither wheels nor system libraries are present. Must run BEFORE
+    onnxruntime probes CUDA.
+    """
+    preload = getattr(ort, "preload_dlls", None)
+    if callable(preload):
+        try:
+            preload()
+            return
+        except Exception as exc:  # pragma: no cover - depends on ort version/env
+            if log:
+                log(f"ort.preload_dlls() failed ({exc}); trying a manual preload")
+    import ctypes
+    import glob
+    import site
+
+    bases = list(site.getsitepackages())
+    user = site.getusersitepackages()
+    if user:
+        bases.append(user)
+    lib_dirs: list[str] = []
+    for base in dict.fromkeys(bases):  # de-duplicate, keep order
+        lib_dirs.extend(glob.glob(str(Path(base) / "nvidia" / "*" / "lib")))
+    for pattern in ("libcudart.so*", "libcublasLt.so*", "libcublas.so*",
+                    "libcufft.so*", "libcurand.so*", "libcudnn*.so*"):
+        for lib_dir in lib_dirs:
+            for so in sorted(glob.glob(str(Path(lib_dir) / pattern))):
+                try:
+                    ctypes.CDLL(so, mode=ctypes.RTLD_GLOBAL)
+                except OSError:  # pragma: no cover - best effort
+                    pass
+
+
+def ensure_cudnn_visible(log=None) -> None:
+    """Re-execute this process with LD_LIBRARY_PATH set, if that is what CUDA needs.
+
+    Parameters
+    ----------
+    log : callable, optional
+        Called with one string just before the re-exec, so the operator sees why the
+        process restarted.
+
+    Notes
+    -----
+    onnxruntime 1.30 ``dlopen``s the UNVERSIONED soname ``libcudnn.so``, while the
+    ``nvidia-cudnn-cu12`` wheel ships only ``libcudnn.so.9``. The failure is late and
+    confusing: providers list CUDA, the session builds, and the first inference dies with
+    "NOT_IMPLEMENTED ... ReduceL2 ... cuDNN is unavailable for CUDA Execution Provider:
+    dlopen failed for libcudnn.so".
+
+    ctypes-preloading the versioned file does not fix it, because ``dlopen`` matches on
+    the exact name (an already-loaded object answers to its SONAME, ``libcudnn.so.9``,
+    not to the name asked for), and the loader reads LD_LIBRARY_PATH once at process
+    start, so setting it from Python is too late. Hence a re-exec: build a directory of
+    symlinks whose names are the ones onnxruntime asks for, put it and the wheels' own
+    library directories on LD_LIBRARY_PATH, and start over. The marker variable stops
+    that from recursing.
+
+    Keeping this in the code rather than in a shell wrapper is deliberate: it is
+    environment plumbing that must travel with the code, or the next person rediscovers
+    a multi-hour job silently running on CPU.
+    """
+    import glob
+    import site
+    import sys
+    import tempfile
+
+    if os.environ.get("JLR_CUDNN_REEXEC") == "1":
+        return
+    lib_dirs: list[Path] = []
+    for base in dict.fromkeys([*site.getsitepackages(), site.getusersitepackages()]):
+        if base:
+            lib_dirs.extend(Path(d) for d in glob.glob(str(Path(base) / "nvidia" / "*" / "lib")))
+    versioned = [so for lib_dir in lib_dirs
+                 for so in sorted(glob.glob(str(lib_dir / "libcudnn.so.*")))]
+    if not versioned:
+        return  # no wheels: either cuDNN is installed system-wide, or CPU it is
+
+    compat = Path(tempfile.gettempdir()) / "jlr-cudnn-compat"
+    compat.mkdir(parents=True, exist_ok=True)
+    link = compat / "libcudnn.so"
+    target = Path(sorted(versioned)[-1])
+    if link.is_symlink() or link.exists():
+        link.unlink()
+    link.symlink_to(target)
+
+    search = os.pathsep.join([str(compat), *(str(d) for d in lib_dirs),
+                              os.environ.get("LD_LIBRARY_PATH", "")]).rstrip(os.pathsep)
+    if log:
+        log(f"linking {link.name} -> {target.name} and re-executing with "
+            "LD_LIBRARY_PATH so onnxruntime can load cuDNN")
+    os.execve(sys.executable, [sys.executable, *sys.argv],
+              {**os.environ, "LD_LIBRARY_PATH": search, "JLR_CUDNN_REEXEC": "1"})
+
+
+def select_providers(want_gpu: bool) -> tuple[list[str], list[str]]:
+    """Choose onnxruntime execution providers, always with CPU as a fallback.
+
+    Parameters
+    ----------
+    want_gpu : bool
+        Prefer a GPU provider (CUDA, then ROCm) when one is registered.
+
+    Returns
+    -------
+    tuple[list[str], list[str]]
+        The chosen provider list, and everything the installed onnxruntime offers, for
+        logging: ``get_available_providers()`` is how a silent GPU-load failure becomes
+        visible, since onnxruntime drops providers it cannot load without erroring.
+
+    Notes
+    -----
+    CPU is ALWAYS appended. The runtime weights are int8, and an int8 operator the CUDA
+    provider has no kernel for is placed on CPU instead of failing the session. That is
+    also why a GPU buys little on these weights: onnxruntime reports "336 Memcpy nodes
+    are added to the graph" and the batch crosses the bus once per partition boundary.
+    """
+    available = list(ort.get_available_providers())
+    if want_gpu:
+        for gpu in ("CUDAExecutionProvider", "ROCMExecutionProvider"):
+            if gpu in available:
+                return [gpu, "CPUExecutionProvider"], available
+    return ["CPUExecutionProvider"], available
 
 
 def _resolve_intra_threads(n: int) -> int:
@@ -161,7 +319,7 @@ class Encoder:
         # Matryoshka (MRL) truncation width. ``out_dim`` (wired from EMBED_OUT_DIM by the
         # services) OVERRIDES the model profile's default when given: a positive int
         # truncates to that many dims, 0 keeps the full model width, and None (the
-        # default) uses the profile's out_dim (arctic-embed-l-v2.0 -> 256). Truncating
+        # default) uses the profile's out_dim (arctic-embed-l-v2.0 -> 1024). Truncating
         # below the model's native width is only meaningful for an MRL-trained model
         # (arctic v2.0 is), so keep EMBED_OUT_DIM aligned with RUNTIME_MODEL. Changing it
         # re-embeds the whole catalog (the dim is baked into each .vec.json and gated on;

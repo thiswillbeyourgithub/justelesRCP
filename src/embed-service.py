@@ -143,7 +143,7 @@ class Embedder:
                  reconcile_seconds: float, queue_max: int, refresh_url: str,
                  timeout: float, min_chars: int, max_chars: int,
                  max_concurrent_queries: int = 8, query_wait: float = 2.0,
-                 sem_floor: float = 0.0, quant: str = "int8",
+                 sem_floor: float = 0.0, quant: str = "binary",
                  model_rss: float | None = None) -> None:
         self.encoder = encoder
         self.model = model
@@ -771,16 +771,19 @@ class _QuietHTTPServer(ThreadingHTTPServer):
               envvar="EMBED_MODEL_DIR",
               help="Directory of the ONNX model + tokenizer (env EMBED_MODEL_DIR). "
                    "Mounted read-only from ./models by scripts/download-model.sh.")
-@click.option("--out-dim", type=int, default=256, show_default=True,
+@click.option("--out-dim", type=int, default=1024, show_default=True,
               envvar="EMBED_OUT_DIM",
               help="Matryoshka (MRL) embedding width to truncate to (env EMBED_OUT_DIM). "
-                   "256 suits arctic-embed-l-v2.0; 0 keeps the full model width. This is "
+                   "1024 is arctic-embed-l-v2.0's full width and the default because "
+                   "EMBED_VEC_QUANT stores a passage at one bit per dimension, so wide "
+                   "is cheaper than precise (128 bytes a vector against 256 for the old "
+                   "256-int8); 0 also keeps the full model width. This is "
                    "the PASSAGE width and the default query width. Changing it re-embeds "
                    "the whole catalog (the width is baked into each .vec.json and gated "
                    "on), which is why a client that wants another width sends `dim` in "
                    "its /api/sem/embed body instead: query width is free, passage width "
                    "is not.")
-@click.option("--vec-quant", type=click.Choice(build.VEC_QUANTS), default="int8",
+@click.option("--vec-quant", type=click.Choice(build.VEC_QUANTS), default="binary",
               show_default=True, envvar="EMBED_VEC_QUANT",
               help="Passage quantisation baked into each .vec.json (env "
                    "EMBED_VEC_QUANT). 'int8' is one byte per dimension; 'binary' is one "

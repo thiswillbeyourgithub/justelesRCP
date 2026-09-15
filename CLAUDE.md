@@ -850,11 +850,11 @@ Key facts that aren't obvious from a single file:
   the background page path (`session.run` is thread-safe). A per-model recipe
   (`onnx_embed._profile`, keyed on `RUNTIME_MODEL`) picks the ONNX file, pooling, prefixes
   and MRL width: arctic-l-v2.0 = **CLS-pool -> L2, query-only `query: ` prefix (NO passage
-  prefix), Matryoshka-truncated to 256 dims** (truncate THEN normalise once), verified
+  prefix), Matryoshka-truncated to 1024 dims, its full width** (truncate THEN normalise once), verified
   against the repo config + ONNX graph (inputs `input_ids`/`attention_mask` only, output
   `token_embeddings`). The MRL width is the profile default but is **env-configurable via
   `EMBED_OUT_DIM`** (`Encoder(out_dim=...)`, `--out-dim` on embed-service.py + embed-rcp.py;
-  default 256, `0`=full model width): the served width is baked into each `.vec.json` and
+  default 1024, `0`=full model width, which for this model 1024 also is): the served width is baked into each `.vec.json` and
   gated alongside the model, so a change to EITHER `RUNTIME_MODEL` OR `EMBED_OUT_DIM`
   re-embeds the whole catalog (`read_vec_meta`/`embed_page_to_vec`/`vec_is_fresh` compare
   both, keeping the reader's query vectors and the stored passage vectors at one width; a
@@ -1237,7 +1237,7 @@ uv run src/embed-service.py   # optional: warm SERVER-SIDE embedder on :8461 (be
                           #  (500), EMBED_MAX_CONCURRENT_QUERIES (8, bounds encode CPU; per-IP rate limit
                           #  belongs at the proxy), EMBED_MIN/MAX_QUERY_CHARS (5/400), EMBED_QUERY_CACHE
                           #  (256) + EMBED_QUERY_CACHE_TTL_SECONDS (60, bounds query-data retention; 0=off),
-                          #  EMBED_MODEL_DIR, EMBED_OUT_DIM (MRL width, 256; change re-embeds all),
+                          #  EMBED_MODEL_DIR, EMBED_OUT_DIM (MRL width, 1024; change re-embeds all),
                           #  EMBED_VEC_QUANT (passage quant, int8|binary; change re-embeds all),
                           #  REFRESH_TRIGGER_URL (baseline auto-crawl), EMBED_LOG_LEVEL;
                           # GET /api/sem/stats (INTERNAL, blocked at the edge) + GET

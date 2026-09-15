@@ -2012,7 +2012,7 @@ def write_changelog(payload: dict) -> None:
 # embed-service.py, or embed-rcp.py offline), NOT baked from data/emb here. These two
 # helpers are the SHARED writer both use, so the served format has one definition.
 def vec_payload(chunks, vecs, model: str, query_prefix: str, src_hash: str,
-                *, quant: str = "int8") -> dict:
+                *, quant: str = "binary") -> dict:
     """Build one page's served .vec.json dict from its section chunks + float vectors.
 
     ``chunks`` is section_chunks()'s ``[(sec_id, snippet, chunk_text), ...]``; ``vecs``
@@ -2231,7 +2231,7 @@ def iter_overlay_raw(paths=None):
 
 
 def embed_page_to_vec(cis: str, raw: str, subdir: str, encoder, *,
-                      model: str, quant: str = "int8", force: bool = False,
+                      model: str, quant: str = "binary", force: bool = False,
                       stats: dict | None = None) -> str:
     """Segment a crawled page's raw HTML into sections, embed them with ``encoder``,
     and write ``dist/<subdir>/<slug>.vec.json``. Returns ``"ok"`` (wrote fresh

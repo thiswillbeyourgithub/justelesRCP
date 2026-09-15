@@ -464,12 +464,12 @@ def test_vec_payload_roundtrip():
         _l2_normalise([(-1) ** i * 0.2 for i in range(8)]),
     ]
     payload = build.vec_payload(chunks, vecs, "Xenova/multilingual-e5-small",
-                                "query: ", "abc123def456")
+                                "query: ", "abc123def456", quant="int8")
     assert payload["model"] == "Xenova/multilingual-e5-small"
     assert payload["query_prefix"] == "query: "
     assert payload["src_hash"] == "abc123def456"
     assert payload["dim"] == 8, payload["dim"]
-    assert payload["quant"] == "int8", payload["quant"]  # the default, unchanged
+    assert payload["quant"] == "int8", payload["quant"]  # as asked for, not the default
     assert len(payload["chunks"]) == 2
     c0 = payload["chunks"][0]
     assert c0["sec"] == "sec-0" and c0["snippet"] == "prise pendant les repas"
@@ -530,7 +530,8 @@ def test_vec_payload_binary_is_eight_times_narrower_and_ranks_the_same():
     assert payload["dim"] == 16, payload["dim"]  # LOGICAL width, not the 2 stored bytes
     assert len(base64.b64decode(payload["chunks"][0]["q"])) == 2
     # Eight times fewer bytes than int8 at the same width, which is the reason to do it.
-    int8_payload = build.vec_payload(chunks, vecs, "m", "query: ", "abc123def456")
+    int8_payload = build.vec_payload(chunks, vecs, "m", "query: ", "abc123def456",
+                                     quant="int8")
     assert len(base64.b64decode(int8_payload["chunks"][0]["q"])) == 16
     # Ranking survives: a query that IS one of the passages must still score that passage
     # highest, and the decoded passage must be a unit vector, so the score the reader
@@ -559,7 +560,7 @@ def test_write_read_vec_meta_roundtrip():
     payload = build.vec_payload(
         [("sec-0", "snip", "un texte")],
         [_l2_normalise([0.3] * 6)],
-        "Xenova/multilingual-e5-small", "query: ", "feedface1234",
+        "Xenova/multilingual-e5-small", "query: ", "feedface1234", quant="int8",
     )
     with tempfile.TemporaryDirectory() as d:
         vec = Path(d) / "12345678-doliprane.vec.json"
@@ -606,7 +607,8 @@ def test_vec_is_fresh_gate():
     # rank against old-model passage vectors, silently wrong).
     payload_old = build.vec_payload([("sec-0", "snip", "texte")],
                                     [_l2_normalise([0.3] * 6)],
-                                    "old-model", "query: ", "cafe1234cafe1234")
+                                    "old-model", "query: ", "cafe1234cafe1234",
+                                    quant="int8")
     with tempfile.TemporaryDirectory() as d:
         d = Path(d)
         overlay = d / "12345678.html"
@@ -649,7 +651,8 @@ def test_vec_is_fresh_gate():
 
         # 8. A chunkless page bakes dim=0 (dimensionless), so it matches any width, and
         #    having no vectors at all, any quantisation.
-        empty = build.vec_payload([], [], "old-model", "query: ", "beadbeadbeadbead")
+        empty = build.vec_payload([], [], "old-model", "query: ", "beadbeadbeadbead",
+                                  quant="int8")
         vec2 = d / "87654321-vide.vec.json"
         build.write_vec_json(vec2, empty)
         os.utime(overlay, (overlay.stat().st_atime, vec2.stat().st_mtime - 10))
@@ -1068,11 +1071,13 @@ def test_embed_page_to_vec_reports_stats():
         try:
             enc = _FakeEncoder()
             info: dict = {}
-            r1 = build.embed_page_to_vec("12345678", raw, "rcp", enc, model="m", stats=info)
+            r1 = build.embed_page_to_vec("12345678", raw, "rcp", enc, model="m",
+                                         quant="int8", stats=info)
             assert r1 == "ok", r1
             assert info.get("chunks", 0) >= 1 and info.get("chars", 0) > 0, info
             info2: dict = {}
-            r2 = build.embed_page_to_vec("12345678", raw, "rcp", enc, model="m", stats=info2)
+            r2 = build.embed_page_to_vec("12345678", raw, "rcp", enc, model="m",
+                                         quant="int8", stats=info2)
             assert r2 == "fresh" and info2 == {}, (r2, info2)  # skip leaves stats untouched
         finally:
             build.DIST = saved
@@ -1103,7 +1108,8 @@ def test_embed_page_to_vec_re_embeds_on_a_quantisation_change():
         try:
             enc = _FakeEncoder()
             vec = build.vec_path_for(page)
-            assert build.embed_page_to_vec("12345678", raw, "rcp", enc, model="m") == "ok"
+            assert build.embed_page_to_vec("12345678", raw, "rcp", enc, model="m",
+                                           quant="int8") == "ok"
             assert build.read_vec_meta(vec)["quant"] == "int8"
             int8_bytes = len(base64.b64decode(json.loads(
                 vec.read_text(encoding="utf-8"))["chunks"][0]["q"]))
