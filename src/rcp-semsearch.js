@@ -18,11 +18,15 @@
 // no result snippet (page text) leaks as an event label either.
 //
 // Two halves:
-//   1. Per-page vectors: the embed service bakes dist/<rcp|eu>/<slug>.vec.json (int8,
-//      one vector per section chunk) as each page is CRAWLED (never the frozen 2022
-//      baseline). Fetched lazily on first open.
-//   2. Query vector: POST /api/sem/embed {q} -> {q: base64-int8, dim}. The client
-//      dequantises both sides with the same decodeVec and cosine-ranks locally, so
+//   1. Per-page vectors: the embed service bakes dist/<rcp|eu>/<slug>.vec.json (one
+//      vector per section chunk) as each page is CRAWLED (never the frozen 2022
+//      baseline). Fetched lazily on first open. The file names its own quantisation:
+//      "int8" (one byte per dimension) or "binary" (one BIT per dimension, its sign,
+//      8x narrower at the same width), and its "dim" is the LOGICAL width either way.
+//   2. Query vector: POST /api/sem/embed {q} -> {q: base64-int8, dim}. The QUERY is
+//      always int8, whatever the passages are: scoring is asymmetric, a full-precision
+//      query against a sign-only passage, which costs nothing to send and keeps the
+//      score a real cosine. The client decodes both sides and cosine-ranks locally, so
 //      the server holds no per-reader state and returns only a tiny vector. Ranking is
 //      HYBRID: the cosine is blended with a client-side lexical bonus (a fuzzy word
 //      match of the query against each section's own words), see rank()/lexicalScore.
@@ -193,10 +197,37 @@
     if (typeof window.trackEvent === "function") window.trackEvent(name, data);
   }
 
-  // base64(signed int8 bytes) -> dequantised Float32Array (mirror of build.py
-  // quantize_int8: v = q / 127). Int8 is stored two's-complement in each byte.
-  function decodeVec(b64) {
+  // base64 -> Float32Array, decoding whichever quantisation the payload declares.
+  // Mirrors build.py's quantize_int8 / quantize_binary; the two must never drift.
+  //
+  //   "int8"   one signed byte per dimension, two's-complement, v = q / 127.
+  //   "binary" one BIT per dimension (its sign), MSB first inside each byte, so the
+  //            base64 decodes to dim/8 bytes. A set bit is +1/sqrt(dim) and a clear one
+  //            -1/sqrt(dim), which makes the unpacked vector UNIT length: dotting it
+  //            with the unit-norm query therefore still yields a cosine, and the whole
+  //            rest of this file (the dot loop, semFloor, the percentage badge) needs
+  //            no special case. Expect that cosine to read LOWER than the int8 one for
+  //            the same pair: dropping magnitudes shrinks it by roughly sqrt(2/pi).
+  //            Ranking, which is all that matters here, is unaffected (measured: see
+  //            build.py's VEC_QUANTS).
+  //
+  // `dim` is the LOGICAL width and is only consulted for "binary" (for int8 the byte
+  // count IS the width). An unknown quantisation returns an empty vector rather than
+  // guessing: mis-decoded bytes are noise, and the caller's dim check then fails
+  // loudly with "index to be updated" instead of ranking nonsense.
+  function decodeVec(b64, quant, dim) {
     const bin = atob(b64);
+    if (quant === "binary") {
+      const width = dim || bin.length * 8;
+      const out = new Float32Array(width);
+      const scale = 1 / Math.sqrt(width);
+      for (let i = 0; i < width; i++) {
+        const bit = bin.charCodeAt(i >> 3) & (0x80 >> (i & 7));
+        out[i] = bit ? scale : -scale;
+      }
+      return out;
+    }
+    if (quant && quant !== "int8") return new Float32Array(0);
     const out = new Float32Array(bin.length);
     for (let i = 0; i < bin.length; i++) {
       let byte = bin.charCodeAt(i);
@@ -429,12 +460,18 @@
     }
     if (!res.ok) throw fail("Recherche sémantique pas encore disponible pour cette page.");
     const data = await res.json();
+    // A payload with no "quant" key predates the binary format and is int8 (see
+    // build.read_vec_meta, which defaults it the same way), so old and new sidecars can
+    // be served side by side while the catalog re-embeds.
+    const quant = data.quant || "int8";
     chunks = (data.chunks || []).map((c) => ({
       sec: c.sec,
       snippet: c.snippet,
-      vec: decodeVec(c.q),
+      vec: decodeVec(c.q, quant, data.dim),
     }));
     if (!chunks.length) throw fail("Aucun contenu indexé pour cette page.");
+    // The width the query must match. Under "binary" the vectors were UNPACKED to the
+    // logical width, so this is dim either way and the check below is unchanged.
     pageDim = chunks[0].vec.length; // query vectors must match this dim (same model)
   }
 
