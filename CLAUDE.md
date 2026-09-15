@@ -899,7 +899,10 @@ Key facts that aren't obvious from a single file:
   +-0.045: 1024-binary page@1 **0.675**, 1024-int8 0.675, 256-int8 **0.641**, 256-binary
   0.556. So 1024-binary ranks as well as 256-int8 at half the bytes. Binary only collapses
   where the corpus is large and the runner-up close: the same measurement run cross-corpus
-  over 27k chunks gives 256-binary 0.282 against 0.419 for 1024-binary. Two ordering rules
+  over 27k chunks gives 256-binary 0.282 against 0.419 for 1024-binary. What it buys on the
+  wire, measured by baking two real pages (274 sections) both ways: the served `.vec.json`
+  drops 33% plain and 37% gzipped (144 KB -> 97 KB, 79 KB -> 50 KB gzipped). Less than the
+  50% the vectors alone would suggest, because a sidecar is vectors AND snippets. Two ordering rules
   when flipping it: deploy the site FIRST (an older `rcp-semsearch.js` cannot decode
   `binary`), and pre-bake locally (`embed-rcp.py --vec-quant binary`, then
   `deploy.sh --push-vectors`) unless you want the VPS re-embedding ~15k pages at CPU speed
