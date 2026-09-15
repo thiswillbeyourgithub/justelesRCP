@@ -1076,6 +1076,65 @@ def dequantize_int8(q) -> list[float]:
     return [x / 127 for x in q]
 
 
+# The two served passage quantisations, i.e. the two things a .vec.json's "q" can hold.
+# "int8" is the historical one (one byte per dimension, quantize_int8). "binary" is one
+# BIT per dimension (its sign), which buys 8x the WIDTH for the same bytes.
+#
+# Measured, not assumed (../justelesrecos, scripts/evaluate.py --within-document, which
+# masks everything outside the gold document and so reproduces exactly what this project
+# does: search inside ONE drug's RCP). page@1 over 117 queries, standard error +-0.045:
+#
+#     1024 binary (128 B/vec)  0.675      256 int8 (256 B/vec)  0.641
+#     1024 int8   (1024 B/vec) 0.675      256 binary (32 B/vec) 0.556
+#
+# So 1024-binary matches 256-int8 on ranking (the gap is well inside one SE) at HALF the
+# bytes. The reason binary is safe here and not everywhere: it only collapses when the
+# runner-up is close, which happens when the corpus is large. The same measurement run
+# cross-corpus over 27k chunks gives 256-binary 0.282 against 0.419 for 1024-binary.
+# Inside one RCP there are a few hundred sections and the right one is not close-run.
+VEC_QUANTS = ("int8", "binary")
+
+
+def quantize_binary(values) -> bytes:
+    """Pack an L2-normalised embedding to ONE BIT per dimension: its sign.
+
+    A bit is set when the component is > 0, MSB-first within each byte. MSB-first is
+    numpy's ``np.packbits`` default, so a vector packed here and one packed by a numpy
+    bake are byte-identical; src/rcp-semsearch.js unpacks in the same order.
+
+    The reader never recovers magnitudes, only signs, and scores ASYMMETRICALLY: the
+    query keeps its int8 precision and is dotted against the unpacked +-1/sqrt(dim)
+    passage, which is a unit vector, so the result is still a genuine cosine (a smaller
+    one than the float cosine: dropping magnitudes shrinks it by roughly sqrt(2/pi)).
+
+    Parameters
+    ----------
+    values : iterable of float
+        Vector components, L2-normalised. The length MUST be a multiple of 8.
+
+    Returns
+    -------
+    bytes
+        ``len(values) // 8`` bytes.
+
+    Raises
+    ------
+    ValueError
+        If the width is not a multiple of 8. A partial trailing byte would have to be
+        padded, and a padding bit is indistinguishable from a real negative component
+        on the reader's side, so it would silently skew every cosine rather than fail.
+    """
+    vals = list(values)
+    if len(vals) % 8:
+        raise ValueError(
+            f"binary quantisation needs a width divisible by 8, got {len(vals)}")
+    out = bytearray(len(vals) // 8)
+    for i, v in enumerate(vals):
+        if v > 0:
+            out[i >> 3] |= 0x80 >> (i & 7)
+    return bytes(out)
+
+
 def raw_hash(raw: str) -> str:
     """Short content hash of an overlay's raw HTML, baked into its .vec.json as the
     self-describing staleness key (a re-crawl that produced identical bytes hashes the
@@ -1952,25 +2011,48 @@ def write_changelog(payload: dict) -> None:
 # Per-drug section vectors are computed server-side now (the warm ONNX encoder in
 # embed-service.py, or embed-rcp.py offline), NOT baked from data/emb here. These two
 # helpers are the SHARED writer both use, so the served format has one definition.
-def vec_payload(chunks, vecs, model: str, query_prefix: str, src_hash: str) -> dict:
+def vec_payload(chunks, vecs, model: str, query_prefix: str, src_hash: str,
+                *, quant: str = "int8") -> dict:
     """Build one page's served .vec.json dict from its section chunks + float vectors.
 
     ``chunks`` is section_chunks()'s ``[(sec_id, snippet, chunk_text), ...]``; ``vecs``
     is an aligned iterable of L2-normalised float vectors (one per chunk). Each vector
-    is int8-quantised (quantize_int8, the canonical formula) and base64-packed: the
-    SAME wire format src/rcp-semsearch.js decodes. ``src_hash`` (sha256 of the raw
-    overlay) is baked in as the self-describing staleness key, so a re-crawl that
-    produced identical bytes hashes the same and the embedder skips re-embedding."""
+    is quantised (``quant``) and base64-packed: the SAME wire format
+    src/rcp-semsearch.js decodes. ``src_hash`` (sha256 of the raw overlay) is baked in
+    as the self-describing staleness key, so a re-crawl that produced identical bytes
+    hashes the same and the embedder skips re-embedding.
+
+    ``dim`` in the payload is the LOGICAL width (the number of components), not the
+    number of bytes: under "binary" the base64 decodes to ``dim / 8`` bytes. The reader
+    needs both numbers and can derive one from the other only if it is told which
+    quantisation was used, which is why ``quant`` is written into the payload. A
+    payload with NO ``quant`` key is int8: that is what every file baked before the
+    binary format existed looks like, and read_vec_meta defaults it accordingly.
+
+    Parameters
+    ----------
+    quant : {"int8", "binary"}
+        Passage quantisation, see VEC_QUANTS. "binary" requires a width divisible by 8.
+    """
+    if quant not in VEC_QUANTS:
+        raise ValueError(f"unknown vector quantisation {quant!r}, expected one of "
+                         f"{VEC_QUANTS}")
     out_chunks = []
     dim = 0
     for (sec_id, snippet, _text), vec in zip(chunks, vecs):
-        q = quantize_int8(list(vec))
-        dim = len(q)
-        b64 = base64.b64encode(struct.pack(f"{len(q)}b", *q)).decode("ascii")
+        values = list(vec)
+        dim = len(values)
+        if quant == "binary":
+            packed = quantize_binary(values)
+        else:
+            q = quantize_int8(values)
+            packed = struct.pack(f"{len(q)}b", *q)
+        b64 = base64.b64encode(packed).decode("ascii")
         out_chunks.append({"sec": sec_id, "snippet": snippet, "q": b64})
     return {
         "model": model,
         "dim": dim,
+        "quant": quant,
         "query_prefix": query_prefix,
         "src_hash": src_hash,
         "chunks": out_chunks,
@@ -2032,11 +2114,17 @@ def vec_path_for(page: Path) -> Path:
 
 
 def read_vec_meta(vec: Path) -> dict | None:
-    """``{src_hash, model, dim}`` baked into an existing ``.vec.json`` (or its ``.gz``),
-    else None. The self-describing staleness key: no separate manifest is kept. ``dim``
-    is the served vector width (the MRL truncation length, e.g. 256): a change to it (via
-    EMBED_OUT_DIM) MUST re-embed, just like a model swap, because the reader's query
-    vectors and the stored passage vectors have to share one width or cosine breaks."""
+    """``{src_hash, model, dim, quant}`` baked into an existing ``.vec.json`` (or its
+    ``.gz``), else None. The self-describing staleness key: no separate manifest is kept.
+
+    ``dim`` is the served vector width (the MRL truncation length, e.g. 1024): a change
+    to it (via EMBED_OUT_DIM) MUST re-embed, just like a model swap, because the
+    reader's query vectors and the stored passage vectors have to share one width or
+    cosine breaks. ``quant`` is the passage quantisation (VEC_QUANTS) and must re-embed
+    for the same reason: the reader decodes the bytes per the quantisation it is told,
+    and int8 bytes read as packed bits are noise, not a worse answer. A file written
+    before the binary format existed carries no ``quant`` key, so it reads back as
+    "int8", which is exactly what it is."""
     for p in (vec, vec.with_name(vec.name + ".gz")):
         if not p.exists():
             continue
@@ -2046,14 +2134,14 @@ def read_vec_meta(vec: Path) -> dict | None:
                 data = gzip.decompress(data)
             d = json.loads(data)
             return {"src_hash": d.get("src_hash"), "model": d.get("model"),
-                    "dim": d.get("dim")}
+                    "dim": d.get("dim"), "quant": d.get("quant") or "int8"}
         except Exception:
             return None
     return None
 
 
 def vec_is_fresh(vec: Path, overlay: Path, model: str, *, check_model: bool,
-                 dim: int | None = None) -> bool:
+                 dim: int | None = None, quant: str | None = None) -> bool:
     """Cheap "is this page's .vec.json up to date?" gate for the embed service's
     reconcile sweep, so it can skip re-enqueuing pages that are already embedded.
 
@@ -2068,8 +2156,10 @@ def vec_is_fresh(vec: Path, overlay: Path, model: str, *, check_model: bool,
     carry the current model AND (when ``dim`` is given) the current served width in its
     baked metadata; otherwise it is treated as stale and re-embedded. A stored ``dim``
     of 0 means the page has no chunks (dimensionless), so it always matches. The
-    authoritative src_hash+model+dim gate still lives in ``embed_page_to_vec``; this only
-    decides whether to bother enqueuing."""
+    authoritative src_hash+model+dim+quant gate still lives in ``embed_page_to_vec``;
+    this only decides whether to bother enqueuing. ``quant`` (when given) is checked
+    alongside ``dim`` and for the same reason: flipping EMBED_VEC_QUANT leaves every
+    baked vec mtime-fresh while its bytes have become undecodable to the reader."""
     try:
         if not (vec.exists() and vec.stat().st_mtime >= overlay.stat().st_mtime):
             return False
@@ -2080,6 +2170,9 @@ def vec_is_fresh(vec: Path, overlay: Path, model: str, *, check_model: bool,
         if not meta or meta.get("model") != model:
             return False
         if dim is not None and meta.get("dim") not in (0, dim):
+            return False
+        # A chunkless page (dim 0) has no vectors at all, so no quantisation to match.
+        if quant is not None and meta.get("dim") != 0 and meta.get("quant") != quant:
             return False
     return True
 
@@ -2138,7 +2231,7 @@ def iter_overlay_raw(paths=None):
 
 
 def embed_page_to_vec(cis: str, raw: str, subdir: str, encoder, *,
-                      model: str, force: bool = False,
+                      model: str, quant: str = "int8", force: bool = False,
                       stats: dict | None = None) -> str:
     """Segment a crawled page's raw HTML into sections, embed them with ``encoder``,
     and write ``dist/<subdir>/<slug>.vec.json``. Returns ``"ok"`` (wrote fresh
@@ -2154,6 +2247,10 @@ def embed_page_to_vec(cis: str, raw: str, subdir: str, encoder, *,
     rewrote identical bytes hashes the same and is skipped (mtime bumped so a
     mtime-gated sweep stops re-queuing it).
 
+    ``quant`` is the served passage quantisation (VEC_QUANTS), baked into the payload
+    and part of the staleness gate: changing it re-embeds the catalog, because the
+    reader decodes by what the file claims and int8 bytes read as packed bits are noise.
+
     ``stats`` is an optional out-dict the caller can pass to learn how much work the
     encode actually did (for logging/throughput): on the ``"ok"`` path it is filled
     with ``chunks`` (sections encoded) and ``chars`` (total characters fed to the
@@ -2165,11 +2262,13 @@ def embed_page_to_vec(cis: str, raw: str, subdir: str, encoder, *,
     src_hash = raw_hash(raw)
     if not force:
         meta = read_vec_meta(vec)
-        # Re-embed on ANY of: content change (src_hash), model swap, or served-width
-        # change (EMBED_OUT_DIM). A stored dim of 0 = a chunkless page, dimensionless,
-        # so it stays fresh regardless of the current width.
+        # Re-embed on ANY of: content change (src_hash), model swap, served-width
+        # change (EMBED_OUT_DIM) or quantisation change (EMBED_VEC_QUANT). A stored dim
+        # of 0 = a chunkless page, dimensionless and vectorless, so it stays fresh
+        # regardless of the current width AND quantisation.
         if (meta and meta.get("src_hash") == src_hash and meta.get("model") == model
-                and meta.get("dim") in (0, encoder.dim)):
+                and meta.get("dim") in (0, encoder.dim)
+                and (meta.get("dim") == 0 or meta.get("quant") == quant)):
             try:
                 os.utime(vec, None)
             except OSError:
@@ -2180,7 +2279,8 @@ def embed_page_to_vec(cis: str, raw: str, subdir: str, encoder, *,
     # the hash gate marks it fresh and we don't re-embed it on every pass.
     texts = [c[2] for c in chunks]
     vecs = encoder.encode_passages(texts) if texts else []
-    payload = vec_payload(chunks, vecs, model, encoder.query_prefix, src_hash)
+    payload = vec_payload(chunks, vecs, model, encoder.query_prefix, src_hash,
+                          quant=quant)
     write_vec_json(vec, payload)
     if stats is not None:
         stats["chunks"] = len(texts)

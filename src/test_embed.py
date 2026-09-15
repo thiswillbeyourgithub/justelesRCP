@@ -469,6 +469,7 @@ def test_vec_payload_roundtrip():
     assert payload["query_prefix"] == "query: "
     assert payload["src_hash"] == "abc123def456"
     assert payload["dim"] == 8, payload["dim"]
+    assert payload["quant"] == "int8", payload["quant"]  # the default, unchanged
     assert len(payload["chunks"]) == 2
     c0 = payload["chunks"][0]
     assert c0["sec"] == "sec-0" and c0["snippet"] == "prise pendant les repas"
@@ -478,6 +479,77 @@ def test_vec_payload_roundtrip():
     for original, restored in zip(vecs[0], deq):
         assert abs(original - restored) <= 1.0 / 127 + 1e-9, (original, restored)
     print("ok  test_vec_payload_roundtrip")
+
+
+def _decode_binary_q(b64, dim):
+    """Decode a base64 packed-bit vector back to floats, exactly as the browser's
+    decodeVec does for quant "binary": a set bit is +1/sqrt(dim), a clear one
+    -1/sqrt(dim), MSB first inside each byte. The result is a UNIT vector, so dotting it
+    with a unit-norm query yields a genuine cosine."""
+    raw = base64.b64decode(b64)
+    assert len(raw) == dim // 8, (len(raw), dim)
+    scale = 1.0 / math.sqrt(dim)
+    return [scale if raw[i >> 3] & (0x80 >> (i & 7)) else -scale for i in range(dim)]
+
+
+def test_quantize_binary_packs_signs_msb_first():
+    # One bit per dimension, MSB first, so the packing matches numpy's packbits default
+    # and the browser's unpacking. Byte 0 here is 1,0,1,0,0,0,0,0 = 0b10100000 = 0xA0.
+    packed = build.quantize_binary([0.5, -0.5, 0.01, -0.01, -1.0, -1.0, -1.0, -1.0])
+    assert packed == b"\xa0", packed
+    # Only the SIGN survives: two vectors differing only in magnitude pack identically,
+    # which is the point (and why the score shrinks relative to the float cosine).
+    assert build.quantize_binary([0.9, -0.1] * 4) == build.quantize_binary([0.1, -0.9] * 4)
+    # Exactly zero is NOT positive (matches numpy's `v > 0`), so it packs as a clear bit.
+    assert build.quantize_binary([0.0] * 8) == b"\x00"
+    # A width that is not a multiple of 8 is refused rather than padded: a padding bit is
+    # indistinguishable from a real negative component and would skew every cosine.
+    try:
+        build.quantize_binary([0.1] * 12)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected ValueError on a width not divisible by 8")
+    print("ok  test_quantize_binary_packs_signs_msb_first")
+
+
+def test_vec_payload_binary_is_eight_times_narrower_and_ranks_the_same():
+    # The binary payload is the same wire shape with quant="binary", dim = the LOGICAL
+    # width (not the byte count) and q = base64 of dim/8 bytes.
+    chunks = [
+        ("sec-0", "posologie", "4.2 posologie: a prendre au cours des repas"),
+        ("sec-3", "grossesse", "4.6 grossesse: deconseille au 3e trimestre"),
+    ]
+    vecs = [
+        _l2_normalise([0.1 * (i - 3) for i in range(16)]),
+        _l2_normalise([(-1) ** i * 0.2 for i in range(16)]),
+    ]
+    payload = build.vec_payload(chunks, vecs, "m", "query: ", "abc123def456",
+                                quant="binary")
+    assert payload["quant"] == "binary"
+    assert payload["dim"] == 16, payload["dim"]  # LOGICAL width, not the 2 stored bytes
+    assert len(base64.b64decode(payload["chunks"][0]["q"])) == 2
+    # Eight times fewer bytes than int8 at the same width, which is the reason to do it.
+    int8_payload = build.vec_payload(chunks, vecs, "m", "query: ", "abc123def456")
+    assert len(base64.b64decode(int8_payload["chunks"][0]["q"])) == 16
+    # Ranking survives: a query that IS one of the passages must still score that passage
+    # highest, and the decoded passage must be a unit vector, so the score the reader
+    # displays stays a real cosine.
+    decoded = [_decode_binary_q(c["q"], 16) for c in payload["chunks"]]
+    for vec in decoded:
+        assert abs(math.sqrt(sum(x * x for x in vec)) - 1.0) < 1e-9
+    query = vecs[0]
+    scores = [sum(a * b for a, b in zip(query, vec)) for vec in decoded]
+    assert scores[0] > scores[1], scores
+    # An unknown quantisation is a loud failure, never a silent fallback to int8: bytes
+    # read under the wrong scheme are noise, not a slightly worse answer.
+    try:
+        build.vec_payload(chunks, vecs, "m", "query: ", "h", quant="float16")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected ValueError on an unknown quantisation")
+    print("ok  test_vec_payload_binary_is_eight_times_narrower_and_ranks_the_same")
 
 
 def test_write_read_vec_meta_roundtrip():
@@ -497,7 +569,15 @@ def test_write_read_vec_meta_roundtrip():
         assert gz.exists(), "expected a .gz sibling from compress()"
         meta = build.read_vec_meta(vec)
         assert meta == {"src_hash": "feedface1234",
-                        "model": "Xenova/multilingual-e5-small", "dim": 6}, meta
+                        "model": "Xenova/multilingual-e5-small", "dim": 6,
+                        "quant": "int8"}, meta
+        # A file baked BEFORE the binary format existed has no "quant" key at all. It
+        # must read back as int8 (which is what it is), not as None, or the freshness
+        # gate would call the whole legacy catalog stale and re-embed it for nothing.
+        legacy = json.loads(vec.read_text(encoding="utf-8"))
+        legacy.pop("quant")
+        vec.write_text(json.dumps(legacy), encoding="utf-8")
+        assert build.read_vec_meta(vec)["quant"] == "int8"
         # With the plain file gone (as Caddy might serve only the .gz), the meta must
         # still be readable from the compressed sibling.
         vec.unlink()
@@ -558,12 +638,24 @@ def test_vec_is_fresh_gate():
         assert build.vec_is_fresh(vec, overlay, "old-model", check_model=True, dim=6)
         assert not build.vec_is_fresh(vec, overlay, "old-model", check_model=True, dim=8)
 
-        # 7. A chunkless page bakes dim=0 (dimensionless), so it matches any width.
+        # 7. Same for the QUANTISATION (EMBED_VEC_QUANT): the payload above is int8, so
+        #    asking for int8 keeps it fresh and asking for binary makes it stale. Without
+        #    this the flip to binary would leave every mtime-fresh page untouched and the
+        #    reader would unpack int8 bytes as packed bits, i.e. score noise.
+        assert build.vec_is_fresh(vec, overlay, "old-model", check_model=True,
+                                  dim=6, quant="int8")
+        assert not build.vec_is_fresh(vec, overlay, "old-model", check_model=True,
+                                      dim=6, quant="binary")
+
+        # 8. A chunkless page bakes dim=0 (dimensionless), so it matches any width, and
+        #    having no vectors at all, any quantisation.
         empty = build.vec_payload([], [], "old-model", "query: ", "beadbeadbeadbead")
         vec2 = d / "87654321-vide.vec.json"
         build.write_vec_json(vec2, empty)
         os.utime(overlay, (overlay.stat().st_atime, vec2.stat().st_mtime - 10))
         assert build.vec_is_fresh(vec2, overlay, "old-model", check_model=True, dim=8)
+        assert build.vec_is_fresh(vec2, overlay, "old-model", check_model=True,
+                                  dim=8, quant="binary")
     print("ok  test_vec_is_fresh_gate")
 
 
@@ -1158,6 +1250,8 @@ if __name__ == "__main__":
     test_layout_table_falls_back_flat()
     test_eu_overlay_preserves_existing_ids()
     test_vec_payload_roundtrip()
+    test_quantize_binary_packs_signs_msb_first()
+    test_vec_payload_binary_is_eight_times_narrower_and_ranks_the_same()
     test_write_read_vec_meta_roundtrip()
     test_raw_hash_is_the_staleness_key()
     test_vec_is_fresh_gate()
