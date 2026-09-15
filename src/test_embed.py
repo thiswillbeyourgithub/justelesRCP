@@ -1079,6 +1079,51 @@ def test_embed_page_to_vec_reports_stats():
     print("ok  test_embed_page_to_vec_reports_stats")
 
 
+def test_embed_page_to_vec_re_embeds_on_a_quantisation_change():
+    # The producer path end to end (segment -> encode -> gate -> write), with the
+    # quantisation changing under it. int8 bytes decoded as packed bits are noise, not a
+    # worse answer, so a flip of EMBED_VEC_QUANT MUST re-encode rather than be skipped by
+    # the content-hash gate, and the rewritten file must declare what it now holds.
+    class _FakeEncoder:
+        query_prefix = "query: "
+        dim = 16  # divisible by 8, else the binary packer refuses the width
+        def encode_passages(self, texts):
+            return [_l2_normalise([0.1 * (i - 8) for i in range(16)]) for _ in texts]
+
+    raw = ("<div id='textDocument'><h1 class='AmmAnnexeTitre1'>4. Indications</h1>"
+           "<p>Une phrase de contenu suffisamment longue pour tenir dans un chunk "
+           "unique et dépasser le seuil de fusion des petits paragraphes.</p></div>")
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        (d / "rcp").mkdir()
+        page = d / "rcp" / "12345678-drug.html"
+        page.write_text("<html></html>")
+        saved = build.DIST
+        build.DIST = d
+        try:
+            enc = _FakeEncoder()
+            vec = build.vec_path_for(page)
+            assert build.embed_page_to_vec("12345678", raw, "rcp", enc, model="m") == "ok"
+            assert build.read_vec_meta(vec)["quant"] == "int8"
+            int8_bytes = len(base64.b64decode(json.loads(
+                vec.read_text(encoding="utf-8"))["chunks"][0]["q"]))
+            # Same content, same model, DIFFERENT quantisation -> re-embed, not "fresh".
+            r = build.embed_page_to_vec("12345678", raw, "rcp", enc, model="m",
+                                        quant="binary")
+            assert r == "ok", r
+            meta = build.read_vec_meta(vec)
+            assert meta["quant"] == "binary" and meta["dim"] == 16, meta
+            binary_bytes = len(base64.b64decode(json.loads(
+                vec.read_text(encoding="utf-8"))["chunks"][0]["q"]))
+            assert int8_bytes == 8 * binary_bytes, (int8_bytes, binary_bytes)
+            # And asking for binary again IS fresh, or the sweep would spin forever.
+            assert build.embed_page_to_vec("12345678", raw, "rcp", enc, model="m",
+                                           quant="binary") == "fresh"
+        finally:
+            build.DIST = saved
+    print("ok  test_embed_page_to_vec_re_embeds_on_a_quantisation_change")
+
+
 def test_rcp_archived_detects_zero_byte_overlay():
     # rcp_archived is the single canonical "is this drug delisted?" test: a zero-byte
     # ANSM overlay ("scraped, no RCP") means the drug left BDPM. A non-empty overlay
@@ -1266,6 +1311,7 @@ if __name__ == "__main__":
     test_rcp_page_has_canonical_and_no_leftover_slots()
     test_jsonld_escapes_script_breakout_and_website_searchaction()
     test_embed_page_to_vec_reports_stats()
+    test_embed_page_to_vec_re_embeds_on_a_quantisation_change()
     test_rcp_archived_detects_zero_byte_overlay()
     test_iter_rcp_raw_serves_delisted_baseline()
     test_record_hash_changes_when_archived()
