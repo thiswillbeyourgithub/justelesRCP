@@ -877,7 +877,39 @@ Key facts that aren't obvious from a single file:
   (`seq_len`), and when it was also called `width` every vector came back as wide as the
   batch had tokens; `src/onnx_embed.py`'s `__main__` self-test now asserts the widths. `build.quantize_int8`
   (symmetric `q=round(v*127)`, dequant `q/127`) is the ONE canonical formula, mirrored
-  in JS `decodeVec`. **The embed service** (`embed-service.py`, behind Caddy's
+  in JS `decodeVec`.
+
+  **The stored PASSAGE quantisation is a second knob, `EMBED_VEC_QUANT`** (`build.VEC_QUANTS`,
+  `--vec-quant` on embed-service.py + embed-rcp.py; default `int8`). `int8` is one byte per
+  dimension; `binary` (`build.quantize_binary`) is one BIT per dimension, its sign, MSB-first,
+  so a vector is 8x narrower and `dim` in the payload becomes the LOGICAL width rather than
+  the byte count. The query stays int8 whatever the passages are: scoring is asymmetric, a
+  full-precision query dotted with the unpacked +-1/sqrt(dim) passage, which is a unit vector,
+  so the result is still a cosine and nothing downstream (the dot loop, `semFloor`, the
+  percentage badge) needs a special case. It is baked into each `.vec.json` and gated exactly
+  like the width, everywhere the width is: a change re-embeds the catalog, because bytes
+  decoded under the wrong scheme are noise rather than a worse answer. A file with NO `quant`
+  key predates the option and reads back as `int8` (`read_vec_meta`), so old and new sidecars
+  can be served side by side while the catalog re-embeds.
+
+  Why it exists: given a byte budget, buy WIDTH rather than precision. 1024-dim binary is 128
+  bytes a vector against 256 for 256-dim int8. Measured in the sibling justelesrecos with
+  `scripts/evaluate.py --within-document`, which masks everything outside the gold document
+  and so reproduces THIS project's regime (search inside one drug's RCP), 117 queries, SE
+  +-0.045: 1024-binary page@1 **0.675**, 1024-int8 0.675, 256-int8 **0.641**, 256-binary
+  0.556. So 1024-binary ranks as well as 256-int8 at half the bytes. Binary only collapses
+  where the corpus is large and the runner-up close: the same measurement run cross-corpus
+  over 27k chunks gives 256-binary 0.282 against 0.419 for 1024-binary. Two ordering rules
+  when flipping it: deploy the site FIRST (an older `rcp-semsearch.js` cannot decode
+  `binary`), and pre-bake locally (`embed-rcp.py --vec-quant binary`, then
+  `deploy.sh --push-vectors`) unless you want the VPS re-embedding ~15k pages at CPU speed
+  while serving. The reader's percentage badge reads LOWER under binary (dropping magnitudes
+  shrinks the cosine by about sqrt(2/pi)); ranking is unaffected, but `EMBED_SEM_FLOOR` needs
+  re-measuring if it was ever raised above its 0.0 default. Keep the env in sync across
+  `VEC_QUANTS`/`quantize_binary`/`vec_payload`/`read_vec_meta`/`vec_is_fresh`/
+  `embed_page_to_vec` (build.py), `--vec-quant` + `Embedder.quant`/`_is_embedded`/
+  `_scan_and_enqueue`/`stats` (embed-service.py), `--vec-quant` (embed-rcp.py), `decodeVec` +
+  `loadIndex` (rcp-semsearch.js), and `docker/env.example` + `docker/docker-compose.yml`. **The embed service** (`embed-service.py`, behind Caddy's
   same-origin `/api/sem/*`, mirrors `refresh-service.py`: `ThreadingHTTPServer`,
   `_lock`, a priority queue, ONE background worker) embeds the query on request
   (`POST /api/sem/embed` `{q, dim?}` -> `{q: base64-int8, dim}`, on a request thread so it never
@@ -1203,6 +1235,7 @@ uv run src/embed-service.py   # optional: warm SERVER-SIDE embedder on :8461 (be
                           #  belongs at the proxy), EMBED_MIN/MAX_QUERY_CHARS (5/400), EMBED_QUERY_CACHE
                           #  (256) + EMBED_QUERY_CACHE_TTL_SECONDS (60, bounds query-data retention; 0=off),
                           #  EMBED_MODEL_DIR, EMBED_OUT_DIM (MRL width, 256; change re-embeds all),
+                          #  EMBED_VEC_QUANT (passage quant, int8|binary; change re-embeds all),
                           #  REFRESH_TRIGGER_URL (baseline auto-crawl), EMBED_LOG_LEVEL;
                           # GET /api/sem/stats (INTERNAL, blocked at the edge) + GET
                           #  /api/sem/summary (curated PUBLIC view for /status); query
