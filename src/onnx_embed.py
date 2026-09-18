@@ -364,6 +364,7 @@ class Encoder:
         passage_batch_size: int = 32,
         out_dim: int | None = None,
         weights: str | None = None,
+        max_tokens: int = 0,
     ) -> None:
         model_dir = Path(model_dir)
         prof = _profile(model_name)
@@ -415,6 +416,18 @@ class Encoder:
                 self._token_output = o.name
                 break
         self.tokenizer = Tokenizer.from_file(str(tok_path))
+        # tokenizer.json ships with truncation at 512 tokens, and that ceiling is
+        # applied inside encode_batch, BEFORE the per-call `max_len` slice, so a caller
+        # asking for 1024 silently got 512. It never bit a passage (the longest chunk
+        # this corpus produces is 360 tokens) but it cut 79% of the whole-page rows the
+        # sibling bakes for its page-level signal, at half the length it believed it was
+        # embedding. `max_tokens` raises the ceiling once, here, rather than per call:
+        # the tokenizer is shared by every concurrent encode in the service, so mutating
+        # it inside encode() would be a race. 0 (the default, and what the service
+        # passes) leaves tokenizer.json's own setting alone.
+        if max_tokens:
+            self.tokenizer.enable_truncation(max_length=max_tokens)
+        self.max_tokens = max_tokens
         self.model_name = model_name
         self.pooling = prof["pooling"]
         self.query_prefix, self.passage_prefix = prof["query"], prof["passage"]
