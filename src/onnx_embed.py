@@ -99,6 +99,67 @@ def _profile(model_name: str) -> dict:
 # the container.
 
 
+def batch_feed(tokenizer, texts: list[str], *, max_len: int,
+               token_type_ids: bool = False) -> dict:
+    """Tokenise one batch into the arrays the ONNX graph takes.
+
+    Parameters
+    ----------
+    tokenizer : tokenizers.Tokenizer
+        The model's tokenizer, used as configured (its `tokenizer.json` decides
+        padding and truncation).
+    texts : list of str
+        The batch, already carrying whatever prefix the model wants.
+    max_len : int
+        Hard ceiling on tokens per row, applied after the tokenizer.
+    token_type_ids : bool, optional
+        Whether the graph declares a `token_type_ids` input; when it does, a zero
+        array of the right shape is added.
+
+    Returns
+    -------
+    dict
+        `input_ids` and `attention_mask` as int64 arrays of shape (rows, seq_len),
+        plus `token_type_ids` when asked for.
+
+    Notes
+    -----
+    The mask comes from the tokenizer, and that is the whole reason this is a
+    function. `tokenizer.json` ships with padding ENABLED (`pad_id` 1, direction
+    right), so `encode_batch` already pads every row to the batch's longest, and
+    the code here used to build its own mask as "1 for the first len(ids)
+    positions". After the tokenizer had padded, len(ids) WAS the padded length, so
+    every pad token was declared a real token and the transformer attended to a run
+    of `<pad>`. Nothing failed: the vectors just quietly depended on which other
+    passages happened to share the batch.
+
+    Measured on 512 corpus chunks, batch 1 against batch 64, cosine of a passage
+    against itself: 0.987 mean and 0.920 worst with the old mask, 0.99999+ with
+    this one. The bake ran at batch 64 and the query service encodes one string at
+    a time, where nothing is padded, so the defect fell exactly on the gap between
+    the two sides it is most important to keep identical.
+
+    Padding value: rows are filled with the tokenizer's own `pad_id` rather than 0,
+    which for XLM-R is `<s>` and not `<pad>`. With a correct mask this measured no
+    difference at all (0.999998 either way in fp16), so it is written for the
+    reader rather than for the arithmetic.
+    """
+    encs = tokenizer.encode_batch(texts)
+    ids_rows = [e.ids[:max_len] for e in encs]
+    mask_rows = [e.attention_mask[:max_len] for e in encs]
+    seq_len = max((len(row) for row in ids_rows), default=1) or 1
+    padding = tokenizer.padding or {}
+    input_ids = np.full((len(ids_rows), seq_len), padding.get("pad_id", 0), dtype=np.int64)
+    attention = np.zeros((len(ids_rows), seq_len), dtype=np.int64)
+    for row, (ids, mask) in enumerate(zip(ids_rows, mask_rows)):
+        input_ids[row, : len(ids)] = ids
+        attention[row, : len(mask)] = mask
+    feed = {"input_ids": input_ids, "attention_mask": attention}
+    if token_type_ids:
+        feed["token_type_ids"] = np.zeros_like(input_ids)
+    return feed
+
+
 def _nvidia_lib_dirs() -> list[Path]:
     """Find the `lib` directories of any installed nvidia-*-cu12 wheels.
 
@@ -427,17 +488,9 @@ class Encoder:
         out: list[np.ndarray] = []
         for start in range(0, len(texts), batch_size):
             batch = [prefix + t for t in texts[start : start + batch_size]]
-            encs = self.tokenizer.encode_batch(batch)
-            ids_list = [e.ids[:max_len] for e in encs]
-            seq_len = max((len(x) for x in ids_list), default=1) or 1
-            input_ids = np.zeros((len(batch), seq_len), dtype=np.int64)
-            attention = np.zeros((len(batch), seq_len), dtype=np.int64)
-            for row, ids in enumerate(ids_list):
-                input_ids[row, : len(ids)] = ids
-                attention[row, : len(ids)] = 1
-            feed = {"input_ids": input_ids, "attention_mask": attention}
-            if "token_type_ids" in self._input_names:
-                feed["token_type_ids"] = np.zeros_like(input_ids)
+            feed = batch_feed(self.tokenizer, batch, max_len=max_len,
+                              token_type_ids="token_type_ids" in self._input_names)
+            attention = feed["attention_mask"]
             hidden = self.session.run([self._token_output], feed)[0]  # (B, L, H)
             if self.pooling == "cls":
                 vecs = hidden[:, 0, :]  # first token (<s> = CLS): arctic-embed v2.0
