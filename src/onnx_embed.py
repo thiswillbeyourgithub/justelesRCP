@@ -99,6 +99,45 @@ def _profile(model_name: str) -> dict:
 # the container.
 
 
+def _nvidia_lib_dirs() -> list[Path]:
+    """Find the `lib` directories of any installed nvidia-*-cu12 wheels.
+
+    Returns
+    -------
+    list of Path
+        Every `<somewhere>/nvidia/<component>/lib` directory reachable from this
+        interpreter, in import order and de-duplicated. Empty when no wheels are
+        installed, which is the normal case on a machine with system CUDA.
+
+    Notes
+    -----
+    `sys.path`, not `site.getsitepackages()`, and this is the whole point of the
+    function. `uv run --with nvidia-cudnn-cu12 script.py` does NOT install into the
+    script's own environment: it layers a second environment and puts it on
+    `sys.path`, so `site.getsitepackages()` returns one directory that does not
+    contain `nvidia/` at all. Searching only that directory made both callers below
+    decide there were no wheels and return quietly, and the run then died several
+    seconds later inside the first inference with "dlopen failed for libcudnn.so",
+    which reads like a missing driver rather than a search-path bug.
+
+    Site directories are appended anyway for the plain `pip install` case, where
+    they are already on `sys.path` too but need not be by the time this runs.
+    """
+    import glob
+    import site
+    import sys
+
+    bases: list[str] = [entry for entry in sys.path if entry]
+    bases.extend(entry for entry in site.getsitepackages() if entry)
+    user = site.getusersitepackages()
+    if user:
+        bases.append(user)
+    found: list[Path] = []
+    for base in dict.fromkeys(bases):  # de-duplicate, keep order
+        found.extend(Path(d) for d in sorted(glob.glob(str(Path(base) / "nvidia" / "*" / "lib"))))
+    return list(dict.fromkeys(found))
+
+
 def preload_cuda_libs(log=None) -> None:
     """Make the CUDA and cuDNN libraries from the ``nvidia-*-cu12`` wheels loadable.
 
@@ -128,15 +167,8 @@ def preload_cuda_libs(log=None) -> None:
                 log(f"ort.preload_dlls() failed ({exc}); trying a manual preload")
     import ctypes
     import glob
-    import site
 
-    bases = list(site.getsitepackages())
-    user = site.getusersitepackages()
-    if user:
-        bases.append(user)
-    lib_dirs: list[str] = []
-    for base in dict.fromkeys(bases):  # de-duplicate, keep order
-        lib_dirs.extend(glob.glob(str(Path(base) / "nvidia" / "*" / "lib")))
+    lib_dirs = _nvidia_lib_dirs()
     for pattern in ("libcudart.so*", "libcublasLt.so*", "libcublas.so*",
                     "libcufft.so*", "libcurand.so*", "libcudnn*.so*"):
         for lib_dir in lib_dirs:
@@ -177,16 +209,12 @@ def ensure_cudnn_visible(log=None) -> None:
     a multi-hour job silently running on CPU.
     """
     import glob
-    import site
     import sys
     import tempfile
 
     if os.environ.get("JLR_CUDNN_REEXEC") == "1":
         return
-    lib_dirs: list[Path] = []
-    for base in dict.fromkeys([*site.getsitepackages(), site.getusersitepackages()]):
-        if base:
-            lib_dirs.extend(Path(d) for d in glob.glob(str(Path(base) / "nvidia" / "*" / "lib")))
+    lib_dirs = _nvidia_lib_dirs()
     versioned = [so for lib_dir in lib_dirs
                  for so in sorted(glob.glob(str(lib_dir / "libcudnn.so.*")))]
     if not versioned:
