@@ -109,6 +109,37 @@ def _profile(model_name: str) -> dict:
 # the container.
 
 
+#: Token ceiling for PASSAGES. A section longer than this loses its tail, so the
+#: number is a claim about the corpus: RCP sections measure median 123 tokens, p90
+#: 182 and max 307, so 1024 is roughly three times the longest one there is. It was
+#: 192 until 2026-09-21, which cut about the top 10% of sections silently. Queries
+#: are capped at 400 CHARACTERS by the service (EMBED_MAX_QUERY_CHARS), so no query
+#: comes close either way.
+PASSAGE_MAX_TOKENS = 1024
+
+# What batch_feed has had to cut, since the process started. A truncated row still
+# embeds, and embeds perfectly happily: it just embeds less text than it was given,
+# which is invisible in the output and shows up only as a passage that cannot be
+# retrieved by the half of itself that was dropped. The offline bakes read this at
+# the end and say so, which is the cheap version of asserting on every row.
+#
+# It counts TOKENIZER output, so it only sees an overflow the tokenizer has not
+# already hidden: enabling truncation on the tokenizer itself (Encoder's
+# ``max_tokens``) caps ``e.ids`` before this function runs and blinds the counter.
+# jina's tokenizer.json configures no truncation, so offline bakes see true lengths.
+_TRUNCATED_ROWS = 0
+_LONGEST_ROW = 0
+
+
+def truncation_report(reset: bool = False) -> tuple[int, int]:
+    """``(rows cut at max_len, longest row in tokens)`` seen since the last reset."""
+    global _TRUNCATED_ROWS, _LONGEST_ROW
+    seen = (_TRUNCATED_ROWS, _LONGEST_ROW)
+    if reset:
+        _TRUNCATED_ROWS = _LONGEST_ROW = 0
+    return seen
+
+
 def batch_feed(tokenizer, texts: list[str], *, max_len: int,
                token_type_ids: bool = False) -> dict:
     """Tokenise one batch into the arrays the ONNX graph takes.
@@ -159,7 +190,12 @@ def batch_feed(tokenizer, texts: list[str], *, max_len: int,
     (0.999998 either way in fp16), so it is written for the reader rather than for the
     arithmetic.
     """
+    global _TRUNCATED_ROWS, _LONGEST_ROW
     encs = tokenizer.encode_batch(texts)
+    longest = max((len(e.ids) for e in encs), default=0)
+    _LONGEST_ROW = max(_LONGEST_ROW, longest)
+    if longest > max_len:
+        _TRUNCATED_ROWS += sum(1 for e in encs if len(e.ids) > max_len)
     ids_rows = [e.ids[:max_len] for e in encs]
     mask_rows = [e.attention_mask[:max_len] for e in encs]
     seq_len = max((len(row) for row in ids_rows), default=1) or 1
@@ -490,8 +526,8 @@ class Encoder:
 
     # -- core --------------------------------------------------------------
     def encode(
-        self, texts: list[str], prefix: str = "", batch_size: int = 32, max_len: int = 192,
-        width: int | None = None
+        self, texts: list[str], prefix: str = "", batch_size: int = 32,
+        max_len: int = PASSAGE_MAX_TOKENS, width: int | None = None
     ) -> np.ndarray:
         """Embed texts -> float32 (N, dim): pooled per the model (CLS for arctic, mean for
         e5), optionally MRL-truncated (arctic -> 256), then L2-normalised (so cosine == dot

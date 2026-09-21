@@ -231,6 +231,20 @@ def main(limit, do_all, only, eu, model_dir, out_dim, vec_quant, weights, intra_
         logger.info("{} overlay(s) had no built page: run `uv run build.py` first",
                     no_page)
 
+    # The ceiling is a claim about the corpus (onnx_embed.PASSAGE_MAX_TOKENS), so say
+    # whether this run stayed under it. A cut row embeds without complaining and the
+    # only symptom is a section nobody can retrieve by its second half, which is the
+    # kind of thing that goes unnoticed for a model generation.
+    cut, longest = onnx_embed.truncation_report()
+    if cut:
+        logger.warning("{} section(s) hit the {}-token ceiling and lost their tail "
+                       "(longest seen: {} tokens). Raise onnx_embed.PASSAGE_MAX_TOKENS "
+                       "and re-bake with --force.", cut, onnx_embed.PASSAGE_MAX_TOKENS,
+                       longest)
+    elif longest:
+        logger.info("longest section embedded: {} tokens, ceiling {}", longest,
+                    onnx_embed.PASSAGE_MAX_TOKENS)
+
 
 if __name__ == "__main__":
     main()
