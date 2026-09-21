@@ -51,7 +51,7 @@ HERE = Path(__file__).resolve().parent
 # scripts/download-model.sh fetches. Changing it re-embeds the whole catalog (build.read_vec_meta
 # gates on this name). Mounted read-only into the container from ./models by
 # scripts/download-model.sh; NOT served to browsers.
-RUNTIME_MODEL = "Snowflake/snowflake-arctic-embed-l-v2.0"
+RUNTIME_MODEL = "jinaai/jina-embeddings-v5-text-small-retrieval"
 # models/ lives at the repo root (this script is in src/), and is mounted at
 # ``/app/models`` in the embed container (HERE = ``/app/src`` there); parent resolves
 # both. EMBED_MODEL_DIR overrides it in the container anyway.
@@ -62,7 +62,8 @@ def _profile(model_name: str) -> dict:
     """Per-model runtime recipe, keyed by a substring of the name so a swap only touches
     RUNTIME_MODEL (+ the matching scripts/download-model.sh fetch). Fields:
       onnx    : the int8 ONNX file under <model_dir>/onnx/ to load
-      pooling : "cls" (first token; arctic-embed v2.0 / XLM-R lineage) or "mean" (e5)
+      pooling : "cls" (first token; arctic-embed v2.0 / XLM-R lineage), "mean" (e5)
+                or "last" (final unmasked token; jina-embeddings-v5 / Qwen3 lineage)
       query   : prefix prepended to a QUERY before tokenising
       passage : prefix prepended to a DOCUMENT/passage (arctic: NONE; e5: "passage: ")
       out_dim : Matryoshka (MRL) truncation length, or None to keep the full width
@@ -73,6 +74,15 @@ def _profile(model_name: str) -> dict:
     config_sentence_transformers.json + the ONNX graph (inputs input_ids/attention_mask
     only, output token_embeddings [B,L,1024])."""
     n = model_name.lower()
+    if "jina-embeddings-v5" in n:
+        # Qwen3-0.6B lineage: LAST-token pooling, and both sides carry a prefix
+        # ("Query: " / "Document: "), where arctic prefixed the query only. The
+        # retrieval repo is the one with the adapter merged into the weights, which
+        # is what makes a plain onnxruntime session enough. Its published ONNX is
+        # fp32 (2.38 GB, external data); model_int8.onnx is produced locally by
+        # scripts/quantise-model.py, which is why the name is not on the hub.
+        return {"onnx": "model_int8.onnx", "pooling": "last",
+                "query": "Query: ", "passage": "Document: ", "out_dim": 1024}
     if "arctic-embed" in n:
         return {"onnx": "model_int8.onnx", "pooling": "cls",
                 "query": "query: ", "passage": "", "out_dim": 1024}
@@ -507,6 +517,14 @@ class Encoder:
             hidden = self.session.run([self._token_output], feed)[0]  # (B, L, H)
             if self.pooling == "cls":
                 vecs = hidden[:, 0, :]  # first token (<s> = CLS): arctic-embed v2.0
+            elif self.pooling == "last":
+                # The last UNMASKED token, found as the last 1 in the attention
+                # mask rather than as ``mask.sum() - 1``. The two agree only when
+                # padding is on the right, and a Qwen tokenizer is as likely to pad
+                # on the left; reading the mask backwards is correct either way and
+                # costs one argmax per batch.
+                last = attention.shape[1] - 1 - np.argmax(attention[:, ::-1], axis=1)
+                vecs = hidden[np.arange(hidden.shape[0]), last, :]
             else:
                 mask = attention[:, :, None].astype(np.float32)
                 summed = (hidden * mask).sum(axis=1)

@@ -40,8 +40,9 @@ lents et à but lucratif.
   exacts. Votre question est analysée sur notre propre serveur puis aussitôt
   oubliée : jamais enregistrée, jamais transmise à un tiers. Le modèle utilisé
   par défaut est
-  [Snowflake/snowflake-arctic-embed-l-v2.0](https://huggingface.co/Snowflake/snowflake-arctic-embed-l-v2.0)
-  (libre, multilingue, exécuté localement en ONNX).
+  [jinaai/jina-embeddings-v5-text-small](https://huggingface.co/jinaai/jina-embeddings-v5-text-small)
+  (multilingue, exécuté localement en ONNX, licence CC BY-NC 4.0 : ce site est
+  gratuit et sans publicité).
 - Liens croisés entre médicaments : chaque page relie automatiquement les noms de
   médicaments et de substances qu'elle cite vers leurs propres pages (jamais un
   lien mort). Ces liens sont ajoutés par justelesRCP et ne font pas partie du

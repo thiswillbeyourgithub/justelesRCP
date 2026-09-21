@@ -774,7 +774,7 @@ class _QuietHTTPServer(ThreadingHTTPServer):
 @click.option("--out-dim", type=int, default=1024, show_default=True,
               envvar="EMBED_OUT_DIM",
               help="Matryoshka (MRL) embedding width to truncate to (env EMBED_OUT_DIM). "
-                   "1024 is arctic-embed-l-v2.0's full width and the default because "
+                   "1024 is jina-embeddings-v5-text-small's full width and the default because "
                    "EMBED_VEC_QUANT stores a passage at one bit per dimension, so wide "
                    "is cheaper than precise (128 bytes a vector against 256 for the old "
                    "256-int8); 0 also keeps the full model width. This is "

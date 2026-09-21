@@ -844,13 +844,15 @@ Key facts that aren't obvious from a single file:
   `<= 2` words) are dropped before the section body is assembled (table rows are exempt). `_CHUNK_FORMAT_VERSION` (folded into `raw_hash`/`src_hash`) busts
   every `.vec.json` when this segmentation changes, since the raw overlay is untouched.
   **The warm encoder** (`onnx_embed.Encoder`) loads the int8
-  `Snowflake/snowflake-arctic-embed-l-v2.0` ONNX weights (`onnx/model_int8.onnx`) +
+  `jinaai/jina-embeddings-v5-text-small-retrieval` ONNX weights (`onnx/model_int8.onnx`,
+  quantised LOCALLY by `scripts/quantise-model.py` because Jina publishes fp32 only) +
   tokenizer ONCE with `onnxruntime` + `tokenizers` ONLY (NO torch: a ~300 Mo image, not
   ~2 Go; the weights are ~570 Mo, mounted read-only), and is shared by the query path and
   the background page path (`session.run` is thread-safe). A per-model recipe
   (`onnx_embed._profile`, keyed on `RUNTIME_MODEL`) picks the ONNX file, pooling, prefixes
-  and MRL width: arctic-l-v2.0 = **CLS-pool -> L2, query-only `query: ` prefix (NO passage
-  prefix), Matryoshka-truncated to 1024 dims, its full width** (truncate THEN normalise once), verified
+  and MRL width: jina-embeddings-v5 = **LAST-token pool -> L2, `Query: ` on queries and
+  `Document: ` on passages (arctic prefixed the query only, so BOTH sides moved),
+  Matryoshka-truncated to 1024 dims, its full width** (truncate THEN normalise once), verified
   against the repo config + ONNX graph (inputs `input_ids`/`attention_mask` only, output
   `token_embeddings`). The MRL width is the profile default but is **env-configurable via
   `EMBED_OUT_DIM`** (`Encoder(out_dim=...)`, `--out-dim` on embed-service.py + embed-rcp.py;
@@ -1171,8 +1173,9 @@ Key facts that aren't obvious from a single file:
 ```bash
 ./scripts/download-data.sh        # fetch + auto-extract the frozen 2022 data/CIS_RCP.csv (zip), and
                           #  refresh data/CIS_bdpm.txt (+ COMPO/GENER) from the LIVE daily BDPM feed
-./scripts/download-model.sh       # OPTIONAL: fetch the arctic-embed-l-v2.0 int8 ONNX + tokenizer into
-                          #  ./models (~570 Mo, gitignored) for SERVER-SIDE per-drug semantic search
+./scripts/download-model.sh       # OPTIONAL: fetch the jina-embeddings-v5-text-small-retrieval fp32 ONNX
+                          #  + tokenizer into ./models and quantise it to int8 (~650 Mo kept,
+                          #  ~2.4 Go downloaded, gitignored) for SERVER-SIDE per-drug semantic search
                           #  (mounted read-only
                           #  into the embed container; no longer served to browsers). Skip it and the
                           #  "Recherche sémantique dans ce RCP" box just degrades to "indisponible".

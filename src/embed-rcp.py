@@ -91,7 +91,7 @@ onnx_embed = _load_module("onnx_embed.py", "onnx_embed")  # warm ONNX encoder (n
 @click.option("--out-dim", type=int, default=1024, show_default=True,
               envvar="EMBED_OUT_DIM",
               help="Matryoshka (MRL) width to truncate to (env EMBED_OUT_DIM); 0 also keeps "
-                   "the full model width, which 1024 is for arctic-embed-l-v2.0. MUST match "
+                   "the full model width, which 1024 is for jina-embeddings-v5-text-small. MUST match "
                    "the embed service's EMBED_OUT_DIM, else the service re-embeds these "
                    "pages (the width is gated per .vec.json).")
 @click.option("--vec-quant", type=click.Choice(build.VEC_QUANTS), default="binary",

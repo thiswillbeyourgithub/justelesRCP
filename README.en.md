@@ -40,8 +40,9 @@ slow, for-profit medicine sites.
   of your question, not just the exact words. Your question is analysed on our
   own server and immediately forgotten: never logged, never shared with a third
   party. The default model is
-  [Snowflake/snowflake-arctic-embed-l-v2.0](https://huggingface.co/Snowflake/snowflake-arctic-embed-l-v2.0)
-  (open-weights, multilingual, run locally through ONNX).
+  [jinaai/jina-embeddings-v5-text-small](https://huggingface.co/jinaai/jina-embeddings-v5-text-small)
+  (multilingual, run locally through ONNX, licensed CC BY-NC 4.0: this site is
+  free and carries no advertising).
 - Cross-drug backlinks: each page automatically links the drug and substance
   names it mentions to those drugs' own pages (never a dead link). These links
   are added by justelesRCP and are not part of the official text.
