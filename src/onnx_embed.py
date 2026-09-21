@@ -21,9 +21,9 @@ semantic search:
 Deliberately depends on ``onnxruntime`` + ``tokenizers`` ONLY (NOT torch /
 sentence-transformers): that is the difference between a ~300 MB and a ~2 GB image,
 and it lets the hardened, read-only runtime container stay tiny. It runs the int8
-``Snowflake/snowflake-arctic-embed-l-v2.0`` ONNX weights (CLS-pooled, L2-normalised,
-MRL-truncated to 1024 dims, i.e. its full width), driven by a per-model recipe
-(``_profile``) so the query
+``jinaai/jina-embeddings-v5-text-small-retrieval`` ONNX weights (last-token pooled,
+L2-normalised, MRL-truncated to 1024 dims, i.e. its full width), driven by a
+per-model recipe (``_profile``) so the query
 and passage sides always share one backend + one set of weights.
 
 Pure + import-safe (``__main__`` guard); no network, and no filesystem writes except
