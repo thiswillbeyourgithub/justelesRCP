@@ -110,11 +110,16 @@ def _profile(model_name: str) -> dict:
 
 
 #: Token ceiling for PASSAGES. A section longer than this loses its tail, so the
-#: number is a claim about the corpus: RCP sections measure median 123 tokens, p90
-#: 182 and max 307, so 1024 is roughly three times the longest one there is. It was
-#: 192 until 2026-09-21, which cut about the top 10% of sections silently. Queries
-#: are capped at 400 CHARACTERS by the service (EMBED_MAX_QUERY_CHARS), so no query
-#: comes close either way.
+#: number is a claim about the corpus: 3816 sections sampled from 40 pages measure
+#: median 123 tokens, p90 182 and max 307, so 1024 is roughly three times the
+#: longest one in that sample. It was 192 until 2026-09-21, which cut about the top
+#: 10% of them silently. Queries are capped at 400 CHARACTERS by the service
+#: (EMBED_MAX_QUERY_CHARS), so no query comes close either way.
+#:
+#: A 40-page sample is not the corpus, and it is known to be optimistic about at
+#: least one thing: those pages hold 95.4 sections each, against 182.9 for a sample
+#: spread over all 13,240. That is why the counter below exists, rather than a
+#: comment asserting the ceiling is safe.
 PASSAGE_MAX_TOKENS = 1024
 
 # What batch_feed has had to cut, since the process started. A truncated row still
@@ -555,6 +560,12 @@ class Encoder:
         # padded length, so a batch of mixed lengths makes its short rows pay for its
         # long one. Measured on 3816 real RCP sections (median 123 tokens, max 307):
         # 108.6 -> 121.7 sections/s, about 12%, for a sort of a list of strings.
+        # The RCP corpus is about 2.42 M sections, so that is roughly an hour.
+        #
+        # It has more to work with on a big page than that measurement suggests: the
+        # sample averaged 95 sections per page, the corpus averages 183 and the
+        # longest page holds 1209, and a page has something to regroup only once it
+        # fills more than one batch.
         #
         # By CHARACTER length, which is a free proxy: tokenising twice to sort by the
         # real thing would cost more than the sort saves.
