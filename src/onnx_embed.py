@@ -135,13 +135,17 @@ def batch_feed(tokenizer, texts: list[str], *, max_len: int,
     Notes
     -----
     The mask comes from the tokenizer, and that is the whole reason this is a
-    function. `tokenizer.json` ships with padding ENABLED (`pad_id` 1, direction
-    right), so `encode_batch` already pads every row to the batch's longest, and
-    the code here used to build its own mask as "1 for the first len(ids)
-    positions". After the tokenizer had padded, len(ids) WAS the padded length, so
-    every pad token was declared a real token and the transformer attended to a run
-    of `<pad>`. Nothing failed: the vectors just quietly depended on which other
-    passages happened to share the batch.
+    function. Whether `tokenizer.json` pads at all is a property of the MODEL and
+    has already changed once: arctic enabled it (`pad_id` 1, direction right) and
+    jina enables nothing, so `encode_batch` returns rows of equal length under one
+    and ragged rows under the other. Either way the code here used to build its own
+    mask as "1 for the first len(ids) positions", and once the tokenizer had padded,
+    len(ids) WAS the padded length, so every pad token was declared a real token and
+    the transformer attended to a run of `<pad>`. Nothing failed: the vectors just
+    quietly depended on which other passages happened to share the batch.
+
+    Under a tokenizer that does not pad, that bug cannot fire and this function is
+    instead the only thing squaring ragged rows into the rectangle the graph takes.
 
     Measured on 512 corpus chunks, batch 1 against batch 64, cosine of a passage
     against itself: 0.987 mean and 0.920 worst with the old mask, 0.99999+ with
@@ -149,10 +153,11 @@ def batch_feed(tokenizer, texts: list[str], *, max_len: int,
     a time, where nothing is padded, so the defect fell exactly on the gap between
     the two sides it is most important to keep identical.
 
-    Padding value: rows are filled with the tokenizer's own `pad_id` rather than 0,
-    which for XLM-R is `<s>` and not `<pad>`. With a correct mask this measured no
-    difference at all (0.999998 either way in fp16), so it is written for the
-    reader rather than for the arithmetic.
+    Padding value: rows are filled with the tokenizer's own `pad_id` when it declares
+    one (for XLM-R that is `<pad>`, where plain 0 would be `<s>`), and with 0 when it
+    does not, as jina does not. With a correct mask this measured no difference at all
+    (0.999998 either way in fp16), so it is written for the reader rather than for the
+    arithmetic.
     """
     encs = tokenizer.encode_batch(texts)
     ids_rows = [e.ids[:max_len] for e in encs]

@@ -102,17 +102,21 @@ onnx_embed = _load_module("onnx_embed.py", "onnx_embed")  # warm ONNX encoder (n
                    "the same reason as EMBED_OUT_DIM: it is part of the per-.vec.json "
                    "staleness gate, so a mismatch makes the service re-embed on the "
                    "spot everything this pre-bake just wrote.")
-@click.option("--weights", default="", show_default=False,
-              help="ONNX file under <model-dir>/onnx/ to encode with. Empty means the "
-                   "model profile's default, model_int8.onnx, which is what the VPS "
-                   "embeds QUERIES with. Pass model.onnx (the fp32 graph, kept with "
-                   "./scripts/download-model.sh --keep-fp32; jina-embeddings-v5 "
-                   "publishes no fp16 one) for a GPU bake that is worth "
-                   "doing: measured here, the int8 graph runs at 4.2 sections/s on an "
-                   "RTX 3090 Ti against 3.8 on six CPU cores, because its quantised "
-                   "operators have no CUDA kernels. The trade is a passage/query weights "
-                   "mismatch, which justelesrecos measured as reordering ~10% of a top "
-                   "10 and changing retrieval by nothing 117 queries could resolve.")
+@click.option("--weights", default="auto", show_default=True,
+              help="ONNX file under <model-dir>/onnx/ to encode with. 'auto' takes the "
+                   "fp32 model.onnx when a GPU registered and that graph is on disk "
+                   "(./scripts/download-model.sh --keep-fp32 leaves it there), and the "
+                   "profile's model_int8.onnx otherwise; 'profile' forces the latter. "
+                   "The int8 graph gains nothing from a GPU, because its quantised "
+                   "operators have no CUDA kernels: measured here, 4.2 sections/s on an "
+                   "RTX 3090 Ti against 3.8 on six CPU cores. fp32 on the same card does "
+                   "51.7 chunks/s at 2041 tokens. jina-embeddings-v5 publishes no fp16 "
+                   "graph and converting one is not on: the standard tool leaves qwen3's "
+                   "RMSNorm with a float32 ReduceMean feeding a float16 Add, which "
+                   "onnxruntime refuses to load. The trade is a passage/query weights "
+                   "mismatch, which justelesrecos measured on the PREVIOUS model as "
+                   "reordering ~10% of a top 10 and changing retrieval by nothing 117 "
+                   "queries could resolve.")
 @click.option("--intra-threads", type=int, default=4, show_default=True,
               help="onnxruntime intra-op threads for the passage encode (CPU path).")
 @click.option("--gpu/--no-gpu", default=True, show_default=True,
@@ -149,7 +153,22 @@ def main(limit, do_all, only, eu, model_dir, out_dim, vec_quant, weights, intra_
                        "9 system-wide). Otherwise `--no-gpu --intra-threads N` is fine.",
                        ", ".join(available))
 
-    logger.info("loading encoder from {} (~500 MB int8 weights, takes a moment)", model_dir)
+    # The QUERY side on the VPS is always the profile's int8 graph, so the only
+    # question here is what the OFFLINE bake reads, and on a GPU that should be the
+    # float one. Resolved rather than left to memory: typing --weights every time is
+    # how a run silently takes the slow path.
+    if weights == "auto":
+        on_gpu = providers[0] != "CPUExecutionProvider"
+        fp32 = Path(model_dir) / "onnx" / "model.onnx"
+        weights = fp32.name if on_gpu and fp32.exists() else ""
+        if not weights and on_gpu:
+            logger.warning("no {} on disk, so this GPU bake reads the int8 graph, which "
+                           "a GPU cannot help. ./scripts/download-model.sh --keep-fp32",
+                           fp32)
+    elif weights == "profile":
+        weights = ""
+
+    logger.info("loading encoder from {} (takes a moment)", model_dir)
     encoder = onnx_embed.Encoder(model_dir=model_dir, intra_threads=intra_threads,
                                  providers=providers, passage_batch_size=batch_size,
                                  out_dim=out_dim, weights=weights or None)
