@@ -382,7 +382,8 @@ class Encoder:
         # every other field of the profile (pooling, prefixes, MRL width) alone. The
         # runtime service never passes it: the VPS embeds queries with the profile's int8
         # weights, and a passage vector has to come from the same recipe. The OFFLINE
-        # bakes do, to reach model_fp16.onnx, which is the only way a GPU helps here. The
+        # bakes do, to reach the fp32 model.onnx, which is the only way a GPU helps here
+        # (arctic published an fp16 graph for this and jina does not). The
         # int8 graph has no CUDA kernels for its quantised operators, so onnxruntime
         # splits it and reports "336 Memcpy nodes are added to the graph": measured on
         # this machine over 256 real sections, an RTX 3090 Ti does 4.2 sections/s against

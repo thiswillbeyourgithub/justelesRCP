@@ -105,8 +105,9 @@ onnx_embed = _load_module("onnx_embed.py", "onnx_embed")  # warm ONNX encoder (n
 @click.option("--weights", default="", show_default=False,
               help="ONNX file under <model-dir>/onnx/ to encode with. Empty means the "
                    "model profile's default, model_int8.onnx, which is what the VPS "
-                   "embeds QUERIES with. Pass model_fp16.onnx (fetch it with "
-                   "./scripts/download-model.sh --fp16) for a GPU bake that is worth "
+                   "embeds QUERIES with. Pass model.onnx (the fp32 graph, kept with "
+                   "./scripts/download-model.sh --keep-fp32; jina-embeddings-v5 "
+                   "publishes no fp16 one) for a GPU bake that is worth "
                    "doing: measured here, the int8 graph runs at 4.2 sections/s on an "
                    "RTX 3090 Ti against 3.8 on six CPU cores, because its quantised "
                    "operators have no CUDA kernels. The trade is a passage/query weights "

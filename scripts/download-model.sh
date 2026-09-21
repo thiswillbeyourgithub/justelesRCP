@@ -33,8 +33,9 @@ ONNX_FILE="model_int8.onnx"
 FP32_FILE="model.onnx"
 HF_BASE="https://huggingface.co/${MODEL_REPO}/resolve/main"
 
-# --fp16 ALSO fetches onnx/model_fp16.onnx (~1.1 GB), which is NOT what the service runs.
-# It exists for one job: an offline GPU bake (src/embed-rcp.py --weights model_fp16.onnx).
+# --keep-fp32 KEEPS onnx/model.onnx + its 2.38 GB _data sibling after quantising, which is
+# NOT what the service runs. They exist for one job: an offline GPU bake
+# (src/embed-rcp.py --weights model.onnx).
 # The int8 graph gains nothing from a GPU, because its quantised operators have no CUDA
 # kernels and onnxruntime splits the graph around them ("336 Memcpy nodes are added");
 # measured on an RTX 3090 Ti, 4.2 sections/s against 3.8 on six CPU cores. fp16 is a real
