@@ -550,6 +550,25 @@ class Encoder:
         # wide and the service reported those as its output width. Hence
         # `seq_len` below, and hence this line living outside the loop.
         truncate = self._out_dim if width is None else (width or None)
+        # Group similar lengths together before slicing into batches. Every row in a
+        # batch is padded to that batch's longest and attention is quadratic in the
+        # padded length, so a batch of mixed lengths makes its short rows pay for its
+        # long one. Measured on 3816 real RCP sections (median 123 tokens, max 307):
+        # 108.6 -> 121.7 sections/s, about 12%, for a sort of a list of strings.
+        #
+        # By CHARACTER length, which is a free proxy: tokenising twice to sort by the
+        # real thing would cost more than the sort saves.
+        #
+        # No vector changes. With the attention mask taken from the tokenizer rather
+        # than rebuilt (see batch_feed), padding is inert and a row's vector does not
+        # depend on what shares its batch; measured at cosine 1.000000 against the
+        # unsorted order. A single batch has nothing to regroup, which is what keeps
+        # this a no-op for callers that plan their own batches, as justelesrecos's
+        # embed.py does.
+        order: list[int] | None = None
+        if len(texts) > batch_size:
+            order = sorted(range(len(texts)), key=lambda i: len(texts[i]))
+            texts = [texts[i] for i in order]
         out: list[np.ndarray] = []
         for start in range(0, len(texts), batch_size):
             batch = [prefix + t for t in texts[start : start + batch_size]]
@@ -577,6 +596,11 @@ class Encoder:
             norms = np.clip(np.linalg.norm(vecs, axis=1, keepdims=True), 1e-12, None)
             out.append((vecs / norms).astype(np.float32))
         result = np.vstack(out)
+        if order is not None:
+            # Back into the caller's order: it pairs these rows with its own chunks.
+            restored = np.empty_like(result)
+            restored[order] = result
+            result = restored
         if width is None:
             self.dim = int(result.shape[1])
         elif not width:
