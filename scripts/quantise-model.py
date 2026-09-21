@@ -173,6 +173,17 @@ def main(src: Path, out: Path, force: bool) -> None:
     finally:
         repaired.unlink(missing_ok=True)
 
+    # onnxruntime writes the external-data sibling through a temporary file, so it
+    # lands at 0600 while every other file in models/ is world-readable. That is
+    # invisible here and fatal on the VPS: deploy.sh rsyncs models/ up, the embed
+    # container bind-mounts it read-only and runs as EMBED_UID, and a 0600 file
+    # owned by the ssh user is unreadable the moment those two uids differ. The
+    # service then starts, fails to load the model, and answers every search with
+    # "service unavailable".
+    for produced in (out, *(sibling for sibling in out.parent.iterdir()
+                            if sibling.name.startswith(out.name) and sibling != out)):
+        produced.chmod(0o644)
+
     # An int8 graph is about a quarter of its fp32 input. Anything close to the
     # original size means the quantiser reached almost nothing, which is a silent
     # failure otherwise: the file is there, the service loads it, and the VPS pays
