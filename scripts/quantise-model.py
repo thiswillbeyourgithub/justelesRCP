@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["click", "loguru", "onnx", "onnxruntime"]
+# dependencies = ["click", "loguru", "onnx", "onnxruntime", "sympy"]
 # ///
 """Quantise an fp32 ONNX encoder to int8, in place in the models directory.
 
@@ -25,6 +25,9 @@ Two things that cost hours if got wrong:
   leaves the MatMuls it cannot see through in fp32, and the output is barely
   smaller than the input. `onnxruntime.quantization.shape_inference.quant_pre_process`
   runs symbolic shape inference first, which is what lets the quantiser reach them.
+  That pass needs **sympy**, which onnxruntime does not depend on, so it is listed
+  above. Without it the run dies on an ImportError offering `skip_symbolic_shape=True`
+  as the way out, and taking that offer is how you get a 2.3 GB "int8" graph.
 - **External data has to be asked for on both sides.** A 2.38 GB model cannot be
   written into a single protobuf (the format's own limit is 2 GB), so the load and
   the save both need the external-data flag, and the result is again a stub plus a
