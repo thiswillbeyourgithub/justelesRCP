@@ -22,7 +22,7 @@ Pipeline (id + raw ANSM html) -> (id + cleaned, reskinned static page):
     style.css  search.js  assets
     search-index.json     [{cis, name, slug}, ...] for client-side search
     rcp/<cis>-<slug>.html cleaned + reskinned RCP page (one per drug)
-  + .gz / .br precompressed siblings for every text asset (Caddy serves these).
+  + .br precompressed siblings for every text asset (Caddy serves these).
 
 Run:  uv run build.py         (reads ./data, writes ./dist)
 """
@@ -1566,11 +1566,14 @@ def write_browse(index: list[dict[str, str]]) -> int:
 
 
 def compress(path: Path) -> None:
-    """Write .gz and .br siblings so Caddy can serve precompressed."""
+    """Write the .br sibling so Caddy can serve it precompressed.
+
+    Brotli only: every current browser accepts it, and the rare client that does not
+    gets the plain file compressed on the fly by Caddy's ``encode``. A .gz sibling
+    used to be written too, which cost ~1.8 GB of disk for no reader, so any stale one
+    left by an older build is removed here as the file is rewritten."""
     raw = path.read_bytes()
-    (path.with_suffix(path.suffix + ".gz")).write_bytes(
-        gzip.compress(raw, compresslevel=9)
-    )
+    path.with_suffix(path.suffix + ".gz").unlink(missing_ok=True)
     # q10 is ~5x faster than q11 for a fraction of a percent more size.
     (path.with_suffix(path.suffix + ".br")).write_bytes(
         brotli.compress(raw, quality=10)
@@ -1999,7 +2002,7 @@ def load_changelog(current: str = __version__) -> dict:
 
 
 def write_changelog(payload: dict) -> None:
-    """Write dist/changelog.json (+ .gz/.br), fetched by changelog.js on demand."""
+    """Write dist/changelog.json (+ .br), fetched by changelog.js on demand."""
     out = DIST / "changelog.json"
     out.write_text(
         json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8"
@@ -2060,7 +2063,7 @@ def vec_payload(chunks, vecs, model: str, query_prefix: str, src_hash: str,
 
 
 def write_vec_json(dist_path: Path, payload: dict) -> None:
-    """Write one ``dist/<rcp|eu>/<slug>.vec.json`` (+ .gz/.br via compress) atomically.
+    """Write one ``dist/<rcp|eu>/<slug>.vec.json`` (+ .br via compress) atomically.
     The vectors live in this SEPARATE sidecar, never inline in the page HTML, so a
     page stays refresh-safe (the refresh service rewrites only the .html)."""
     dist_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2094,7 +2097,7 @@ def dist_pages_index(subdir: str) -> dict[str, Path]:
 
     ``dist_page_for`` globs the directory per CIS, which is O(entries) EACH time: fine
     for a single lookup, but the embed service's reconcile sweep resolves ~15k CIS
-    against a ~40k-entry directory (the .gz/.br siblings inflate it), i.e. ~10 minutes
+    against a ~40k-entry directory (the .br siblings inflate it), i.e. ~10 minutes
     of pure globbing per pass, which pinned a core and made the sweep look stalled.
     Same tie-break as ``dist_page_for`` (lowest slug wins) so the two never disagree."""
     index: dict[str, Path] = {}
@@ -2114,8 +2117,8 @@ def vec_path_for(page: Path) -> Path:
 
 
 def read_vec_meta(vec: Path) -> dict | None:
-    """``{src_hash, model, dim, quant}`` baked into an existing ``.vec.json`` (or its
-    ``.gz``), else None. The self-describing staleness key: no separate manifest is kept.
+    """``{src_hash, model, dim, quant}`` baked into an existing ``.vec.json``, else
+    None. The self-describing staleness key: no separate manifest is kept.
 
     ``dim`` is the served vector width (the MRL truncation length, e.g. 1024): a change
     to it (via EMBED_OUT_DIM) MUST re-embed, just like a model swap, because the
@@ -2125,19 +2128,14 @@ def read_vec_meta(vec: Path) -> dict | None:
     and int8 bytes read as packed bits are noise, not a worse answer. A file written
     before the binary format existed carries no ``quant`` key, so it reads back as
     "int8", which is exactly what it is."""
-    for p in (vec, vec.with_name(vec.name + ".gz")):
-        if not p.exists():
-            continue
-        try:
-            data = p.read_bytes()
-            if p.suffix == ".gz":
-                data = gzip.decompress(data)
-            d = json.loads(data)
-            return {"src_hash": d.get("src_hash"), "model": d.get("model"),
-                    "dim": d.get("dim"), "quant": d.get("quant") or "int8"}
-        except Exception:
-            return None
-    return None
+    if not vec.exists():
+        return None
+    try:
+        d = json.loads(vec.read_bytes())
+        return {"src_hash": d.get("src_hash"), "model": d.get("model"),
+                "dim": d.get("dim"), "quant": d.get("quant") or "int8"}
+    except Exception:
+        return None
 
 
 def vec_is_fresh(vec: Path, overlay: Path, model: str, *, check_model: bool,
@@ -2902,7 +2900,7 @@ def render_eu_page(cis: str, overlay_html: str, meta: tuple[str, str, str] | Non
 
     The single-page counterpart of render_record for the /eu/ side, reused by BOTH
     build_stubs (batch) and the refresh service (on-demand, after re-fetching one
-    EMA PDF). Writes dist/eu/<slug>.html (+ .gz/.br) and returns the index row, or
+    EMA PDF). Writes dist/eu/<slug>.html (+ .br) and returns the index row, or
     None if the overlay is empty / the CIS has no cap meta. The freshness banner
     mirrors an ANSM page: the PDF's ModDate is the 'à jour au' headline
     (data-rcp-ansm) and our fetch date the 'vérifiée le' line + refresh key
@@ -3028,7 +3026,6 @@ def _render_stub(cis: str) -> dict:
     prev = _EU_PREV.get(cis)
     reused = bool(
         prev and prev.get("h") == h and out.exists()
-        and out.with_suffix(".html.gz").exists()
         and out.with_suffix(".html.br").exists()
     )
     if not reused and full:
@@ -3226,7 +3223,6 @@ def main() -> None:
         page = DIST / "rcp" / f"{slug}.html"
         return (
             page.exists()
-            and page.with_suffix(".html.gz").exists()
             and page.with_suffix(".html.br").exists()
         )
 
@@ -3384,7 +3380,7 @@ def main() -> None:
     for f in (*static_assets, "app-version.js", "search-index.json"):
         compress(DIST / f)
     # og.png (the social-card image for og:image / twitter:image) is a raster already
-    # compressed by PNG, so copy it as-is without a .gz/.br sibling.
+    # compressed by PNG, so copy it as-is without a .br sibling.
     shutil.copy(SRC / "og.png", DIST / "og.png")
 
     # Per-drug semantic search: the section vectors (dist/<slug>.vec.json) are now

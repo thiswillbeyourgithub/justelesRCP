@@ -106,10 +106,12 @@
 	# Everything else: the generated static site, bind-mounted read-only at /srv.
 	handle {
 		root * /srv
-		# Serve precompressed .br/.gz siblings when the client supports them
-		# (zero runtime CPU). Falls back to on-the-fly encode above.
+		# Serve the precompressed .br sibling when the client supports it (zero
+		# runtime CPU). build.py writes no .gz sibling any more (it doubled the
+		# disk footprint for almost no reader): a client without brotli gets the
+		# plain file through the on-the-fly encode above.
 		file_server {
-			precompressed br gzip
+			precompressed br
 			# Build-internal caches (written into dist by build.py): the
 			# incremental-build manifest and the baseline RCP-presence cache.
 			# Never expose them over HTTP.
@@ -143,9 +145,13 @@
 	# max-age=86400 on .css/.js let stale assets live in the browser for up to a
 	# day, so a soft reload kept showing the old UI. (An upstream reverse proxy
 	# or CDN in front of :8459 could still cache; make sure it honors no-cache.)
-	# The old immutable /vendor + /models exception is gone: the ~120 MB encoder
-	# model is no longer served to browsers (it runs in the embed container).
-	header Cache-Control "no-cache"
+	# The one exception is /eu/img/: the figures of the EMA pages, which build.py
+	# names after a hash of their bytes, so a given URL can never change content
+	# and the browser may keep it for good instead of revalidating each figure.
+	@eu_img path /eu/img/*
+	@not_eu_img not path /eu/img/*
+	header @not_eu_img Cache-Control "no-cache"
+	header @eu_img Cache-Control "public, max-age=31536000, immutable"
 
 	log {
 		output stdout

@@ -18,7 +18,7 @@ on:
 3. vec_payload/write_vec_json/read_vec_meta round-trip: the .vec.json the embed
    service and embed-rcp.py write is decodable by the browser, and its baked
    src_hash + model (the content-hash staleness key, no manifest) survives a
-   write+read via either the plain file or its .gz sibling.
+   write+read.
 """
 
 import base64
@@ -554,9 +554,9 @@ def test_vec_payload_binary_is_eight_times_narrower_and_ranks_the_same():
 
 
 def test_write_read_vec_meta_roundtrip():
-    # write_vec_json writes the plain .vec.json + a .gz/.br sibling; read_vec_meta
-    # recovers the baked {src_hash, model, dim} (the content-hash staleness key, no
-    # manifest) from EITHER the plain file or its .gz alone.
+    # write_vec_json writes the plain .vec.json + a .br sibling (no .gz any more, and a
+    # stale one from an older build is removed); read_vec_meta recovers the baked
+    # {src_hash, model, dim} (the content-hash staleness key, no manifest).
     payload = build.vec_payload(
         [("sec-0", "snip", "un texte")],
         [_l2_normalise([0.3] * 6)],
@@ -564,10 +564,12 @@ def test_write_read_vec_meta_roundtrip():
     )
     with tempfile.TemporaryDirectory() as d:
         vec = Path(d) / "12345678-doliprane.vec.json"
+        gz = vec.with_name(vec.name + ".gz")
+        gz.write_bytes(b"stale")  # left over by a pre-brotli-only build
         build.write_vec_json(vec, payload)
         assert vec.exists()
-        gz = vec.with_name(vec.name + ".gz")
-        assert gz.exists(), "expected a .gz sibling from compress()"
+        assert vec.with_name(vec.name + ".br").exists(), "expected a .br sibling from compress()"
+        assert not gz.exists(), "compress() must drop a stale .gz sibling"
         meta = build.read_vec_meta(vec)
         assert meta == {"src_hash": "feedface1234",
                         "model": "Xenova/multilingual-e5-small", "dim": 6,
@@ -579,11 +581,9 @@ def test_write_read_vec_meta_roundtrip():
         legacy.pop("quant")
         vec.write_text(json.dumps(legacy), encoding="utf-8")
         assert build.read_vec_meta(vec)["quant"] == "int8"
-        # With the plain file gone (as Caddy might serve only the .gz), the meta must
-        # still be readable from the compressed sibling.
+        # No plain file means not embedded, whatever compressed sibling lingers.
         vec.unlink()
-        meta_gz = build.read_vec_meta(vec)
-        assert meta_gz["src_hash"] == "feedface1234", meta_gz
+        assert build.read_vec_meta(vec) is None
         # Missing entirely -> None (a not-yet-embedded page).
         assert build.read_vec_meta(Path(d) / "00000000-none.vec.json") is None
     print("ok  test_write_read_vec_meta_roundtrip")
