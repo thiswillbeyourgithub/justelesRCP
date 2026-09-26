@@ -107,7 +107,9 @@ dist/eu/<cis>-<slug>.vec.json    per-drug semantic search, written DIRECTLY by
                              pre-bake) for CRAWLED pages only; build.py only prunes
                              orphans. Absent unless one of them has run
 dist/.build-manifest.json    incremental-build cache (per-CIS input hashes)
-+ .gz and .br precompressed siblings for every text file (Caddy serves these)
++ a .br precompressed sibling for every text file (Caddy serves it; no .gz)
+dist/eu/img/<hash>.png|jpg   /eu/ page figures, one file per distinct image (see the
+                             EMA conversion bullet), not precompressed
 ```
 
 Docker lives under `docker/` (compose, Caddyfile, entrypoint.sh, env.example).
@@ -300,7 +302,7 @@ Key facts that aren't obvious from a single file:
   container so the web server stays read-only. It does NOT duplicate the scrape or
   build logic: it imports `scrape-rcp.py` and `build.py` by path (importlib) and
   reuses `fetch_one` -> `extract_rcp` -> `write_overlay` -> `render_record` to
-  fetch one live page and rebuild just that one `dist/rcp/<slug>.html` (+ .gz/.br).
+  fetch one live page and rebuild just that one `dist/rcp/<slug>.html` (+ .br).
   It also calls `build_xref_index(names, page_cis)` once at startup and passes the
   result into `build._init_worker`, so a refreshed page keeps the SAME cross-drug
   backlinks a full build makes (that index needs the COMPO/GENER/frequency files,
@@ -721,7 +723,21 @@ Key facts that aren't obvious from a single file:
   styles, rebuilds real `<table>`s (`find_tables`), embeds meaningful figures
   base64 (dropping tiny pictograms, transcoding to JPEG/PNG, downscaling), groups
   the doc into collapsible `<details class="ema-annexe">` blocks (the SmPC open),
-  and reads the capture date from the PDF `ModDate` (else `CreationDate`).
+  and reads the capture date from the PDF `ModDate` (else `CreationDate`). The
+  overlay keeps the base64 (self-contained), but the SERVED page does not:
+  `render_eu_page` passes the page through `_externalize_images`, which writes each
+  figure to `dist/eu/img/<sha256[:20]>.png|jpg` and links it (`loading="lazy"`).
+  Content-addressed, so every sibling presentation of a product (same SmPC, same
+  figures) shares one file; inline, the figures were ~1.4 GB of the ~1.9 GB of
+  `/eu/` HTML, stored once per sibling and again in each precompressed copy, for
+  ~0.45 GB of distinct images. `build_stubs`' `_prune` ends with
+  `_prune_eu_images`, which deletes the figures no `/eu/` page links (it scans the
+  pages, not a manifest, so figures the refresh service wrote count too). The
+  Caddyfile serves `/eu/img/*` as `immutable` (a hash URL never changes content)
+  and everything else `no-cache`. The refresh container writes them through its
+  existing `dist/eu` mount. Keep in sync across `EU_IMG_DIR`/`_externalize_images`/
+  `_prune_eu_images`/`render_eu_page` (build.py), the `@eu_img` header rule in
+  `docker/Caddyfile`, and `test_eu_figures_become_shared_files_and_orphans_are_pruned`.
   `scrape-ema.py` (PEP 723; imports scrape-rcp.py + ema_pdf.py) is the EMA
   counterpart of `scrape-rcp.py`: it reads the `ema_pdf` links scrape-rcp.py
   harvested into the ANSM manifest, fetches each PDF politely, and writes one
@@ -1060,9 +1076,14 @@ Key facts that aren't obvious from a single file:
   `docker/embed.Dockerfile`. `test_embed.py` covers the pure pieces (int8 round-trip
   bound, `section_chunks` `sec-N` alignment, `vec_payload`/`read_vec_meta` round-trip,
   `raw_hash` staleness key).
-- **Precompression (.gz/.br) is baked at build time** so Caddy spends zero CPU
-  compressing. `compress()` writes both siblings; the Caddyfile uses
-  `precompressed br gzip`.
+- **Precompression (.br only) is baked at build time** so Caddy spends zero CPU
+  compressing. `compress()` writes the `.br` sibling and deletes any stale `.gz` one;
+  the Caddyfile uses `precompressed br`, and its `encode zstd gzip` covers the rare
+  client without brotli on the fly. The `.gz` siblings were dropped in 0.56.0: they
+  cost ~1.8 GB of disk on the VPS for almost no reader. Do not bring them back. `deploy.sh`
+  (local, gitignored) lists and offers (y/N) to delete what the VPS keeps but never
+  uses: leftover `dist/**/*.gz` (the `.vec.json.gz` ones sit outside the rsync mirror),
+  and `data/CIS_RCP.csv`/`.zip`/`data/emb`, which no container mounts.
 - **SEO is baked at build time, from ONE origin constant (`SITE_URL`).** The site
   is a mirror of public ANSM/EMA data, so the SEO job is discovery + making its
   advantages (speed, structure, no ads) legible, not unique content. `SITE_URL`
@@ -1121,7 +1142,7 @@ Key facts that aren't obvious from a single file:
   events in sync across `src/app-init.js` and `src/rcp-semsearch.js`.
 - **A guided product tour onboards new visitors** (`src/tour.js`, a small
   dependency-free spotlight/card driver; loaded on `src/index.html` + `src/rcp.html`,
-  registered in `build.py`'s `static_assets` tuple so it is copied + `.gz`/`.br`
+  registered in `build.py`'s `static_assets` tuple so it is copied + `.br`
   compressed like any client asset). It is a **9-step** tour running across TWO pages
   via a sessionStorage handoff (`RESUME_KEY = jlrcp_tour`, value `rcp` going forward,
   `home` going back): a **HOME phase** on the landing page (a welcome popup, then step
