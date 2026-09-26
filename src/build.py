@@ -2894,6 +2894,55 @@ def _eu_full_content(name: str, eu: str, holder: str, overlay_html: str) -> str:
     return f'<div class="rcp-eu">{lead}{meta}{archive_note}</div>{overlay_html}'
 
 
+# --- /eu/ figures: one shared file per distinct image ------------------------
+# ema_pdf.convert embeds each PDF figure as a base64 data: URI, which keeps the
+# overlay self-contained. Served that way, though, the figures were ~70% of every
+# /eu/ page, stored once per sibling presentation (every strength/pack of a product
+# shares one SmPC, hence the same figures) and again in each precompressed copy,
+# where they barely shrink: 1.4 GB of figures for 0.45 GB of distinct images. So
+# render_eu_page writes each one to dist/eu/img/ under a hash of its bytes, which
+# dedupes siblings for free, and the page links it. The overlay stays unchanged.
+EU_IMG_DIR = DIST / "eu" / "img"
+_DATA_IMG_RE = re.compile(r'src="data:image/(png|jpeg);base64,([A-Za-z0-9+/=]+)"')
+_EU_IMG_REF_RE = re.compile(r'/eu/img/([0-9a-f]{20}\.(?:png|jpg))"')
+
+
+def _externalize_images(page: str) -> str:
+    """Swap every base64 figure in an /eu/ page for a link to its file in
+    EU_IMG_DIR, writing the file when it is new. Content-addressed, so concurrent
+    render workers writing the same figure write the same bytes (the temp name is
+    per process, and the rename is atomic). Not precompressed: PNG/JPEG already are."""
+    def _one(m: re.Match) -> str:
+        data = base64.b64decode(m[2])
+        name = f"{hashlib.sha256(data).hexdigest()[:20]}.{'jpg' if m[1] == 'jpeg' else 'png'}"
+        out = EU_IMG_DIR / name
+        if not out.exists():
+            EU_IMG_DIR.mkdir(parents=True, exist_ok=True)
+            tmp = out.with_name(f"{name}.{os.getpid()}.tmp")
+            tmp.write_bytes(data)
+            tmp.replace(out)
+        return f'src="/eu/img/{name}" loading="lazy"'
+    return _DATA_IMG_RE.sub(_one, page)
+
+
+def _prune_eu_images() -> int:
+    """Delete the figures in EU_IMG_DIR that no /eu/ page links any more (a product
+    whose SmPC changed its figures, a page dropped from the build). Scans the pages
+    themselves rather than a manifest, so a figure written by the refresh service for
+    a page re-rendered on the server counts as used too. Returns the count removed."""
+    if not EU_IMG_DIR.is_dir():
+        return 0
+    used: set[str] = set()
+    for page in EU_IMG_DIR.parent.glob("*.html"):
+        used.update(_EU_IMG_REF_RE.findall(page.read_text(encoding="utf-8")))
+    removed = 0
+    for img in EU_IMG_DIR.iterdir():
+        if img.name not in used:
+            img.unlink()
+            removed += 1
+    return removed
+
+
 def render_eu_page(cis: str, overlay_html: str, meta: tuple[str, str, str] | None,
                    page_tpl: str, pdf_fallback: str = "") -> dict | None:
     """Render ONE full /eu/ page from its converted EMA overlay + cap meta.
@@ -2952,7 +3001,7 @@ def render_eu_page(cis: str, overlay_html: str, meta: tuple[str, str, str] | Non
     )
     out = DIST / "eu" / f"{slug}.html"
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(page, encoding="utf-8")
+    out.write_text(_externalize_images(page), encoding="utf-8")
     compress(out)
     return {"cis": cis, "name": name, "slug": slug, "eu": 1}
 
@@ -3104,6 +3153,7 @@ def build_stubs(
                 # Orphaned semantic-search sidecar (written by the embedder) too.
                 for suf in (".vec.json", ".vec.json.gz", ".vec.json.br"):
                     (page.parent / (page.stem + suf)).unlink(missing_ok=True)
+        _prune_eu_images()
 
     if not cap:  # no BDPM file: build nothing, sweep away any prior stubs
         _prune(set())

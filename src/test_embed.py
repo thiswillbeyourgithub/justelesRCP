@@ -1210,6 +1210,35 @@ def test_record_hash_changes_when_archived():
     print("ok  test_record_hash_changes_when_archived")
 
 
+def test_eu_figures_become_shared_files_and_orphans_are_pruned():
+    # render_eu_page swaps each base64 figure for /eu/img/<hash>: two sibling pages
+    # carrying the same figure share ONE file (the whole point: siblings used to
+    # store it once each), and a figure no page links any more is deleted.
+    import base64
+    png = base64.b64encode(b"\x89PNG fake bytes").decode()
+    jpg = base64.b64encode(b"\xff\xd8 other bytes").decode()
+    with tempfile.TemporaryDirectory() as d:
+        old = build.EU_IMG_DIR
+        build.EU_IMG_DIR = Path(d) / "eu" / "img"
+        try:
+            page = f'<img src="data:image/png;base64,{png}" alt=""><img src="data:image/jpeg;base64,{jpg}" alt="">'
+            a = build._externalize_images(page)
+            b = build._externalize_images(page)
+            assert a == b and "data:" not in a, a
+            files = sorted(f.name for f in build.EU_IMG_DIR.iterdir())
+            assert len(files) == 2 and files[0].endswith(".jpg") and files[1].endswith(".png"), files
+            assert (build.EU_IMG_DIR / files[1]).read_bytes() == b"\x89PNG fake bytes"
+            assert 'loading="lazy"' in a
+            # Only the PNG is still linked by a page: the JPEG is an orphan.
+            (build.EU_IMG_DIR.parent / "1-x.html").write_text(
+                f'<img src="/eu/img/{files[1]}" loading="lazy">', encoding="utf-8")
+            assert build._prune_eu_images() == 1
+            assert [f.name for f in build.EU_IMG_DIR.iterdir()] == [files[1]]
+        finally:
+            build.EU_IMG_DIR = old
+    print("ok  test_eu_figures_become_shared_files_and_orphans_are_pruned")
+
+
 def test_changelog_parses_bilingual_bullets_and_shas():
     """A well-formed release note yields ordered categories, both languages and shas."""
     md = """# 1.2.3 - 2026-07-29
@@ -1321,6 +1350,7 @@ if __name__ == "__main__":
     test_rcp_archived_detects_zero_byte_overlay()
     test_iter_rcp_raw_serves_delisted_baseline()
     test_record_hash_changes_when_archived()
+    test_eu_figures_become_shared_files_and_orphans_are_pruned()
     test_changelog_parses_bilingual_bullets_and_shas()
     test_changelog_rejects_malformed_notes()
     test_changelog_requires_notes_for_the_current_version()
