@@ -107,7 +107,8 @@ dist/eu/<cis>-<slug>.vec.json    per-drug semantic search, written DIRECTLY by
                              pre-bake) for CRAWLED pages only; build.py only prunes
                              orphans. Absent unless one of them has run
 dist/.build-manifest.json    incremental-build cache (per-CIS input hashes)
-+ a .br precompressed sibling for every text file (Caddy serves it; no .gz)
++ a .br precompressed sibling for every other text file (Caddy serves it; no .gz);
+  dist/rcp + dist/eu pages and .vec.json are stored as the .br ONLY (no plain copy)
 dist/eu/img/<hash>.png|jpg   /eu/ page figures, one file per distinct image (see the
                              EMA conversion bullet), not precompressed
 ```
@@ -190,7 +191,7 @@ Key facts that aren't obvious from a single file:
   `dist/.rcp-present.json` keyed by the frozen CSV's size+mtime so it is not
   reparsed every build, then adjusted by overlays exactly as `records()` resolves
   them); the refresh service, which has no CSV, uses `page_cis_from_dist()` (glob
-  of the already-built `dist/rcp/*.html`). The whole index is folded into the
+  of the already-built `dist/rcp` pages, `served_pages`). The whole index is folded into the
   incremental-build `_global_key`
   (a page's links depend on the WHOLE index, not just its own inputs), so a
   changed dictionary busts the cache but an unchanged rebuild still reuses
@@ -302,13 +303,13 @@ Key facts that aren't obvious from a single file:
   container so the web server stays read-only. It does NOT duplicate the scrape or
   build logic: it imports `scrape-rcp.py` and `build.py` by path (importlib) and
   reuses `fetch_one` -> `extract_rcp` -> `write_overlay` -> `render_record` to
-  fetch one live page and rebuild just that one `dist/rcp/<slug>.html` (+ .br).
+  fetch one live page and rebuild just that one `dist/rcp/<slug>.html` (stored as .br).
   It also calls `build_xref_index(names, page_cis)` once at startup and passes the
   result into `build._init_worker`, so a refreshed page keeps the SAME cross-drug
   backlinks a full build makes (that index needs the COMPO/GENER/frequency files,
   mounted read-only, see the hardening notes; absent them it degrades to no
   backlinks). Its `page_cis` comes from `build.page_cis_from_dist()` (a glob of the
-  mounted `dist/rcp/*.html`), not the CSV (which this container does not mount), so
+  mounted `dist/rcp` pages), not the CSV (which this container does not mount), so
   its links target only pages that exist, same as the full build.
   TWO separate worker threads, one per lane, each with its OWN rate limit, so a
   click is NOT stuck behind the crawler's slow gap (that decoupling is the whole
@@ -333,7 +334,8 @@ Key facts that aren't obvious from a single file:
   path). Each throttle mark (`_last_demand_fetch`/`_last_crawl_fetch`) is touched only
   by its own thread, so `_wait_rate(since, rate)` needs no lock. `_process` is
   throttle-free (each worker waits on its lane's rate before calling `_handle`, which
-  wraps `_process` with the shared error/pending bookkeeping). Endpoints: `GET /api/health`, `GET /api/status/<cis>`
+  wraps `_process` with the shared error/pending bookkeeping). Endpoints: `GET /api/health`, `GET /api/plain/<rcp|eu>/<file>.br`
+  (decompressed br-only page for a client without brotli, see the precompression bullet), `GET /api/status/<cis>`
   (`{asof, pending, archived}`), `GET /api/stats` (crawl counters + `crawl` gauge), `POST
   /api/refresh/<cis>[?src=user|auto]` (returns `{status: fresh|queued|busy, asof, archived}`). It is
   same-origin, so the strict `connect-src 'self'` CSP covers the button's fetches.
@@ -1084,6 +1086,27 @@ Key facts that aren't obvious from a single file:
   (local, gitignored) lists and offers (y/N) to delete what the VPS keeps but never
   uses: leftover `dist/**/*.gz` (the `.vec.json.gz` ones sit outside the rsync mirror),
   and `data/CIS_RCP.csv`/`.zip`/`data/emb`, which no container mounts.
+  **The bulk (`dist/rcp` + `dist/eu` pages and `.vec.json`, ~45k files) is stored as
+  the `.br` ONLY, with NO plain copy** (since 0.57.0; the plain copies were ~2.6 GB
+  that almost no reader downloads). `precompressed` cannot serve those (Caddy stats
+  the plain original first and 404s without it), so the Caddyfile gives them two
+  routes before the generic `handle`: `@br_only` (client sends `br` and a `.br`
+  exists) rewrites to the `.br` and sets `Content-Encoding: br` + the Content-Type
+  per URL (`encode` leaves an already-encoded response alone), and `@br_fallback`
+  (any other client, no plain file) rewrites to `/api/plain/<rcp|eu>/<file>.br` on
+  the refresh service, which decompresses via `build.plain_for` (strict path regex)
+  and lets `encode` gzip it. So a non-br client (curl, some bots) needs the refresh
+  service; a browser never does. In Python, callers keep the LOGICAL path
+  (`<slug>.html`, `<slug>.vec.json`) and go through `write_served`/`read_served`/
+  `served_mtime`/`served_pages`/`delete_served`/`br_path`, never `read_text`/`glob
+  ("*.html")` on those dirs; each also accepts a legacy plain file, and
+  `drop_plain_copies` (run by the build and at embed-service startup, which owns the
+  VPS's vectors) removes a plain/`.gz` copy that has a `.br`. Top-level assets, browse
+  pages and `/eu/img/` stay plain (+ `.br` via `compress()`). Keep the contract in
+  sync across those helpers + `plain_for`/`_prune_pages` (build.py), `_send_plain`
+  (refresh-service.py), `Embedder.start` (embed-service.py), the `@br_only`/
+  `@br_fallback` routes in `docker/Caddyfile`, and
+  `test_br_only_pages_are_listed_pruned_and_served_plain`.
 - **SEO is baked at build time, from ONE origin constant (`SITE_URL`).** The site
   is a mirror of public ANSM/EMA data, so the SEO job is discovery + making its
   advantages (speed, structure, no ads) legible, not unique content. `SITE_URL`
