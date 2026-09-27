@@ -114,9 +114,10 @@
 			precompressed br
 			# Build-internal caches (written into dist by build.py): the
 			# incremental-build manifest and the baseline RCP-presence cache.
-			# Never expose them over HTTP.
-			hide .build-manifest.json
-			hide .rcp-present.json
+			# Never expose them over HTTP. ONE hide directive: a second `hide` line
+			# REPLACES the first rather than adding to it, which left the build
+			# manifest publicly served.
+			hide .build-manifest.json .rcp-present.json
 		}
 		# Pretty RCP URLs are stored as .html files.
 		try_files {path} {path}.html {path}/index.html
