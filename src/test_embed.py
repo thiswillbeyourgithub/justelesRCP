@@ -554,8 +554,8 @@ def test_vec_payload_binary_is_eight_times_narrower_and_ranks_the_same():
 
 
 def test_write_read_vec_meta_roundtrip():
-    # write_vec_json writes the plain .vec.json + a .br sibling (no .gz any more, and a
-    # stale one from an older build is removed); read_vec_meta recovers the baked
+    # write_vec_json stores the .vec.json as its .br ONLY (no plain copy, no .gz, and a
+    # stale .gz from an older build is removed); read_vec_meta recovers the baked
     # {src_hash, model, dim} (the content-hash staleness key, no manifest).
     payload = build.vec_payload(
         [("sec-0", "snip", "un texte")],
@@ -567,9 +567,10 @@ def test_write_read_vec_meta_roundtrip():
         gz = vec.with_name(vec.name + ".gz")
         gz.write_bytes(b"stale")  # left over by a pre-brotli-only build
         build.write_vec_json(vec, payload)
-        assert vec.exists()
-        assert vec.with_name(vec.name + ".br").exists(), "expected a .br sibling from compress()"
-        assert not gz.exists(), "compress() must drop a stale .gz sibling"
+        br = vec.with_name(vec.name + ".br")
+        assert not vec.exists(), "the .vec.json must be stored br-only"
+        assert br.exists()
+        assert not gz.exists(), "write_served must drop a stale .gz sibling"
         meta = build.read_vec_meta(vec)
         assert meta == {"src_hash": "feedface1234",
                         "model": "Xenova/multilingual-e5-small", "dim": 6,
@@ -577,11 +578,13 @@ def test_write_read_vec_meta_roundtrip():
         # A file baked BEFORE the binary format existed has no "quant" key at all. It
         # must read back as int8 (which is what it is), not as None, or the freshness
         # gate would call the whole legacy catalog stale and re-embed it for nothing.
-        legacy = json.loads(vec.read_text(encoding="utf-8"))
+        # It is also a legacy PLAIN file (written before br-only storage): the VPS
+        # keeps those until re-embedded, so they must still read back.
+        legacy = json.loads(build.read_served(vec))
         legacy.pop("quant")
+        br.unlink()
         vec.write_text(json.dumps(legacy), encoding="utf-8")
         assert build.read_vec_meta(vec)["quant"] == "int8"
-        # No plain file means not embedded, whatever compressed sibling lingers.
         vec.unlink()
         assert build.read_vec_meta(vec) is None
         # Missing entirely -> None (a not-yet-embedded page).
@@ -620,11 +623,11 @@ def test_vec_is_fresh_gate():
 
         build.write_vec_json(vec, payload_old)
         # 2. Vec OLDER than overlay -> not fresh (a re-crawl bumped the overlay).
-        os.utime(overlay, (overlay.stat().st_atime, vec.stat().st_mtime + 10))
+        os.utime(overlay, (overlay.stat().st_atime, build.served_mtime(vec) + 10))
         assert not build.vec_is_fresh(vec, overlay, "old-model", check_model=False)
 
         # 3. Vec NEWER than overlay, mtime-only pass -> fresh (the common skip).
-        os.utime(overlay, (overlay.stat().st_atime, vec.stat().st_mtime - 10))
+        os.utime(overlay, (overlay.stat().st_atime, build.served_mtime(vec) - 10))
         assert build.vec_is_fresh(vec, overlay, "old-model", check_model=False)
 
         # 4. Same, check_model pass, baked model MATCHES current -> still fresh.
@@ -655,7 +658,7 @@ def test_vec_is_fresh_gate():
                                   quant="int8")
         vec2 = d / "87654321-vide.vec.json"
         build.write_vec_json(vec2, empty)
-        os.utime(overlay, (overlay.stat().st_atime, vec2.stat().st_mtime - 10))
+        os.utime(overlay, (overlay.stat().st_atime, build.served_mtime(vec2) - 10))
         assert build.vec_is_fresh(vec2, overlay, "old-model", check_model=True, dim=8)
         assert build.vec_is_fresh(vec2, overlay, "old-model", check_model=True,
                                   dim=8, quant="binary")
@@ -892,7 +895,7 @@ def _render_one_rcp(d):
     build._SUBSTANCES = {"12345678": "PARACETAMOL"}
     try:
         row = build.render_record(("12345678", raw, "2022-05-02"))
-        html = (Path(d) / "rcp" / f"{row['slug']}.html").read_text()
+        html = build.read_served(Path(d) / "rcp" / f"{row['slug']}.html").decode()
     finally:
         (build.DIST, build._TPL, build._NAMES, build._XREF,
          build._SUBSTANCES) = saved
@@ -1112,7 +1115,7 @@ def test_embed_page_to_vec_re_embeds_on_a_quantisation_change():
                                            quant="int8") == "ok"
             assert build.read_vec_meta(vec)["quant"] == "int8"
             int8_bytes = len(base64.b64decode(json.loads(
-                vec.read_text(encoding="utf-8"))["chunks"][0]["q"]))
+                build.read_served(vec))["chunks"][0]["q"]))
             # Same content, same model, DIFFERENT quantisation -> re-embed, not "fresh".
             r = build.embed_page_to_vec("12345678", raw, "rcp", enc, model="m",
                                         quant="binary")
@@ -1120,7 +1123,7 @@ def test_embed_page_to_vec_re_embeds_on_a_quantisation_change():
             meta = build.read_vec_meta(vec)
             assert meta["quant"] == "binary" and meta["dim"] == 16, meta
             binary_bytes = len(base64.b64decode(json.loads(
-                vec.read_text(encoding="utf-8"))["chunks"][0]["q"]))
+                build.read_served(vec))["chunks"][0]["q"]))
             assert int8_bytes == 8 * binary_bytes, (int8_bytes, binary_bytes)
             # And asking for binary again IS fresh, or the sweep would spin forever.
             assert build.embed_page_to_vec("12345678", raw, "rcp", enc, model="m",
@@ -1230,13 +1233,56 @@ def test_eu_figures_become_shared_files_and_orphans_are_pruned():
             assert (build.EU_IMG_DIR / files[1]).read_bytes() == b"\x89PNG fake bytes"
             assert 'loading="lazy"' in a
             # Only the PNG is still linked by a page: the JPEG is an orphan.
-            (build.EU_IMG_DIR.parent / "1-x.html").write_text(
-                f'<img src="/eu/img/{files[1]}" loading="lazy">', encoding="utf-8")
+            build.write_served(build.EU_IMG_DIR.parent / "1-x.html",
+                               f'<img src="/eu/img/{files[1]}" loading="lazy">'.encode())
             assert build._prune_eu_images() == 1
             assert [f.name for f in build.EU_IMG_DIR.iterdir()] == [files[1]]
         finally:
             build.EU_IMG_DIR = old
     print("ok  test_eu_figures_become_shared_files_and_orphans_are_pruned")
+
+
+def test_br_only_pages_are_listed_pruned_and_served_plain():
+    # dist/rcp + dist/eu pages and their .vec.json are stored ONLY as .br. Every
+    # listing (page_cis_from_dist, dist_pages_index, the prunes) must still see them,
+    # a legacy plain page must too, and plain_for (the refresh service's /api/plain/,
+    # for a client without brotli) must decompress them and refuse anything else.
+    with tempfile.TemporaryDirectory() as d:
+        old = build.DIST
+        build.DIST = Path(d)
+        try:
+            rcp = Path(d) / "rcp"
+            build.write_served(rcp / "11111111-aaa.html", b"<p>a</p>")
+            build.write_served(rcp / "11111111-aaa.vec.json", b'{"x":1}')
+            build.write_served(rcp / "22222222-bbb.html", b"<p>b</p>")
+            (rcp / "33333333-ccc.html").write_text("<p>legacy</p>")  # older build
+            assert sorted(p.name for p in rcp.iterdir()) == [
+                "11111111-aaa.html.br", "11111111-aaa.vec.json.br",
+                "22222222-bbb.html.br", "33333333-ccc.html"]
+            assert build.page_cis_from_dist() == {"11111111", "22222222", "33333333"}
+            assert build.dist_page_for("11111111", "rcp") == rcp / "11111111-aaa.html"
+            assert set(build.dist_pages_index("rcp")) == {"11111111", "22222222", "33333333"}
+            assert build.plain_for("/rcp/11111111-aaa.html.br") == (
+                b"<p>a</p>", "text/html; charset=utf-8")
+            assert build.plain_for("/rcp/11111111-aaa.vec.json.br") == (
+                b'{"x":1}', "application/json")
+            for bad in ("/rcp/99999999-none.html.br", "/rcp/../rcp/11111111-aaa.html.br",
+                        "/rcp/11111111-aaa.html", "/img/11111111-aaa.html.br",
+                        "/rcp/sub/11111111-aaa.html.br"):
+                assert build.plain_for(bad) is None, bad
+            # Migration: a plain/.gz copy next to a .br goes, a plain file with NO .br
+            # (the legacy page above) stays, since it is the only copy.
+            (rcp / "22222222-bbb.html").write_text("<p>old plain</p>")
+            (rcp / "11111111-aaa.vec.json.gz").write_bytes(b"stale")
+            assert build.drop_plain_copies() == 2
+            assert (rcp / "33333333-ccc.html").exists()
+            assert build.read_served(rcp / "22222222-bbb.html") == b"<p>b</p>"
+            # Pruning a dropped slug takes its sidecar with it, whatever form either is in.
+            assert build._prune_pages(rcp, {"22222222-bbb"}) == 2
+            assert sorted(p.name for p in rcp.iterdir()) == ["22222222-bbb.html.br"]
+        finally:
+            build.DIST = old
+    print("ok  test_br_only_pages_are_listed_pruned_and_served_plain")
 
 
 def test_changelog_parses_bilingual_bullets_and_shas():
@@ -1351,6 +1397,7 @@ if __name__ == "__main__":
     test_iter_rcp_raw_serves_delisted_baseline()
     test_record_hash_changes_when_archived()
     test_eu_figures_become_shared_files_and_orphans_are_pruned()
+    test_br_only_pages_are_listed_pruned_and_served_plain()
     test_changelog_parses_bilingual_bullets_and_shas()
     test_changelog_rejects_malformed_notes()
     test_changelog_requires_notes_for_the_current_version()

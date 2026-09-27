@@ -481,7 +481,7 @@ def page_cis_from_dist() -> set[str]:
     rcp_dir = DIST / "rcp"
     if not rcp_dir.is_dir():
         return set()
-    return {p.name.split("-", 1)[0] for p in rcp_dir.glob("*.html")}
+    return {p.name.split("-", 1)[0] for p in served_pages(rcp_dir)}
 
 
 def iter_rcp_raw(scrape_dates: dict[str, str] | None = None, stats: dict | None = None):
@@ -1580,6 +1580,128 @@ def compress(path: Path) -> None:
     )
 
 
+# --- br-only storage for the bulk of dist (dist/rcp + dist/eu pages and .vec.json) --
+# These ~45k files are stored ONLY as their .br: a plain copy next to each cost ~2.6 GB
+# that almost no reader downloads (every browser takes br). Caddy serves the .br
+# straight to a br-capable client and routes any other one to the refresh service's
+# /api/plain/, which decompresses it (see docker/Caddyfile). Callers keep using the
+# LOGICAL path (".../<slug>.html", ".../<slug>.vec.json"); only these helpers know it is
+# stored at "<logical>.br". A plain file left by an older build still reads back, so a
+# half-migrated dist (e.g. the VPS's embed-written .vec.json) keeps working.
+def br_path(path: Path) -> Path:
+    """The on-disk ``.br`` file backing a logical dist path."""
+    return path.with_name(path.name + ".br")
+
+
+def write_served(path: Path, data: bytes) -> None:
+    """Store ``data`` at logical ``path`` as its .br ONLY (atomic temp+rename, so a
+    concurrent Caddy read never sees a torn file), dropping any plain/.gz copy."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    out = br_path(path)
+    tmp = out.with_name(f"{out.name}.{os.getpid()}.tmp")
+    # q10 is ~5x faster than q11 for a fraction of a percent more size.
+    tmp.write_bytes(brotli.compress(data, quality=10))
+    tmp.replace(out)
+    path.unlink(missing_ok=True)
+    path.with_name(path.name + ".gz").unlink(missing_ok=True)
+
+
+def read_served(path: Path) -> bytes | None:
+    """The decompressed bytes at logical ``path`` (its .br, else a legacy plain file),
+    or None when neither exists."""
+    try:
+        return brotli.decompress(br_path(path).read_bytes())
+    except FileNotFoundError:
+        pass
+    try:
+        return path.read_bytes()
+    except FileNotFoundError:
+        return None
+
+
+def served_mtime(path: Path) -> float | None:
+    """Modification time of logical ``path`` (newest of its .br / plain copy), or None."""
+    times = []
+    for p in (br_path(path), path):
+        try:
+            times.append(p.stat().st_mtime)
+        except FileNotFoundError:
+            pass
+    return max(times) if times else None
+
+
+def served_exists(path: Path) -> bool:
+    return br_path(path).exists() or path.exists()
+
+
+def delete_served(path: Path) -> None:
+    """Remove every stored form of logical ``path`` (.br, plain, legacy .gz)."""
+    for p in (br_path(path), path, path.with_name(path.name + ".gz")):
+        p.unlink(missing_ok=True)
+
+
+def served_pages(d: Path, pattern: str = "*") -> list[Path]:
+    """Sorted logical ``<d>/<pattern>.html`` page paths, whichever form they are stored
+    in. The glob is on ``*.html.br`` + legacy ``*.html``, deduped; never ``.vec.json``."""
+    if not d.is_dir():
+        return []
+    found = {p.with_name(p.name[:-3]) for p in d.glob(f"{pattern}.html.br")}
+    found.update(d.glob(f"{pattern}.html"))
+    return sorted(found)
+
+
+# What Caddy hands the plain fallback: the .br it matched, as "/<rcp|eu>/<file>.br".
+# Strict on purpose (slug charset, two extensions, no "/" in the name), since it maps a
+# client-derived path onto the filesystem.
+_PLAIN_RE = re.compile(r"/(rcp|eu)/(\d{8}-[a-z0-9-]+\.(html|vec\.json))\.br")
+_PLAIN_TYPES = {"html": "text/html; charset=utf-8", "vec.json": "application/json"}
+
+
+def plain_for(url_path: str) -> tuple[bytes, str] | None:
+    """``(decompressed bytes, content type)`` of a br-only dist file, for a client
+    that does not accept br (the refresh service's /api/plain/ route), else None."""
+    m = _PLAIN_RE.fullmatch(url_path)
+    if not m:
+        return None
+    data = read_served(DIST / m[1] / m[2])
+    return None if data is None else (data, _PLAIN_TYPES[m[3]])
+
+
+def drop_plain_copies() -> int:
+    """Delete the plain / .gz copy of every dist/rcp + dist/eu file that also has a
+    .br, i.e. migrate a dist written before br-only storage. Cheap (one directory scan
+    per lane), so both the build and the embed service run it at startup: the build
+    covers the pages, the embed service the VPS's .vec.json, which no build rewrites.
+    Returns how many files were removed."""
+    removed = 0
+    for sub in ("rcp", "eu"):
+        d = DIST / sub
+        if not d.is_dir():
+            continue
+        for br in d.glob("*.br"):
+            logical = br.with_name(br.name[:-3])
+            for p in (logical, logical.with_name(logical.name + ".gz")):
+                try:
+                    p.unlink()
+                    removed += 1
+                except FileNotFoundError:
+                    pass
+    return removed
+
+
+def _prune_pages(d: Path, keep: set[str]) -> int:
+    """Delete every page in ``d`` whose slug is not in ``keep``, with its orphaned
+    semantic-search sidecar (written by the embedder, so pruned here too). Shared by
+    the /rcp/ and /eu/ builds. Returns how many pages were removed."""
+    removed = 0
+    for page in served_pages(d):
+        if page.stem not in keep:
+            delete_served(page)
+            delete_served(vec_path_for(page))
+            removed += 1
+    return removed
+
+
 # --- SEO: absolute URLs, sitemap.xml, robots.txt ----------------------------
 def _abs_url(path: str) -> str:
     """Absolute URL for a site-root-relative path ('/rcp/x' -> SITE_URL + '/rcp/x').
@@ -2063,15 +2185,12 @@ def vec_payload(chunks, vecs, model: str, query_prefix: str, src_hash: str,
 
 
 def write_vec_json(dist_path: Path, payload: dict) -> None:
-    """Write one ``dist/<rcp|eu>/<slug>.vec.json`` (+ .br via compress) atomically.
+    """Write one ``dist/<rcp|eu>/<slug>.vec.json`` (stored as its .br) atomically.
     The vectors live in this SEPARATE sidecar, never inline in the page HTML, so a
     page stays refresh-safe (the refresh service rewrites only the .html)."""
     dist_path.parent.mkdir(parents=True, exist_ok=True)
-    data = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    tmp = dist_path.with_name(dist_path.name + ".tmp")
-    tmp.write_bytes(data)
-    tmp.replace(dist_path)
-    compress(dist_path)
+    write_served(dist_path, json.dumps(
+        payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
 
 
 # --- semantic-search page resolution + one-page embed (shared by the embed service
@@ -2087,7 +2206,7 @@ CIS_RE = re.compile(r"^\d{8}$")
 def dist_page_for(cis: str, subdir: str) -> Path | None:
     """The built ``dist/<subdir>/<cis>-<slug>.html`` for this CIS, or None if the page
     isn't rendered yet (nothing to attach a .vec.json to)."""
-    hits = sorted((DIST / subdir).glob(f"{cis}-*.html"))
+    hits = served_pages(DIST / subdir, f"{cis}-*")
     return hits[0] if hits else None
 
 
@@ -2104,7 +2223,7 @@ def dist_pages_index(subdir: str) -> dict[str, Path]:
     d = DIST / subdir
     if not d.is_dir():
         return index
-    for page in sorted(d.glob("*.html")):
+    for page in served_pages(d):
         cis = page.name.split("-", 1)[0]
         if CIS_RE.match(cis):
             index.setdefault(cis, page)
@@ -2128,10 +2247,11 @@ def read_vec_meta(vec: Path) -> dict | None:
     and int8 bytes read as packed bits are noise, not a worse answer. A file written
     before the binary format existed carries no ``quant`` key, so it reads back as
     "int8", which is exactly what it is."""
-    if not vec.exists():
+    raw = read_served(vec)
+    if raw is None:
         return None
     try:
-        d = json.loads(vec.read_bytes())
+        d = json.loads(raw)
         return {"src_hash": d.get("src_hash"), "model": d.get("model"),
                 "dim": d.get("dim"), "quant": d.get("quant") or "int8"}
     except Exception:
@@ -2159,7 +2279,8 @@ def vec_is_fresh(vec: Path, overlay: Path, model: str, *, check_model: bool,
     alongside ``dim`` and for the same reason: flipping EMBED_VEC_QUANT leaves every
     baked vec mtime-fresh while its bytes have become undecodable to the reader."""
     try:
-        if not (vec.exists() and vec.stat().st_mtime >= overlay.stat().st_mtime):
+        mtime = served_mtime(vec)
+        if mtime is None or mtime < overlay.stat().st_mtime:
             return False
     except OSError:
         return False
@@ -2581,9 +2702,7 @@ def render_record(item: tuple[str, str, str]) -> dict[str, str] | None:
         .replace("{{XREF}}", _xref_html(xref_links))
         .replace("{{MORE_BOTTOM}}", refs)
     )
-    out = DIST / "rcp" / f"{slug}.html"
-    out.write_text(page, encoding="utf-8")
-    compress(out)
+    write_served(DIST / "rcp" / f"{slug}.html", page.encode("utf-8"))
     # ``asof`` rides back only for the manifest (sitemap <lastmod>); main() strips it
     # before it can reach the client-downloaded search-index.json. The archived state
     # is NOT returned: main() gathers it in misses() (covering cache hits too, which
@@ -2933,8 +3052,8 @@ def _prune_eu_images() -> int:
     if not EU_IMG_DIR.is_dir():
         return 0
     used: set[str] = set()
-    for page in EU_IMG_DIR.parent.glob("*.html"):
-        used.update(_EU_IMG_REF_RE.findall(page.read_text(encoding="utf-8")))
+    for page in served_pages(EU_IMG_DIR.parent):
+        used.update(_EU_IMG_REF_RE.findall((read_served(page) or b"").decode("utf-8")))
     removed = 0
     for img in EU_IMG_DIR.iterdir():
         if img.name not in used:
@@ -3001,8 +3120,7 @@ def render_eu_page(cis: str, overlay_html: str, meta: tuple[str, str, str] | Non
     )
     out = DIST / "eu" / f"{slug}.html"
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(_externalize_images(page), encoding="utf-8")
-    compress(out)
+    write_served(out, _externalize_images(page).encode("utf-8"))
     return {"cis": cis, "name": name, "slug": slug, "eu": 1}
 
 
@@ -3074,8 +3192,7 @@ def _render_stub(cis: str) -> dict:
 
     prev = _EU_PREV.get(cis)
     reused = bool(
-        prev and prev.get("h") == h and out.exists()
-        and out.with_suffix(".html.br").exists()
+        prev and prev.get("h") == h and br_path(out).exists()
     )
     if not reused and full:
         render_eu_page(cis, overlay, (name, eu, holder), _EU_TPL, link)
@@ -3108,8 +3225,7 @@ def _render_stub(cis: str) -> dict:
             .replace("{{XREF}}", "")
             .replace("{{MORE_BOTTOM}}", "")  # stub is thin; no bottom duplicate
         )
-        out.write_text(page, encoding="utf-8")
-        compress(out)
+        write_served(out, page.encode("utf-8"))
     return {
         "cis": cis, "name": name, "slug": slug, "full": full, "reused": reused, "h": h,
         "asof": (_eu_fetched(overlay) or _eu_date(overlay)) if full else "",
@@ -3143,16 +3259,7 @@ def build_stubs(
     eu_dir = DIST / "eu"
 
     def _prune(keep: set[str]) -> None:
-        if not eu_dir.is_dir():
-            return
-        for page in eu_dir.glob("*.html"):
-            if page.stem not in keep:
-                page.unlink()
-                page.with_suffix(".html.gz").unlink(missing_ok=True)
-                page.with_suffix(".html.br").unlink(missing_ok=True)
-                # Orphaned semantic-search sidecar (written by the embedder) too.
-                for suf in (".vec.json", ".vec.json.gz", ".vec.json.br"):
-                    (page.parent / (page.stem + suf)).unlink(missing_ok=True)
+        _prune_pages(eu_dir, keep)
         _prune_eu_images()
 
     if not cap:  # no BDPM file: build nothing, sweep away any prior stubs
@@ -3271,10 +3378,7 @@ def main() -> None:
     def output_ok(slug: str) -> bool:
         """True when a slug's page and both precompressed siblings still exist."""
         page = DIST / "rcp" / f"{slug}.html"
-        return (
-            page.exists()
-            and page.with_suffix(".html.br").exists()
-        )
+        return br_path(page).exists()
 
     def misses(pbar):
         """Yield (cis, raw, asof) only for records that must be (re)rendered.
@@ -3346,16 +3450,8 @@ def main() -> None:
 
     # Prune outputs left behind by renamed slugs or CIS dropped from the source.
     keep = {e["slug"] for e in index}
-    pruned = 0
-    for page in (DIST / "rcp").glob("*.html"):
-        if page.stem not in keep:
-            page.unlink()
-            page.with_suffix(".html.gz").unlink(missing_ok=True)
-            page.with_suffix(".html.br").unlink(missing_ok=True)
-            # Drop the orphaned semantic-search sidecar too (written by the embedder).
-            for suf in (".vec.json", ".vec.json.gz", ".vec.json.br"):
-                (page.parent / (page.stem + suf)).unlink(missing_ok=True)
-            pruned += 1
+    pruned = _prune_pages(DIST / "rcp", keep)
+    unplained = drop_plain_copies()
 
     MANIFEST_PATH.write_text(
         json.dumps({"global": global_key, "records": new_records}), encoding="utf-8"
@@ -3447,7 +3543,8 @@ def main() -> None:
     write_robots()
 
     print(
-        f"done: {len(index)} RCP pages ({reused} reused, {pruned} pruned) "
+        f"done: {len(index)} RCP pages ({reused} reused, {pruned} pruned, "
+        f"{unplained} plain/.gz copies dropped) "
         f"+ {len(stub_index)} EU stubs ({stub_reused} reused, {stub_rendered} built) "
         f"+ {browse_pages} browse pages ({skipped_empty} empty CIS skipped) "
         f"+ sitemap.xml ({sitemap_urls} urls) + robots.txt -> {DIST}"

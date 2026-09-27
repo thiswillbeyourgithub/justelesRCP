@@ -103,13 +103,57 @@
 		reverse_proxy refresh:8460
 	}
 
-	# Everything else: the generated static site, bind-mounted read-only at /srv.
+	# The generated static site, bind-mounted read-only at /srv. Set at site level
+	# (not inside a handle) because the `file` matchers below are evaluated BEFORE any
+	# handle body runs; /app-config.js above overrides it with its own root.
+	root * /srv
+
+	# The bulk of dist (every /rcp/ and /eu/ page + its .vec.json, ~45k files) is
+	# stored ONLY as .br: a plain copy of each cost ~2.6 GB that almost no reader
+	# downloads. `file_server { precompressed }` cannot serve those, since it needs the
+	# plain original to exist, so they get two routes of their own:
+	#   1. a br-capable client (every browser) gets the .br bytes as-is, labelled with
+	#      Content-Encoding (zero runtime CPU; `encode` leaves an already-encoded
+	#      response alone and adds the Vary header itself);
+	#   2. any other client (curl, some crawlers and link-preview bots) is handed to the
+	#      refresh service's /api/plain/, which decompresses the file; `encode` then
+	#      gzips it on the way out. Without the refresh service, such a client gets a
+	#      502 on those pages (a browser never takes this route).
+	# A leftover plain file still wins for a non-br client (falls through to the
+	# generic handle below), so a half-migrated dist keeps working. /eu/img/ holds
+	# ordinary PNG/JPEG files and is excluded from both routes.
+	@br_only {
+		path /rcp/* /eu/*
+		not path /eu/img/*
+		header Accept-Encoding *br*
+		file {path}.br {path}.html.br
+	}
+	handle @br_only {
+		# `header` runs before `rewrite`, so these match the URL, not the .br name.
+		@vec path *.vec.json
+		@page not path *.vec.json
+		header @vec Content-Type "application/json"
+		header @page Content-Type "text/html; charset=utf-8"
+		header Content-Encoding br
+		rewrite * {file_match.relative}
+		file_server
+	}
+	@br_fallback {
+		path /rcp/* /eu/*
+		not path /eu/img/*
+		not file {path} {path}.html
+		file {path}.br {path}.html.br
+	}
+	handle @br_fallback {
+		rewrite * /api/plain{file_match.relative}
+		reverse_proxy refresh:8460
+	}
+
+	# Everything else (home, browse, assets, /eu/img/): plain files with a .br sibling.
 	handle {
-		root * /srv
 		# Serve the precompressed .br sibling when the client supports it (zero
-		# runtime CPU). build.py writes no .gz sibling any more (it doubled the
-		# disk footprint for almost no reader): a client without brotli gets the
-		# plain file through the on-the-fly encode above.
+		# runtime CPU); a client without brotli gets the plain file through the
+		# on-the-fly encode above.
 		file_server {
 			precompressed br
 			# Build-internal caches (written into dist by build.py): the

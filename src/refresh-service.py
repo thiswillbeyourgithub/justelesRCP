@@ -916,7 +916,7 @@ class Refresher:
         with self._lock:
             self._manifest[cis] = {"last_fetch": scrape._now_iso(), "hash": digest,
                                    "status": "ok", "http": status}
-        # Re-render this ONE page (writes dist/rcp/<slug>.html + .gz/.br) BEFORE
+        # Re-render this ONE page (writes dist/rcp/<slug>.html, stored as .br) BEFORE
         # persisting the manifest. The rebuilt page, carrying today's "vérifiée
         # par justelesRCP le" capture date, IS the point of the refresh; the
         # manifest is merely a TTL cache. So persistence is a best-effort LAST
@@ -995,7 +995,7 @@ class Refresher:
         status = entry.get("status")
         if status == "ok":
             # Re-read the overlay process_one just wrote, then render the /eu/ page
-            # (writes dist/eu/<slug>.html + .gz/.br) BEFORE persisting the manifest,
+            # (writes dist/eu/<slug>.html, stored as .br) BEFORE persisting the manifest,
             # same best-effort ordering as the ANSM lane.
             overlay = build._read_overlay(build._overlay_path(cis, build.EU_OVERLAY_DIR))
             row = build.render_eu_page(cis, overlay, self._cap.get(cis), self._tpl, url)
@@ -1110,7 +1110,35 @@ class _Handler(BaseHTTPRequestHandler):
         except Exception:
             self.close_connection = True
 
+    def _send_plain(self, head: bool) -> None:
+        """A br-only page or .vec.json, decompressed, for a client that does not accept
+        br (Caddy routes those here, see docker/Caddyfile). Caddy's ``encode`` then
+        gzips it on the way out, so such a client still gets a compressed response."""
+        hit = build.plain_for(self.path[len("/api/plain"):])
+        if hit is None:
+            self._send(404, {"error": "not found"})
+            return
+        body, ctype = hit
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            if not head:
+                self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            self.close_connection = True
+
+    def do_HEAD(self) -> None:
+        if self.path.startswith("/api/plain/"):
+            self._send_plain(head=True)
+            return
+        self.send_error(405)
+
     def do_GET(self) -> None:
+        if self.path.startswith("/api/plain/"):
+            self._send_plain(head=False)
+            return
         if self.path == "/api/health":
             self._send(200, {"ok": True})
             return

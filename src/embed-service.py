@@ -200,6 +200,11 @@ class Embedder:
 
     # -- lifecycle ---------------------------------------------------------
     def start(self) -> None:
+        # .vec.json is stored br-only now; drop the plain copies an older embedder left
+        # (no build ever rewrites them on the VPS, and they are ~0.8 GB).
+        dropped = build.drop_plain_copies()
+        if dropped:
+            logger.info("dropped {} plain/.gz copies superseded by a .br", dropped)
         threading.Thread(target=self._worker, name="embed-worker", daemon=True).start()
         if self.backlog:
             threading.Thread(target=self._reconcile_loop, name="embed-reconcile",
@@ -247,7 +252,7 @@ class Embedder:
         return build.vec_path_for(page)
 
     def _read_vec_meta(self, vec: Path) -> dict | None:
-        """{src_hash, model} baked into an existing .vec.json (or its .gz), else None."""
+        """{src_hash, model} baked into an existing .vec.json, else None."""
         return build.read_vec_meta(vec)
 
     def _is_embedded(self, cis: str) -> bool:
