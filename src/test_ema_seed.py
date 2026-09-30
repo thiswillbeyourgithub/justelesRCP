@@ -110,9 +110,66 @@ def test_overlay_pdf_url_reads_baked_link():
     print("ok  test_overlay_pdf_url_reads_baked_link")
 
 
+def test_convert_splits_paragraphs_bullets_and_drops_page_numbers():
+    """ema_pdf.convert on a tiny synthetic 2-page PDF (regression, ABILIFY
+    MAINTENA 4.2): the bottom page number must not leak in as a paragraph, a
+    blank-line gap and each "•" item must open a new paragraph (they were all
+    merged into one <p>), and a sentence running across the page break must stay
+    one paragraph (it used to be cut at every page end)."""
+    import fitz
+    ema_pdf = sema.ema
+    doc = fitz.open()
+    p1 = doc.new_page(width=595, height=842)
+    p1.insert_text((71, 100), "Premier paragraphe, ligne un")
+    p1.insert_text((71, 112.6), "et sa suite.")
+    p1.insert_text((71, 138), "Deux schémas :")
+    p1.insert_text((71, 163), "•")
+    p1.insert_text((99, 163), "Une injection initiale ;")
+    p1.insert_text((71, 176), "•")
+    p1.insert_text((99, 176), "Deux injections initiales.")
+    p1.insert_text((71, 201), "Les données")
+    p1.insert_text((295, 805), "2")
+    p2 = doc.new_page(width=595, height=842)
+    p2.insert_text((71, 60), "disponibles sont insuffisantes.")
+    p2.insert_text((295, 805), "3")
+    out = ema_pdf.convert(doc.tobytes())["html"]
+    paras = [m.strip() for m in out.split("<p>")[1:]]
+    paras = [x[: x.index("</p>")] for x in paras]
+    assert paras == [
+        "Premier paragraphe, ligne un et sa suite.",
+        "Deux schémas :",
+        "· Une injection initiale ;",
+        "· Deux injections initiales.",
+        "Les données disponibles sont insuffisantes.",
+    ], paras
+
+
+def test_table_merged_title_row_spans_columns():
+    """A merged title row (pymupdf gives ``None`` for the spanned cells) renders
+    as one colspan header, and the next row is the column header, instead of a
+    title cell next to a spurious empty header cell."""
+
+    class _Tab:
+        def extract(self):
+            return [
+                ["Oubli de doses", None],
+                ["Moment de l’oubli", "Mesure à prendre"],
+                ["> 5\nsemaines", ""],
+            ]
+
+    got = sema.ema._table_html(_Tab())
+    assert got == (
+        '<table><tr><th colspan="2">Oubli de doses</th></tr>'
+        "<tr><th>Moment de l’oubli</th><th>Mesure à prendre</th></tr>"
+        "<tr><td>&gt; 5 semaines</td><td></td></tr></table>"
+    ), got
+
+
 if __name__ == "__main__":
     test_parse_tolerates_runon_records()
     test_pi_index_prefers_french_and_filters_type()
     test_match_brand_word_boundary()
     test_overlay_pdf_url_reads_baked_link()
+    test_convert_splits_paragraphs_bullets_and_drops_page_numbers()
+    test_table_merged_title_row_spans_columns()
     print("\nAll tests passed.")

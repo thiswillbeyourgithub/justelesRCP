@@ -59,6 +59,20 @@ _IMG_MAX_WIDTH = 1100
 # stored as JPEG (far smaller than PNG); smaller / line-art images stay PNG.
 _IMG_JPEG_AREA = 400_000
 
+# Running page numbers sit in the page margin: a lone integer this close (pt) to
+# the top or bottom edge is chrome, not text (EMA prints it at the bottom).
+_PAGE_NUM_MARGIN = 90
+# A vertical gap between two lines larger than this fraction of the line height
+# is a paragraph break (the PDFs separate paragraphs with a blank line, i.e. a
+# gap of about one line height, while wrapped lines of one paragraph touch).
+_PARA_GAP = 0.5
+# Bullet glyphs the QRD template starts list items with; each opens a paragraph.
+# The glyph is usually its own line object (the item text sits beside it); only
+# the unambiguous glyphs also count as a prefix, since a wrapped sentence line can
+# legitimately start with "- " or "o ".
+_BULLETS = ("•", "·", "-", "–", "o", "\uf0b7")
+_BULLET_PREFIXES = ("• ", "\uf0b7 ")
+
 # Section-marker tokens that open a heading in the QRD template. A top-level
 # marker ("1.", "10.", a lone "ANNEXE") -> h2; a sub-marker ("4.1", "6.2") -> h3.
 _MARKER_TOP = re.compile(r"^(\d{1,2})\.$")
@@ -157,18 +171,33 @@ def _heading(level: int, label: str, sid: str = "") -> str:
 
 
 def _table_html(tab) -> str:
-    """One detected table -> semantic <table>. First row is treated as header."""
+    """One detected table -> semantic <table>. The first row is the header; a
+    merged title row (one filled cell, the rest ``None``: pymupdf's marker for a
+    spanned cell, distinct from an empty ``""`` one) becomes a full-width
+    ``colspan`` header, and pushes the header down to the row after it."""
     rows = tab.extract()
     if not rows:
         return ""
     out = ["<table>"]
+    header = 0
     for i, row in enumerate(rows):
-        cells = [(c or "").strip() for c in row]
-        tag = "th" if i == 0 else "td"
-        tds = "".join(f"<{tag}>{html.escape(c)}</{tag}>" for c in cells)
+        ncols = len(row)
+        if ncols > 1 and row[0] and all(c is None for c in row[1:]):
+            tag = "th" if i <= header else "td"
+            if i == header:
+                header += 1
+            out.append(f'<tr><{tag} colspan="{ncols}">{html.escape(_cell_text(row[0]))}</{tag}></tr>')
+            continue
+        tag = "th" if i == header else "td"
+        tds = "".join(f"<{tag}>{html.escape(_cell_text(c))}</{tag}>" for c in row)
         out.append(f"<tr>{tds}</tr>")
     out.append("</table>")
     return "".join(out)
+
+
+def _cell_text(c: str | None) -> str:
+    """A cell's wrapped PDF lines rejoined into one line of text."""
+    return " ".join((c or "").split())
 
 
 def _inside(inner, outer, tol: float = 2.0) -> bool:
@@ -232,30 +261,39 @@ def convert(pdf_bytes: bytes) -> dict:
             add_html(f"<p>{html.escape(' '.join(buf))}</p>")
             buf.clear()
 
-    for pno, page in enumerate(doc, 1):
+    # A paragraph may run across a page break, so it lives outside the page loop.
+    para: list[str] = []
+    prev_bottom: float | None = None  # bottom y of the last text line placed
+
+    for page in doc:
+        page_h = page.rect.height
         tables = page.find_tables().tables
         tbboxes = [t.bbox for t in tables]
-        # Elements to place in reading order: (y0, kind, payload)
-        elems: list[tuple[float, str, object]] = []
+        # Elements to place in reading order: (y0, x0, kind, payload). Text is
+        # placed line by line (not block by block) so that a PDF text block that
+        # straddles a table edge loses only its in-table lines: those are
+        # emitted by the <table>, and keeping the whole block duplicated them.
+        elems: list[tuple[float, float, str, object]] = []
         for t in tables:
-            elems.append((t.bbox[1], "table", t))
+            elems.append((t.bbox[1], t.bbox[0], "table", t))
         for im in page.get_image_info(xrefs=True):
             xref = im.get("xref", 0)
             if xref:
-                elems.append((im["bbox"][1], "image", xref))
+                elems.append((im["bbox"][1], im["bbox"][0], "image", xref))
         for b in page.get_text("dict").get("blocks", []):
             if b.get("type") != 0:
                 continue
-            if any(_inside(b["bbox"], tb) for tb in tbboxes):
-                continue  # text belongs to a table, emitted as <table>
-            elems.append((b["bbox"][1], "block", b))
-        elems.sort(key=lambda e: e[0])
+            for line in b["lines"]:
+                if any(_inside(line["bbox"], tb) for tb in tbboxes):
+                    continue  # text belongs to a table, emitted as <table>
+                elems.append((line["bbox"][1], line["bbox"][0], "line", line))
+        elems.sort(key=lambda e: (round(e[0]), e[1]))
 
-        para: list[str] = []
-        for _, kind, payload in elems:
+        for y0, _, kind, payload in elems:
             if kind == "table":
                 flush_para(para)
                 pending_marker = ""
+                prev_bottom = None
                 add_html(_table_html(payload))
             elif kind == "image":
                 xref = payload
@@ -265,44 +303,57 @@ def convert(pdf_bytes: bytes) -> dict:
                 got = _img_data_uri(doc, xref)
                 if got:
                     flush_para(para)
+                    prev_bottom = None
                     add_html(f'<figure><img src="{got[0]}" alt=""></figure>')
-            else:  # text block
-                for line in payload["lines"]:
-                    txt, bold = _line_text(line)
-                    if not txt:
-                        continue
-                    # Strip the running page-number line (a lone integer at top).
-                    if txt == str(pno) and line["bbox"][1] < 90:
-                        continue
-                    # A lone bold section marker: hold it, the next line is its title.
-                    if bold and (_MARKER_TOP.match(txt) or _MARKER_SUB.match(txt) or _MARKER_ALPHA.match(txt)):
+            else:  # one text line
+                line = payload
+                txt, bold = _line_text(line)
+                top, bottom = line["bbox"][1], line["bbox"][3]
+                # A blank line is a paragraph break.
+                if not txt:
+                    flush_para(para)
+                    continue
+                # Drop the running page number (a lone integer in the margin).
+                if txt.isdigit() and (top < _PAGE_NUM_MARGIN or bottom > page_h - _PAGE_NUM_MARGIN):
+                    continue
+                # A vertical gap is a paragraph break too (only within a page:
+                # prev_bottom from the previous page is not comparable).
+                if prev_bottom is not None and top >= prev_bottom - 1 and top - prev_bottom > _PARA_GAP * (bottom - top):
+                    flush_para(para)
+                prev_bottom = bottom
+                # A list bullet opens its own paragraph (its text follows on the
+                # same row, as a separate line object).
+                if txt in _BULLETS or txt.startswith(_BULLET_PREFIXES):
+                    flush_para(para)
+                # A lone bold section marker: hold it, the next line is its title.
+                if bold and (_MARKER_TOP.match(txt) or _MARKER_SUB.match(txt) or _MARKER_ALPHA.match(txt)):
+                    flush_para(para)
+                    pending_marker = txt
+                    continue
+                if pending_marker:
+                    label = f"{pending_marker} {txt}"
+                    is_sub = bool(_MARKER_SUB.match(pending_marker))
+                    if _GROUP_BOUNDARY.search(label) and not is_sub:
                         flush_para(para)
-                        pending_marker = txt
-                        continue
-                    if pending_marker:
-                        label = f"{pending_marker} {txt}"
-                        is_sub = bool(_MARKER_SUB.match(pending_marker))
-                        if _GROUP_BOUNDARY.search(label) and not is_sub:
-                            flush_para(para)
-                            new_group(label)
-                        elif is_sub:
-                            add_html(_heading(2, label))
-                        else:
-                            sec_n += 1
-                            sid = f"sec-{sec_n}"
-                            add_html(_heading(1, label, sid))
-                            if groups and groups[-1]["open"]:
-                                groups[-1]["subs"].append((sid, label))
-                        pending_marker = ""
-                        continue
-                    # A bold ANNEXE divider or a whitelisted annex title opens a group.
-                    if bold and (_ANNEXE.match(txt) or _ANNEX_TITLE.match(txt)):
-                        flush_para(para)
-                        new_group(txt)
-                        continue
-                    para.append(txt)
-                flush_para(para)
-        flush_para(para)
+                        new_group(label)
+                    elif is_sub:
+                        add_html(_heading(2, label))
+                    else:
+                        sec_n += 1
+                        sid = f"sec-{sec_n}"
+                        add_html(_heading(1, label, sid))
+                        if groups and groups[-1]["open"]:
+                            groups[-1]["subs"].append((sid, label))
+                    pending_marker = ""
+                    continue
+                # A bold ANNEXE divider or a whitelisted annex title opens a group.
+                if bold and (_ANNEXE.match(txt) or _ANNEX_TITLE.match(txt)):
+                    flush_para(para)
+                    new_group(txt)
+                    continue
+                para.append(txt)
+        prev_bottom = None
+    flush_para(para)
 
     body_parts, toc = [], []
     for g in groups:
