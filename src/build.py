@@ -907,7 +907,103 @@ def _parse_clean(raw: str):
             node.set("style", ";".join(kept))
         else:
             del node.attrib["style"]
+    _promote_subheads(doc)
     return doc
+
+
+# Unstyled subheadings. Many RCPs (most EMA SmPCs, some ANSM pages) set their
+# deepest subheadings as a plain paragraph on its own line rather than a heading
+# class: "Absorption", "Élimination", "Population pédiatrique", each followed by the
+# prose about it. ema_pdf has no font signal for them (they are regular weight), so
+# without this they read as an orphan one-word paragraph, never reach the Sommaire,
+# and section_chunks even DROPS the 1-2 word ones as filler. _promote_subheads tags
+# such a line as a heading one level below the heading it sits under (normally
+# AmmAnnexeTitre3 under a numbered "5.2"), so the ToC and the chunk heading-path
+# prefix pick it up through the existing Amm* machinery. It runs in _parse_clean,
+# the single point both the page and the chunks are parsed from, so they agree.
+# A line qualifies when it: is a plain body paragraph (not a list item, not in a
+# table cell, not inside a collapsed /eu/ annex group whose mock-up labelling and
+# address lists are full of short lines); has at most _SUBHEAD_MAX_WORDS words;
+# starts with a capital, has some lowercase (all-caps lines are broken annex-title
+# fragments) and no closing punctuation; is not a bullet, a caption, a phone/email
+# line or a table leftover (2+ numbers); does not end on a dangling function word;
+# does not follow a "...:" list intro or another short line (a run of short lines is
+# an unbulleted list), nor sit next to a figure; and is followed by
+# a real paragraph (or table) rather than another short line. Tuned by hand on a
+# sample of ~150 overlays, both lanes.
+_SUBHEAD_MAX_WORDS = 8
+_SUBHEAD_CLASSES = ("", "AmmCorpsTexte", "AmmCorpsTexteGras")
+_SUBHEAD_BULLETS = ("•", "·", "-", "–", "o ", "\uf0b7", "*")
+_SUBHEAD_DANGLING = {"de", "du", "des", "la", "le", "les", "et", "ou", "à", "a",
+                     "en", "d’", "l’", "d'", "l'", "par", "pour", "avec", "sur"}
+_SUBHEAD_SKIP_RE = re.compile(r"^(Tableau|Figure)\b|@|\d{4}|\bT(?:e|é|l)l?f?\b")
+
+
+def _subhead_follower_ok(nxt) -> bool:
+    """The element after a candidate must be body content (a table, or a paragraph
+    that is clearly prose or a bullet), not a heading or another short line."""
+    if nxt is None or nxt.tag in ("h1", "h2", "h3", "h4"):
+        return False
+    if _titre_level(nxt.get("class") or ""):
+        return False
+    if nxt.tag != "p":
+        return nxt.tag in ("table", "ul", "ol", "div")
+    n = _norm_ws(nxt.text_content())
+    return (n.endswith((".", ":")) or len(n.split()) > _SUBHEAD_MAX_WORDS
+            or n.startswith(_SUBHEAD_BULLETS))
+
+
+def _is_subhead(p) -> bool:
+    """True when paragraph ``p`` is an unstyled subheading (see _promote_subheads)."""
+    if (p.get("class") or "") not in _SUBHEAD_CLASSES:
+        return False
+    parent = p.getparent()
+    if parent is None or parent.tag in ("td", "th", "li"):
+        return False
+    if any(a.tag == "details" and a.get("open") is None for a in p.iterancestors()):
+        return False
+    t = _norm_ws(p.text_content())
+    words = t.split()
+    if len(t) < 3 or len(words) > _SUBHEAD_MAX_WORDS:
+        return False
+    if not (t[0].isalpha() and t[0].isupper()) or not any(c.islower() for c in t):
+        return False
+    if t[-1] in ".:;,!?" or t.startswith(_SUBHEAD_BULLETS):
+        return False
+    if _SUBHEAD_SKIP_RE.search(t) or sum(w.isdigit() for w in words) >= 2:
+        return False
+    if words[-1].lower() in _SUBHEAD_DANGLING:
+        return False
+    prev = p.getprevious()
+    if prev is not None and prev.tag == "p" and not _titre_level(prev.get("class") or ""):
+        pt = _norm_ws(prev.text_content())
+        if pt.endswith(":"):
+            return False  # a list intro: this is its first item
+        if pt and len(pt.split()) <= _SUBHEAD_MAX_WORDS and pt[-1] not in ".;!?":
+            return False  # a run of short lines is an unbulleted list, not headings
+    for sib in (prev, p.getnext()):
+        if sib is not None and (sib.tag in ("figure", "img")
+                                or sib.find(".//img") is not None):
+            return False
+    return _subhead_follower_ok(p.getnext())
+
+
+def _promote_subheads(doc) -> None:
+    """Tag each unstyled subheading paragraph (see _is_subhead) as an Amm heading one
+    level below the heading it follows (min 3, max 4), in place. Decisions are made on
+    the untouched tree first, so a promotion never changes the next line's verdict."""
+    level = 0
+    plan = []
+    for el in doc.iter():
+        if not isinstance(el.tag, str):
+            continue
+        lvl = _titre_level(el.get("class") or "")
+        if lvl:
+            level = lvl
+        elif el.tag == "p" and level and _is_subhead(el):
+            plan.append((el, min(max(level + 1, 3), 4)))
+    for el, lvl in plan:
+        el.set("class", f"AmmAnnexeTitre{lvl}")
 
 
 def _inner_of(doc):
@@ -939,18 +1035,21 @@ def _denomination(doc) -> str:
 # Depth of the sidebar table of contents. 1 = top-level sections only (the
 # original behaviour: '1. DENOMINATION DU MEDICAMENT', '4. DONNEES CLINIQUES'...);
 # 2 also nests the numbered subsections ('4.1 Indications', '4.2 Posologie', '4.3
-# Contre-indications'...) beneath them; 3/4 would additionally list the deeper,
-# mostly UNNUMBERED fragments ('Posologie', 'Grossesse'...), which a typical RCP
-# has by the dozen and would bury the ToC, so 2 is the sweet spot. Purely
+# Contre-indications'...) beneath them; 3 additionally lists the UNNUMBERED
+# subheadings ('Absorption', 'Élimination', 'Population pédiatrique'...), both the
+# ANSM AmmAnnexeTitre3 ones and the plain lines _promote_subheads tags. That is a
+# dozen or two per page, but the nested level sits under its numbered parent in a
+# collapsed <details>, so it helps a reader jump to "5.2 > Élimination". Purely
 # cosmetic: bumping it re-renders every page on the next build but needs NO
 # re-scrape (all four heading levels are already in the stored ANSM HTML).
-_TOC_DEPTH = 2
+_TOC_DEPTH = 3
 
 # One (possibly nested) ToC entry: (anchor id, heading text, child entries).
 TocEntry = tuple[str, str, list]
 
 
-def _build_toc(inner, depth: int = _TOC_DEPTH) -> list[TocEntry]:
+def _build_toc(inner, depth: int = _TOC_DEPTH, keep_ids: bool = False,
+               sub_prefix: str = "") -> list[TocEntry]:
     """Give each heading (AmmAnnexeTitre1..``depth``) a stable id and return the
     nested [(id, title, children)] tree for the on-page table of contents.
 
@@ -961,6 +1060,12 @@ def _build_toc(inner, depth: int = _TOC_DEPTH) -> list[TocEntry]:
     separate ``sub-N`` namespace. ``depth=1`` reproduces the original flat,
     top-level-only tree (used by section_chunks, which ignores sub-headings).
     Empty-title headings are skipped (assigned no id, consume no number).
+
+    ``keep_ids`` keeps an id a heading already carries instead of renumbering it:
+    a converted /eu/ overlay's headings come with QRD-numbered ``sec-N`` ids from
+    ema_pdf that its chunks anchor to. ``sub_prefix`` namespaces the generated
+    ``sub-N`` ids, so _eu_toc can build one tree per annex group without the
+    groups' ids colliding.
     """
     sel = " or ".join(
         f"contains(@class, 'AmmAnnexeTitre{lvl}')" for lvl in range(1, depth + 1)
@@ -978,11 +1083,13 @@ def _build_toc(inner, depth: int = _TOC_DEPTH) -> list[TocEntry]:
         title = " ".join(el.text_content().split())
         if not title:
             continue
-        if level == 1:
+        if keep_ids and el.get("id"):
+            sec_id = el.get("id")
+        elif level == 1:
             sec_id = f"sec-{n_top}"
             n_top += 1
         else:
-            sec_id = f"sub-{n_sub}"
+            sec_id = f"{sub_prefix}sub-{n_sub}"
             n_sub += 1
         el.set("id", sec_id)
         entry: TocEntry = (sec_id, title, [])
@@ -1055,8 +1162,11 @@ _SEC_MAX_CHUNKS = 10000
 # "6" = REVERSES "2": the section-heading PATH (top heading > subheadings) is now
 # prefixed onto each embedded chunk_text so a passage always carries its section topic
 # in the vector (the snippet stays body-only, so display/locate() are unchanged), and
-# tiny chunks are merged into neighbours (_merge_small) instead of stranded.
-_CHUNK_FORMAT_VERSION = "6"
+# tiny chunks are merged into neighbours (_merge_small) instead of stranded;
+# "7" = unstyled subheading lines ("Absorption", "Élimination") are promoted to
+# headings (_promote_subheads), so they join the heading-path prefix instead of being
+# dropped as filler (1-2 words) or blended into the body.
+_CHUNK_FORMAT_VERSION = "7"
 
 
 def quantize_int8(values) -> list[int]:
@@ -2960,27 +3070,30 @@ def _eu_pdf_url(overlay_html: str, name: str, fallback: str = "") -> str:
     return _eu_pdf(overlay_html) or fallback or _ema_search_url(name)
 
 
-def _eu_toc(overlay_html: str) -> list[TocEntry]:
-    """Two-level ToC parsed from an EMA overlay: each collapsible ``<details>``
-    group (its ``<summary id>``), with the numbered sections (``<h2 id>``) of the
-    open group (the SmPC) as children. Mirrors ema_pdf.convert's structure; the
-    nested (id, title, children) shape feeds the shared _toc_html renderer."""
-    try:
-        root = lxml_html.fromstring(overlay_html)
-    except Exception:
-        return []
+def _eu_toc(inner) -> list[TocEntry]:
+    """ToC of an EMA overlay, from its parsed (_parse_clean'd, so subheadings already
+    promoted) body: each collapsible ``<details>`` group (its ``<summary id>``), with
+    the open group's (the SmPC's) headings nested beneath it to _TOC_DEPTH, keeping
+    ema_pdf's ``sec-N`` ids. Mutates ``inner`` (the deeper headings get ids), so the
+    caller serialises it afterwards. Same nested shape as an RCP page's _build_toc."""
     groups: list[TocEntry] = []
-    for det in root.findall(".//details"):
+    for det in inner.iter("details"):
         summ = det.find("summary")
         if summ is None or not summ.get("id"):
             continue
         subs: list[TocEntry] = []
         if det.get("open") is not None:  # only the open group (SmPC) lists sections
-            for h in det.findall(".//h2"):
-                if h.get("id"):
-                    subs.append((h.get("id"), h.text_content().strip(), []))
+            subs = _build_toc(det, keep_ids=True, sub_prefix=f"{summ.get('id')}-")
         groups.append((summ.get("id"), summ.text_content().strip(), subs))
     return groups
+
+
+def _eu_prepare(overlay_html: str) -> tuple[str, list[TocEntry]]:
+    """(body html, toc) of an EMA overlay: parsed through _parse_clean (the same tree
+    section_chunks segments, subheadings promoted) with the ToC ids applied."""
+    inner = _inner_of(_parse_clean(overlay_html))
+    toc = _eu_toc(inner)
+    return lxml_html.tostring(inner, encoding="unicode"), toc
 
 
 def _eu_full_content(name: str, eu: str, holder: str, overlay_html: str) -> str:
@@ -3106,15 +3219,16 @@ def render_eu_page(cis: str, overlay_html: str, meta: tuple[str, str, str] | Non
         ))
         + _jsonld(crumb_ld)
     )
+    body, toc = _eu_prepare(overlay_html)
     page = (
         page_tpl.replace("{{TITLE}}", _esc(name))
         .replace("{{DESCRIPTION}}", _esc(description))
         .replace("{{HEADEXTRA}}", head_extra)
         .replace("{{BREADCRUMB}}", crumb_nav)
         .replace("{{CIS}}", _esc(cis))
-        .replace("{{TOC}}", _toc_html(_eu_toc(overlay_html)))
+        .replace("{{TOC}}", _toc_html(toc))
         .replace("{{ASOF}}", asof)
-        .replace("{{CONTENT}}", _eu_full_content(name, eu, holder, overlay_html))
+        .replace("{{CONTENT}}", _eu_full_content(name, eu, holder, body))
         .replace("{{XREF}}", "")
         .replace("{{MORE_BOTTOM}}", refs)
     )

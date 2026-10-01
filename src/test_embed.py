@@ -147,6 +147,67 @@ def test_heading_path_context_prefix():
     print("ok  test_heading_path_context_prefix")
 
 
+def test_unstyled_subheads_promoted():
+    # v7: a plain short line with no closing punctuation, followed by prose, is a
+    # subheading in disguise (EMA SmPCs set "Absorption", "Élimination"... that way).
+    # It must become an AmmAnnexeTitre3 under its numbered parent: listed in the ToC and
+    # carried in the chunk's heading path, instead of being dropped as 1-word filler.
+    sample = """<div id="textDocument">
+      <p class="AmmAnnexeTitre1">5. PROPRIETES PHARMACOLOGIQUES</p>
+      <p class="AmmAnnexeTitre2">5.2 Proprietes pharmacocinetiques</p>
+      <p>Élimination</p>
+      <p>La demi-vie moyenne d'elimination terminale est de vingt-neuf jours apres injection.</p>
+      <p>Les effets suivants ont ete rapportes :</p>
+      <p>Cephalees frequentes</p>
+      <p>Une somnolence a ete observee chez certains patients traites au long cours.</p>
+      <p>MARCHÉ</p>
+      <p>Un texte de prose suffisamment long pour suivre la ligne en majuscules.</p>
+      <p>Tel: +47 32 20 73 00</p>
+      <p>Un texte de prose suffisamment long pour suivre la ligne de telephone.</p>
+      <p>Poids du</p>
+      <p>Un texte de prose suffisamment long pour suivre la ligne coupee.</p>
+      <p>Ligne courte</p>
+      <p>Autre ligne courte</p>
+      <p>Phrase complete et finie.</p>
+      <p>Un texte de prose suffisamment long pour suivre la phrase finie.</p>
+      <table><tr><td><p>Cellule de tableau</p><p>Une phrase dans la cellule du tableau.</p></td></tr></table>
+    </div>"""
+    _, cleaned, toc, _ = build.clean_rcp(sample)
+    subs = toc[0][2][0][2]  # 5. > 5.2 > [promoted]
+    assert [t for _, t, _ in subs] == ["Élimination"], subs
+    elim = next(t for _, _, t in build.section_chunks(sample) if "vingt-neuf" in t)
+    assert elim.startswith("5. PROPRIETES PHARMACOLOGIQUES > 5.2 Proprietes "
+                           "pharmacocinetiques > Élimination\n"), elim
+    print("ok  test_unstyled_subheads_promoted")
+
+
+def test_eu_toc_keeps_ema_ids_and_nests_subheads():
+    # A full /eu/ page's ToC nests the open (SmPC) group's numbered subsections and the
+    # promoted subheadings, KEEPING ema_pdf's sec-N ids (the chunks anchor to them),
+    # while a collapsed annex group (labelling mock-ups, addresses) is never promoted.
+    overlay = """<div id="textDocument">
+      <details class="ema-annexe" open><summary id="grp-1">ANNEXE I</summary>
+        <h2 class="AmmAnnexeTitre1" id="sec-4">4. INFORMATIONS CLINIQUES</h2>
+        <h3 class="AmmAnnexeTitre2">4.2 Posologie et mode d'administration</h3>
+        <p>Populations particulieres</p>
+        <p>Aucun ajustement posologique n'est necessaire chez le sujet age.</p>
+      </details>
+      <details class="ema-annexe"><summary id="grp-2">ANNEXE III</summary>
+        <p>Boite de carton</p>
+        <p>Un texte de prose suffisamment long pour suivre la ligne courte.</p>
+      </details>
+    </div>"""
+    body, toc = build._eu_prepare(overlay)
+    assert [g[0] for g in toc] == ["grp-1", "grp-2"], toc
+    (sec_id, _, kids), = toc[0][2]
+    assert sec_id == "sec-4", toc
+    assert kids == [("grp-1-sub-0", "4.2 Posologie et mode d'administration",
+                     [("grp-1-sub-1", "Populations particulieres", [])])], kids
+    assert toc[1][2] == [] and "<p>Boite de carton</p>" in body, body
+    assert 'id="grp-1-sub-1"' in body
+    print("ok  test_eu_toc_keeps_ema_ids_and_nests_subheads")
+
+
 def test_merge_small_chunks():
     # A tiny tail / stray fragment is folded into a neighbour, never emitted alone, but a
     # lone short chunk (a genuinely short section) is kept; large chunks are left intact.
@@ -318,7 +379,7 @@ def test_demojibake_restores_lost_apostrophes():
 
 
 # A page with two top-level sections, the second carrying two numbered subsections
-# (AmmAnnexeTitre2) and one deeper heading (AmmAnnexeTitre3, excluded at depth 2).
+# (AmmAnnexeTitre2) and one deeper heading (AmmAnnexeTitre3, nested at depth 3).
 SAMPLE_NESTED = """<html><body><div id="textDocument">
   <p class="AmmAnnexeTitre1">1. DENOMINATION DU MEDICAMENT</p>
   <p>DOLIPRANE 1000 mg.</p>
@@ -341,12 +402,12 @@ def test_nested_toc_keeps_sec_namespace_stable():
     assert [sid for sid, _, _ in toc] == ["sec-0", "sec-1"], toc
     denom, clinique = toc
     assert denom[1].startswith("1. DENOMINATION") and denom[2] == []
-    # The two AmmAnnexeTitre2 headings nest UNDER "4. DONNEES CLINIQUES" as sub-0/sub-1
-    # (depth 2 stops before the AmmAnnexeTitre3 "Posologie" fragment).
+    # The two AmmAnnexeTitre2 headings nest UNDER "4. DONNEES CLINIQUES" as sub-0/sub-1,
+    # and the AmmAnnexeTitre3 "Posologie" under 4.2 as sub-2 (depth 3).
     children = clinique[2]
     assert [sid for sid, _, _ in children] == ["sub-0", "sub-1"], children
     assert "4.1 Indications" in children[0][1]
-    assert all(grandkids == [] for _, _, grandkids in children)
+    assert children[0][2] == [] and children[1][2] == [("sub-2", "Posologie", [])]
 
     # The rendered anchors exist for both namespaces, and the ToC HTML nests them.
     assert 'id="sec-0"' in cleaned and 'id="sec-1"' in cleaned
@@ -1365,6 +1426,8 @@ if __name__ == "__main__":
     test_section_chunks_align_with_toc()
     test_heading_only_section_yields_no_chunk()
     test_heading_path_context_prefix()
+    test_unstyled_subheads_promoted()
+    test_eu_toc_keeps_ema_ids_and_nests_subheads()
     test_merge_small_chunks()
     test_merged_chunk_snippet_spans_its_paragraph_run()
     test_dsfr_backtotop_chrome_stripped()
