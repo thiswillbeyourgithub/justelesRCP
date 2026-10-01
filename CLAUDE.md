@@ -218,8 +218,9 @@ Key facts that aren't obvious from a single file:
   original export used a genuine space instead of an apostrophe, which no
   codepoint map can recover). Covered by `test_demojibake_restores_lost_apostrophes`.
 - **Each RCP page has a sidebar table of contents.** `_build_toc()` walks the
-  headings down to `_TOC_DEPTH` (default 2: top-level `AmmAnnexeTitre1` plus the
-  numbered `AmmAnnexeTitre2` subsections like "4.1 Indications", "4.2 Posologie")
+  headings down to `_TOC_DEPTH` (default 3: top-level `AmmAnnexeTitre1`, the
+  numbered `AmmAnnexeTitre2` subsections like "4.1 Indications", "4.2 Posologie",
+  and the unnumbered `AmmAnnexeTitre3` subheadings like "Absorption", "Élimination")
   and returns a NESTED `(id, title, children)` tree; `render_record()` emits a
   `<details class="toc">` of jump links (plus the version slot) into `{{TOC}}` via
   the shared, recursive `_toc_html`/`_toc_ol_html`. It renders in the reading column
@@ -235,9 +236,26 @@ Key facts that aren't obvious from a single file:
   re-scrape (all four ANSM heading levels are already in the stored HTML);
   `section_chunks` deliberately calls `_build_toc(inner, depth=1)` so it is
   independent of the ToC depth. The SAME `_toc_html` renders the full `/eu/`
-  pages, fed by `_eu_toc()` (annexe group > SmPC section, same nested shape). Keep
+  pages, fed by `_eu_toc()` (annexe group > the open SmPC group's own `_build_toc`
+  tree, same nested shape), which `render_eu_page` gets from `_eu_prepare`: the
+  overlay goes through the SAME `_parse_clean` as an RCP page, and `_build_toc` runs
+  with `keep_ids=True` (ema_pdf's QRD-numbered `sec-N` ids are kept, the chunks
+  anchor to them) and `sub_prefix="<grp-id>-"` (so two open groups' `sub-N` never
+  collide). **Unstyled subheadings are promoted.** Most EMA SmPCs (and some ANSM
+  pages) set their deepest subheadings as a plain short line with no closing
+  punctuation ("Élimination" then its prose): `_promote_subheads` (called at the end
+  of `_parse_clean`, so the page and `section_chunks` see the same tree) tags such a
+  `<p>` as `AmmAnnexeTitre<n>` one level below the heading it follows (min 3, max 4),
+  so it reaches the Sommaire AND the chunk heading-path prefix (before, the 1-2 word
+  ones were DROPPED by `_is_filler_paragraph`). `_is_subhead` is a hand-tuned
+  heuristic (<= `_SUBHEAD_MAX_WORDS` words, capitalised, some lowercase, no closing
+  punctuation, not a bullet/caption/phone line/table leftover/dangling function word,
+  not after a "…:" list intro or another short line, not next to a figure, followed
+  by prose or a table, never inside a collapsed `/eu/` annex group); it is render-time,
+  so it needs a rebuild + re-embed (`_CHUNK_FORMAT_VERSION` 7), never a re-scrape. It
+  cannot catch run-in headings glued to their paragraph on the same line. Keep
   the contract in sync across `_build_toc`/`_toc_html`/`_toc_ol_html`/`_eu_toc`/
-  `_TOC_DEPTH` (build.py), the `{{TOC}}` slot in `src/rcp.html`, `src/toc.js`, and
+  `_eu_prepare`/`_promote_subheads`/`_is_subhead`/`_TOC_DEPTH` (build.py), the `{{TOC}}` slot in `src/rcp.html`, `src/toc.js`, and
   `.toc` in `style.css`.
 - **Every page has an `<h1>` drug/presentation-name header** at the top, emitted
   from the shared template's `{{TITLE}}` slot (filled with the drug name by
