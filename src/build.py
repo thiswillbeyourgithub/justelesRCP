@@ -1740,6 +1740,17 @@ def served_mtime(path: Path) -> float | None:
     return max(times) if times else None
 
 
+def touch_served(path: Path) -> None:
+    """Bump the mtime of logical ``path``'s on-disk file(s) (its .br, and a legacy plain
+    copy if any). Touching the LOGICAL path is a silent no-op on a br-only file, which is
+    what kept an unchanged page re-queued by the embed sweep's mtime gate forever."""
+    for p in (br_path(path), path):
+        try:
+            os.utime(p, None)
+        except OSError:
+            pass
+
+
 def served_exists(path: Path) -> bool:
     return br_path(path).exists() or path.exists()
 
@@ -2513,10 +2524,7 @@ def embed_page_to_vec(cis: str, raw: str, subdir: str, encoder, *,
     src_hash = raw_hash(raw)
     if not force:
         if vec_is_current(read_vec_meta(vec), src_hash, model, encoder.dim, quant):
-            try:
-                os.utime(vec, None)
-            except OSError:
-                pass
+            touch_served(vec)
             return "fresh"
     chunks = section_chunks(raw, cis)
     # Even with no searchable sections, persist an empty payload carrying src_hash so

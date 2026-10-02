@@ -1148,6 +1148,48 @@ def test_embed_page_to_vec_reports_stats():
     print("ok  test_embed_page_to_vec_reports_stats")
 
 
+def test_fresh_page_bumps_the_br_mtime_so_the_sweep_stops():
+    # The reconcile sweep's cheap gate is mtime-only (vec_is_fresh): a page whose
+    # overlay was rewritten with IDENTICAL text looks stale, the worker finds the same
+    # src_hash and answers "fresh", and must then bump the vector's mtime so the next
+    # sweep stops re-queuing it. The vector is stored br-only, and touching its LOGICAL
+    # path was a silent no-op, so such a page stayed in the backlog forever (/status
+    # showing "en retard de 1 page(s)" indefinitely).
+    class _FakeEncoder:
+        query_prefix = "query: "
+        dim = 6
+        def encode_passages(self, texts):
+            return [_l2_normalise([0.1] * 6) for _ in texts]
+
+    raw = ("<div id='textDocument'><h1 class='AmmAnnexeTitre1'>4. Indications</h1>"
+           "<p>Une phrase de contenu suffisamment longue pour tenir dans un chunk "
+           "unique et dépasser le seuil de fusion des petits paragraphes.</p></div>")
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        (d / "rcp").mkdir()
+        page = d / "rcp" / "12345678-drug.html"
+        page.write_text("<html></html>")
+        overlay = d / "12345678.html"
+        overlay.write_text(raw)
+        saved = build.DIST
+        build.DIST = d
+        try:
+            enc = _FakeEncoder()
+            vec = build.vec_path_for(page)
+            assert build.embed_page_to_vec("12345678", raw, "rcp", enc, model="m",
+                                           quant="int8") == "ok"
+            assert not vec.exists() and build.br_path(vec).exists()  # br-only
+            # Identical re-crawl: overlay now newer than the vector.
+            os.utime(build.br_path(vec), (1_000_000, 1_000_000))
+            assert not build.vec_is_fresh(vec, overlay, "m", check_model=False)
+            assert build.embed_page_to_vec("12345678", raw, "rcp", enc, model="m",
+                                           quant="int8") == "fresh"
+            assert build.vec_is_fresh(vec, overlay, "m", check_model=False)
+        finally:
+            build.DIST = saved
+    print("ok  test_fresh_page_bumps_the_br_mtime_so_the_sweep_stops")
+
+
 def test_embed_page_to_vec_re_embeds_on_a_quantisation_change():
     # The producer path end to end (segment -> encode -> gate -> write), with the
     # quantisation changing under it. int8 bytes decoded as packed bits are noise, not a
@@ -1455,6 +1497,7 @@ if __name__ == "__main__":
     test_rcp_page_has_canonical_and_no_leftover_slots()
     test_jsonld_escapes_script_breakout_and_website_searchaction()
     test_embed_page_to_vec_reports_stats()
+    test_fresh_page_bumps_the_br_mtime_so_the_sweep_stops()
     test_embed_page_to_vec_re_embeds_on_a_quantisation_change()
     test_rcp_archived_detects_zero_byte_overlay()
     test_iter_rcp_raw_serves_delisted_baseline()
