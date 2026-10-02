@@ -421,6 +421,7 @@ class Encoder:
         out_dim: int | None = None,
         weights: str | None = None,
         max_tokens: int = 0,
+        cpu_arena: bool = True,
     ) -> None:
         model_dir = Path(model_dir)
         prof = _profile(model_name)
@@ -450,6 +451,13 @@ class Encoder:
         # _resolve_intra_threads: -1 = all cores, -2 = all but one, positive = literal.
         opts.intra_op_num_threads = _resolve_intra_threads(intra_threads)
         opts.inter_op_num_threads = 1
+        # onnxruntime's CPU arena keeps the peak of every batch it has ever run and never
+        # hands it back. Measured with this model on 32 passages of ~450 tokens: 3.8 GB
+        # resident for good with the arena, against 629 MB between batches without it
+        # (peak 2.3 GB during the batch, ~25% slower). The offline bake keeps it for
+        # speed; the long-lived embed service turns it off (EMBED_CPU_ARENA) because on a
+        # small VPS that never-returned memory is what starves everything else.
+        opts.enable_cpu_mem_arena = bool(cpu_arena)
         # ``providers`` defaults to CPU-only: that is the runtime container's posture (the
         # VPS has no GPU and installs the CPU-only ``onnxruntime``). The offline pre-bake
         # (embed-rcp.py) passes a GPU-preferring list on a machine that has one, always

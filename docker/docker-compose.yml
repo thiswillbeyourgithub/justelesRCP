@@ -37,6 +37,17 @@ services:
     # (without it the container would be the project-derived `docker-web-1`).
     container_name: justelesrcp
     restart: unless-stopped
+    # Memory: a hard ceiling per container (memswap = mem, so it never swaps), and the
+    # kernel's kill order under host-wide pressure (oom_score_adj, -1000..1000, higher
+    # dies first; it is global to the host, not relative to this file). A container
+    # that hits its own ceiling is killed inside its cgroup and restarted by
+    # `restart:`, instead of the whole VPS thrashing until nothing answers, sshd
+    # included. The limits are docker/.env knobs (*_MEM_LIMIT, see env.example), read
+    # by compose interpolation like REFRESH_UID.
+    # Caddy needs a few tens of MB; it is the last of ours the kernel should pick.
+    mem_limit: ${WEB_MEM_LIMIT:-256m}
+    memswap_limit: ${WEB_MEM_LIMIT:-256m}
+    oom_score_adj: -500
     # Startup wrapper (docker/entrypoint.sh): stamps STARTED_AT, validates
     # ANALYTICS_URL (crashes if set but unreachable / not JavaScript), derives
     # ANALYTICS_ORIGIN for the CSP, renders /gen/app-config.js from the env, then
@@ -110,6 +121,18 @@ services:
         GIT_SHA: ${GIT_SHA:-unknown}
     container_name: justelesrcp-refresh
     restart: unless-stopped
+    # Memory: a hard ceiling per container (memswap = mem, so it never swaps), and the
+    # kernel's kill order under host-wide pressure (oom_score_adj, -1000..1000, higher
+    # dies first; it is global to the host, not relative to this file). A container
+    # that hits its own ceiling is killed inside its cgroup and restarted by
+    # `restart:`, instead of the whole VPS thrashing until nothing answers, sshd
+    # included. The limits are docker/.env knobs (*_MEM_LIMIT, see env.example), read
+    # by compose interpolation like REFRESH_UID.
+    # Converting a large EMA PDF (pymupdf) is its peak. A kill here loses at most the
+    # page in flight; the crawler picks it up again.
+    mem_limit: ${REFRESH_MEM_LIMIT:-1536m}
+    memswap_limit: ${REFRESH_MEM_LIMIT:-1536m}
+    oom_score_adj: 500
     # Match the host user that owns ../data and ../dist so files the service
     # writes (overlays, rebuilt pages, the manifest) stay owned by you and sync
     # cleanly. Defaults to 1000:1000 (the usual first Linux user); override with
@@ -196,6 +219,19 @@ services:
         GIT_SHA: ${GIT_SHA:-unknown}
     container_name: justelesrcp-embed
     restart: unless-stopped
+    # Memory: a hard ceiling per container (memswap = mem, so it never swaps), and the
+    # kernel's kill order under host-wide pressure (oom_score_adj, -1000..1000, higher
+    # dies first; it is global to the host, not relative to this file). A container
+    # that hits its own ceiling is killed inside its cgroup and restarted by
+    # `restart:`, instead of the whole VPS thrashing until nothing answers, sshd
+    # included. The limits are docker/.env knobs (*_MEM_LIMIT, see env.example), read
+    # by compose interpolation like REFRESH_UID.
+    # The heaviest by far: ~600 MB of weights resident, plus each page batch's peak,
+    # which EMBED_BATCH_SIZE + EMBED_CPU_ARENA bound (see env.example). First to die:
+    # losing it only degrades the search box to "indisponible" until it restarts.
+    mem_limit: ${EMBED_MEM_LIMIT:-2g}
+    memswap_limit: ${EMBED_MEM_LIMIT:-2g}
+    oom_score_adj: 800
     networks:
       # This project's own network, which every service joins by default. Listing
       # it explicitly is required: naming any network here replaces the default

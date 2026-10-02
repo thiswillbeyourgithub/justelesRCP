@@ -98,6 +98,10 @@ _SOURCE_LABEL = {"user": "reader", "crawl": "scraper", "sweep": "backlog"}
 # Emit a rolling-aggregate progress line every N background page embeds, so throughput
 # + RAM are visible even when no reconcile pass has logged recently.
 _AGG_EVERY = 50
+# Passages per onnxruntime call when embedding a page (EMBED_BATCH_SIZE). Measured with
+# the arena off on ~450-token passages: peak 1.05 GB at 8 against 2.3 GB at 32, so the
+# container's mem_limit (2g by default) leaves room for concurrent queries.
+BATCH_DEFAULT = 8
 # The /status backlog popup (GET /api/sem/backlog): how many backlog pages it lists, how
 # many of those it describes in depth (reads + segments + tokenises the overlay, so it
 # costs ~1 s on a long /eu/ page), how many recent results and failures it remembers.
@@ -983,6 +987,18 @@ class _QuietHTTPServer(ThreadingHTTPServer):
                    "(-1 = all cores, -2 = all but one, floored at 1, respecting the "
                    "container's cpuset). Query embeds are tiny; this mainly speeds "
                    "background page embedding.")
+@click.option("--batch-size", type=int, default=BATCH_DEFAULT, show_default=True,
+              envvar="EMBED_BATCH_SIZE",
+              help="Passages encoded per onnxruntime call when embedding a page (env "
+                   "EMBED_BATCH_SIZE). The peak RAM of a call grows with it (long "
+                   "passages: ~2.3 GB at 32), so keep it small on a small VPS; it barely "
+                   "changes throughput on CPU.")
+@click.option("--cpu-arena/--no-cpu-arena", default=False, show_default=True,
+              envvar="EMBED_CPU_ARENA",
+              help="Keep onnxruntime's CPU memory arena (env EMBED_CPU_ARENA). Off by "
+                   "default: the arena never returns a batch's peak to the system (3.8 GB "
+                   "resident measured, against ~630 MB without it), at the price of "
+                   "~25% slower page embedding.")
 @click.option("--min-query-chars", type=int, default=5, show_default=True,
               envvar="EMBED_MIN_QUERY_CHARS",
               help="Reject queries shorter than this (env EMBED_MIN_QUERY_CHARS).")
@@ -1037,7 +1053,7 @@ class _QuietHTTPServer(ThreadingHTTPServer):
               help="Minimum log level (env EMBED_LOG_LEVEL). /api/sem/health is never "
                    "logged; query text is never logged.")
 def main(host, port, model_dir, out_dim, vec_quant, sem_floor, intra_threads,
-         min_query_chars, max_query_chars, query_cache, query_cache_ttl, backlog, backlog_rate,
+         batch_size, cpu_arena, min_query_chars, max_query_chars, query_cache, query_cache_ttl, backlog, backlog_rate,
          reconcile_seconds, queue_max, max_concurrent_queries, refresh_url, timeout,
          log_level) -> None:
     """Run the semantic-search embedder (see module docstring)."""
@@ -1052,6 +1068,7 @@ def main(host, port, model_dir, out_dim, vec_quant, sem_floor, intra_threads,
             model_dir=model_dir, model_name=onnx_embed.RUNTIME_MODEL,
             intra_threads=intra_threads, query_cache=query_cache,
             query_ttl=query_cache_ttl, out_dim=out_dim,
+            passage_batch_size=batch_size, cpu_arena=cpu_arena,
         )
     except FileNotFoundError as exc:
         # A misconfig, not the "feature off" path (that is: don't run this container).
@@ -1061,8 +1078,9 @@ def main(host, port, model_dir, out_dim, vec_quant, sem_floor, intra_threads,
     weights = (model_rss - baseline_rss
                if (model_rss is not None and baseline_rss is not None) else None)
     logger.info("model loaded: {} (dim={}) | process RSS {} (weights ~{}, before-load {}) "
-                "| intra-threads={}", onnx_embed.RUNTIME_MODEL, encoder.dim, _mb(model_rss),
-                _mb(weights), _mb(baseline_rss), intra_threads)
+                "| intra-threads={} batch={} cpu-arena={}", onnx_embed.RUNTIME_MODEL,
+                encoder.dim, _mb(model_rss), _mb(weights), _mb(baseline_rss), intra_threads,
+                batch_size, cpu_arena)
     logger.info("log legend: a page-embed line's 'src=' is reader (a visitor opened the "
                 "search box) / scraper (refresh crawled it + notified) / backlog (the "
                 "reconcile sweep); 'queue N (reader=.. scraper=.. backlog=..)' is pages "

@@ -1342,6 +1342,8 @@ uv run src/embed-service.py   # optional: warm SERVER-SIDE embedder on :8461 (be
                           #  belongs at the proxy), EMBED_MIN/MAX_QUERY_CHARS (5/400), EMBED_QUERY_CACHE
                           #  (256) + EMBED_QUERY_CACHE_TTL_SECONDS (60, bounds query-data retention; 0=off),
                           #  EMBED_MODEL_DIR, EMBED_OUT_DIM (MRL width, 1024; change re-embeds all),
+                          #  EMBED_BATCH_SIZE (8, bounds a page batch's peak RAM) + EMBED_CPU_ARENA
+                          #  (0: return each batch's memory to the system, see the memory note),
                           #  EMBED_VEC_QUANT (passage quant, int8|binary; change re-embeds all),
                           #  REFRESH_TRIGGER_URL (baseline auto-crawl), EMBED_LOG_LEVEL;
                           # GET /api/sem/stats (INTERNAL, blocked at the edge) + GET
@@ -1508,6 +1510,23 @@ Restart is not needed (Caddy reads the mounted dir live), but a
   same-origin but logs NO query content (counts/latency only) and drops it right after
   encoding; the operator *could* in principle observe queries where the old browser
   design made that impossible, a deliberate trade for dropping the 120 Mo download.
+
+- **Every container has a hard RAM ceiling and a kill priority** (`mem_limit` =
+  `memswap_limit`, plus `oom_score_adj` in `docker/docker-compose.yml`): web 256m / -500,
+  refresh 1536m / 500, embed 2g / 800, the sizes overridable as `WEB_MEM_LIMIT` /
+  `REFRESH_MEM_LIMIT` / `EMBED_MEM_LIMIT` in `docker/.env` (compose interpolation, like
+  `REFRESH_UID`). Why: the VPS has no swap, and when RAM ran out it did not OOM-kill
+  anything, it thrashed (the kernel evicts executable pages, sshd included) until nothing
+  answered. A container now dies inside its own cgroup and `restart:` brings it back.
+  `oom_score_adj` is host-global, not relative to this compose file. The embed service
+  is the one that grows: onnxruntime's CPU arena kept every batch's peak forever (3.8 GB
+  resident at batch 32 measured locally), so the service now runs with the arena OFF
+  (`Encoder(cpu_arena=False)`, `EMBED_CPU_ARENA`, ~630 MB between pages) and a batch of 8
+  (`EMBED_BATCH_SIZE`, peak ~1.05 GB against 2.3 GB at 32, ~25% slower page embedding).
+  The offline `embed-rcp.py` keeps the arena (speed, and it is not long-lived). Keep in
+  sync across the three services in `docker/docker-compose.yml`, the memory section +
+  the two embed knobs in `docker/env.example`, `cpu_arena` in `onnx_embed.Encoder`, and
+  `--batch-size`/`--cpu-arena`/`BATCH_DEFAULT` in `embed-service.py`.
 
 ## Gotchas
 
