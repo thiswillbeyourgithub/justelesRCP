@@ -121,47 +121,37 @@
     if (ev.key === "Escape") { ev.preventDefault(); close(); }
   }
 
-  function open(since) {
+  // The popup FRAME, independent of what it shows: overlay (click outside closes),
+  // titled card with a close cross, a scrolling body, a footer with a "Fermer" button,
+  // Escape to close, page frozen behind it. Exposed as window.jlrcpModal so another
+  // page script can open its own popup in the same frame (status.js's backlog table)
+  // instead of keeping a second copy of this logic. opts: {title, label, sub, cls};
+  // returns {card, body, foot, ok, close}, the caller fills body (and foot).
+  function frame(opts) {
     close();
     overlay = el("div", "changelog-overlay");
     overlay.addEventListener("click", function (ev) {
       if (ev.target === overlay) close(); // click outside the card dismisses it
     });
-    var card = el("div", "changelog-modal");
+    var card = el("div", "changelog-modal" + (opts.cls ? " " + opts.cls : ""));
     card.setAttribute("role", "dialog");
     card.setAttribute("aria-modal", "true");
-    card.setAttribute("aria-label", "Quoi de neuf");
+    card.setAttribute("aria-label", opts.label || opts.title);
 
     var head = el("div", "changelog-head");
-    head.appendChild(el("h2", "changelog-title", since ? "Quoi de neuf ?" : "Journal des versions"));
+    head.appendChild(el("h2", "changelog-title", opts.title));
     var x = el("button", "changelog-close", "×");
     x.type = "button";
     x.setAttribute("aria-label", "Fermer");
     x.addEventListener("click", close);
     head.appendChild(x);
     card.appendChild(head);
-    if (since) {
-      card.appendChild(
-        el("p", "changelog-sub", "Nouveautés depuis votre dernière visite (version " + since + ").")
-      );
-    }
+    if (opts.sub) card.appendChild(el("p", "changelog-sub", opts.sub));
 
     var body = el("div", "changelog-body"); // the scrollable part
-    fill(body, since);
     card.appendChild(body);
 
     var foot = el("div", "changelog-foot");
-    if (since) {
-      var all = el("button", "changelog-all", "Tout afficher");
-      all.type = "button";
-      all.addEventListener("click", function () {
-        fill(body, null);
-        body.scrollTop = 0;
-        foot.removeChild(all);
-        track("changelog-tout-afficher", {});
-      });
-      foot.appendChild(all);
-    }
     var ok = el("button", "changelog-ok", "Fermer");
     ok.type = "button";
     ok.addEventListener("click", close);
@@ -173,6 +163,28 @@
     document.body.classList.add("changelog-open"); // freeze the page behind the overlay
     document.addEventListener("keydown", onKey, true);
     ok.focus();
+    return { card: card, body: body, foot: foot, ok: ok, close: close };
+  }
+  window.jlrcpModal = { open: frame, close: close };
+
+  function open(since) {
+    var m = frame({
+      title: since ? "Quoi de neuf ?" : "Journal des versions",
+      label: "Quoi de neuf",
+      sub: since ? "Nouveautés depuis votre dernière visite (version " + since + ")." : null
+    });
+    fill(m.body, since);
+    if (since) {
+      var all = el("button", "changelog-all", "Tout afficher");
+      all.type = "button";
+      all.addEventListener("click", function () {
+        fill(m.body, null);
+        m.body.scrollTop = 0;
+        m.foot.removeChild(all);
+        track("changelog-tout-afficher", {});
+      });
+      m.foot.insertBefore(all, m.ok);
+    }
     track("changelog-ouvert", { depuis: since || "tout" });
   }
 

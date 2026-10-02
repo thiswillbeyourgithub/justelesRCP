@@ -89,6 +89,181 @@
     return el("p", "status-note" + (kind ? " status-note-" + kind : ""), text);
   }
 
+  // ---- backlog popup (GET /api/sem/backlog + /api/sem/chunks/<cis>) ---------
+  // Every page the embed service has not embedded yet (in flight, failed, queued, or
+  // flagged stale by its last scan), why, how big it is, and its last error; plus the
+  // worker's last results, so a page that keeps coming back is visible. The popup
+  // frame is changelog.js's (window.jlrcpModal), loaded on every page.
+  var BACKLOG_URL = "/api/sem/backlog";
+  var CHUNKS_URL = "/api/sem/chunks/";
+
+  var STATE_FR = { running: "en cours", queued: "en file", failed: "échec", stale: "à indexer" };
+  var REASON_FR = {
+    missing: "aucun vecteur",
+    content: "texte modifié depuis l'indexation",
+    config: "modèle, largeur ou quantification différents",
+    touch: "texte identique, seule la date du fichier est en retard",
+    "no-page": "page pas encore construite",
+    "no-overlay": "aucun texte exploré"
+  };
+  var RESULT_FR = { ok: "indexée", fresh: "déjà à jour", error: "erreur",
+                    absent: "aucun texte exploré", "no-page": "page pas encore construite" };
+
+  function when(epoch) {
+    if (typeof epoch !== "number") return "-";
+    return new Date(epoch * 1000).toLocaleString("fr-FR");
+  }
+
+  function kb(bytes) {
+    return typeof bytes === "number" ? num(bytes / 1024) + " Ko" : "-";
+  }
+
+  function table(headers, rows) {
+    var wrap = el("div", "status-table-wrap");
+    var t = el("table", "status-table");
+    var tr = el("tr");
+    headers.forEach(function (h) { tr.appendChild(el("th", null, h)); });
+    var thead = el("thead"); thead.appendChild(tr); t.appendChild(thead);
+    var tbody = el("tbody");
+    rows.forEach(function (cells) {
+      var r = el("tr");
+      cells.forEach(function (c) {
+        var td = el("td");
+        if (c instanceof Node) td.appendChild(c); else td.textContent = c == null ? "-" : String(c);
+        r.appendChild(td);
+      });
+      tbody.appendChild(r);
+    });
+    t.appendChild(tbody);
+    wrap.appendChild(t);
+    return wrap;
+  }
+
+  function pageCell(it) {
+    var box = el("div");
+    if (it.page) {
+      var a = el("a", null, it.page.replace(/^\/(rcp|eu)\//, "").replace(/\.html$/, ""));
+      a.href = it.page;
+      a.target = "_blank";
+      a.rel = "noopener";
+      box.appendChild(a);
+    } else {
+      box.appendChild(el("span", null, it.cis));
+    }
+    if (it.overlay) {
+      box.appendChild(el("div", "status-mono",
+        it.overlay.path + " (" + kb(it.overlay.bytes) + ", exploré le " + when(it.overlay.mtime) + ")"));
+    }
+    box.appendChild(el("div", "status-mono", "vecteurs : " +
+      (it.vec_mtime ? "du " + when(it.vec_mtime) : "aucun")));
+    return box;
+  }
+
+  function tokensCell(it, ceiling) {
+    if (it.chunk_error) return el("span", "status-warn", it.chunk_error);
+    if (typeof it.tokens !== "number") return "-";
+    var s = num(it.tokens) + " (max " + num(it.max_chunk_tokens) + "/passage)";
+    if (it.truncated) s += ", " + num(it.truncated) + " passage(s) au-delà de " + num(ceiling) + " tronqué(s)";
+    return el("span", it.truncated ? "status-warn" : null, s);
+  }
+
+  function errorCell(it) {
+    if (!it.failure) return "-";
+    var f = it.failure;
+    var box = el("div");
+    box.appendChild(el("div", "status-warn status-mono", f.error));
+    box.appendChild(el("div", "status-mono", when(f.at) + ", " + f.attempts + " essai(s), " +
+      f.seconds + " s, via " + f.source));
+    return box;
+  }
+
+  function showChunks(m, cis) {
+    m.body.textContent = "";
+    var back = el("button", "changelog-all", "← Retour à la file");
+    back.type = "button";
+    back.addEventListener("click", function () { loadBacklog(m); });
+    m.body.appendChild(back);
+    m.body.appendChild(el("p", "status-loading", "Découpage de la page " + cis + "…"));
+    getJSON(CHUNKS_URL + cis).then(function (d) {
+      m.body.removeChild(m.body.lastChild);
+      if (d.error) { m.body.appendChild(note(d.error, "warn")); return; }
+      m.body.appendChild(note("CIS " + cis + " (" + d.lane + ") : " + num(d.chunks.length) +
+        " passage(s), " + num(d.tokens) + " tokens, " + num(d.chars) + " caractères de HTML exploré. " +
+        "Texte exact envoyé à l'encodeur, chemin de titres compris."));
+      d.chunks.forEach(function (c, i) {
+        var box = el("div", "status-chunk" + (c.tokens > d.token_ceiling ? " status-chunk-cut" : ""));
+        box.appendChild(el("div", "status-mono", "#" + (i + 1) + " · " + c.sec + " · " +
+          num(c.tokens) + " tokens · " + num(c.chars) + " caractères"));
+        box.appendChild(el("pre", "status-chunk-text", c.text));
+        m.body.appendChild(box);
+      });
+      m.body.scrollTop = 0;
+    }).catch(function (e) {
+      m.body.removeChild(m.body.lastChild);
+      m.body.appendChild(note("Aperçu indisponible (" + e.message + ").", "off"));
+    });
+  }
+
+  function renderBacklog(m, d) {
+    var frag = document.createDocumentFragment();
+    var head = d.total
+      ? num(d.total) + " page(s) pas encore indexée(s)"
+      : "Aucune page en attente : tout le texte exploré est indexé.";
+    if (d.scan_age_seconds != null) head += " (dernière vérification il y a " + dur(d.scan_age_seconds) + ")";
+    frag.appendChild(note(head, d.total ? "warn" : "ok"));
+    if (d.items.length) {
+      if (d.items.length < d.total)
+        frag.appendChild(note("Seules les " + num(d.items.length) + " premières sont listées.", "off"));
+      frag.appendChild(table(
+        ["État", "Page, fichier exploré, vecteurs", "Raison", "Passages", "Tokens", "Dernière erreur", ""],
+        d.items.map(function (it) {
+          var prev = el("button", "changelog-all", "Aperçu");
+          prev.type = "button";
+          prev.addEventListener("click", function () { showChunks(m, it.cis); });
+          return [
+            (STATE_FR[it.state] || it.state) + (it.source ? " (" + it.source + ")" : ""),
+            pageCell(it),
+            it.reason ? (REASON_FR[it.reason] || it.reason) : "non analysée",
+            typeof it.chunks === "number" ? num(it.chunks) : "-",
+            tokensCell(it, d.token_ceiling),
+            errorCell(it),
+            it.page ? prev : "-"
+          ];
+        })));
+    }
+    frag.appendChild(el("h3", "status-lane-title status-table-title", "Derniers résultats de l'indexeur"));
+    if (!d.recent.length) {
+      frag.appendChild(note("Rien d'indexé depuis le dernier redémarrage.", "off"));
+    } else {
+      frag.appendChild(table(["Heure", "CIS", "Voie", "Résultat", "Déclencheur", "Durée", "Passages"],
+        d.recent.map(function (r) {
+          return [when(r.at), r.cis, r.lane, RESULT_FR[r.result] || r.result, r.source,
+                  r.seconds + " s", r.chunks];
+        })));
+    }
+    m.body.textContent = "";
+    m.body.appendChild(frag);
+  }
+
+  function loadBacklog(m) {
+    m.body.textContent = "";
+    m.body.appendChild(el("p", "status-loading", "Chargement de la file…"));
+    getJSON(BACKLOG_URL).then(function (d) { renderBacklog(m, d); }).catch(function (e) {
+      m.body.textContent = "";
+      m.body.appendChild(note("Service d'indexation indisponible (" + e.message + ").", "off"));
+    });
+  }
+
+  function openBacklog() {
+    if (!window.jlrcpModal) return;  // changelog.js missing: no popup frame
+    var m = window.jlrcpModal.open({ title: "File d'indexation", cls: "status-modal" });
+    var again = el("button", "changelog-all", "Actualiser");
+    again.type = "button";
+    again.addEventListener("click", function () { loadBacklog(m); });
+    m.foot.insertBefore(again, m.ok);
+    loadBacklog(m);
+  }
+
   // ---- section renderers --------------------------------------------------
 
   function renderLane(title, g) {
@@ -177,6 +352,10 @@
     frag.appendChild(metric("Débit moyen", num(p.mean_chars_per_s) + " caractères/s"));
     if (p.skipped) frag.appendChild(metric("Ignorées (déjà à jour)", num(p.skipped)));
     frag.appendChild(metric("Erreurs d'indexation", num(p.errors), p.errors ? "warn" : ""));
+    var more = el("button", "changelog-all status-more", "Voir le détail de la file d'indexation");
+    more.type = "button";
+    more.addEventListener("click", openBacklog);
+    frag.appendChild(more);
     setBody("body-embed", frag);
   }
 

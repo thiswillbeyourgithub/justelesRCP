@@ -98,6 +98,13 @@ _SOURCE_LABEL = {"user": "reader", "crawl": "scraper", "sweep": "backlog"}
 # Emit a rolling-aggregate progress line every N background page embeds, so throughput
 # + RAM are visible even when no reconcile pass has logged recently.
 _AGG_EVERY = 50
+# The /status backlog popup (GET /api/sem/backlog): how many backlog pages it lists, how
+# many of those it describes in depth (reads + segments + tokenises the overlay, so it
+# costs ~1 s on a long /eu/ page), how many recent results and failures it remembers.
+_BACKLOG_LIST_MAX = 300
+_BACKLOG_DEEP = 20
+_RECENT_MAX = 50
+_FAILURES_MAX = 200
 
 
 def _rss_mb() -> float | None:
@@ -197,6 +204,13 @@ class Embedder:
         # many still lack a fresh .vec.json), so the /status page can answer "is the
         # embedder behind the crawler?" without an expensive per-request full scan.
         self._last_scan: dict = {}
+        # For the /status backlog popup: the last failure per CIS (cleared once the page
+        # embeds or turns out fresh) and the last few worker results, whatever they were.
+        # A page that keeps coming back is visible here, with its error and its timing.
+        self._failures: "OrderedDict[str, dict]" = OrderedDict()
+        self._recent: deque[dict] = deque(maxlen=_RECENT_MAX)
+        # (cis, src_hash) -> chunk/token counts, so polling the popup re-segments nothing.
+        self._chunk_stats_cache: "OrderedDict[tuple[str, str], dict]" = OrderedDict()
 
     # -- lifecycle ---------------------------------------------------------
     def start(self) -> None:
@@ -265,11 +279,9 @@ class Embedder:
         page = self._dist_page(cis, subdir)
         if page is None:
             return False
-        meta = self._read_vec_meta(self._vec_path(page))
-        return bool(meta and meta["src_hash"] == build.raw_hash(raw)
-                    and meta["model"] == self.model
-                    and meta.get("dim") in (0, self.encoder.dim)
-                    and (meta.get("dim") == 0 or meta.get("quant") == self.quant))
+        return build.vec_is_current(self._read_vec_meta(self._vec_path(page)),
+                                    build.raw_hash(raw), self.model, self.encoder.dim,
+                                    self.quant)
 
     # -- queue -------------------------------------------------------------
     def _enqueue(self, cis: str, source: str, front: bool) -> str:
@@ -342,17 +354,33 @@ class Embedder:
             with self._lock:
                 self._running = cis
             result = "error"
+            error = None
             info: dict = {}
             t0 = time.perf_counter()
             try:
                 result = self._embed_page(cis, info)
             except Exception as exc:  # never let one bad page kill the worker
+                error = f"{type(exc).__name__}: {exc}"[:500]
                 logger.warning("embed cis {} failed: {}", cis, exc)
             dt = time.perf_counter() - t0
             embedded_n = None
             with self._lock:
                 self._running = None
                 self._pending.pop(cis, None)
+                self._recent.append({"cis": cis, "lane": info.get("lane"),
+                                     "result": result, "source": source,
+                                     "at": time.time(), "seconds": round(dt, 2),
+                                     "chunks": info.get("chunks"),
+                                     "chars": info.get("chars")})
+                if result == "error":
+                    prev = self._failures.pop(cis, {})
+                    self._failures[cis] = {"at": time.time(), "error": error,
+                                           "source": source, "seconds": round(dt, 2),
+                                           "attempts": prev.get("attempts", 0) + 1}
+                    while len(self._failures) > _FAILURES_MAX:
+                        self._failures.popitem(last=False)
+                else:
+                    self._failures.pop(cis, None)
                 if result == "ok":
                     self._stats["embedded"] += 1
                     self._stats["chars"] += info.get("chars", 0)
@@ -392,6 +420,7 @@ class Embedder:
         queued = 0
         overlays = 0  # crawled pages seen on disk this pass
         stale = 0     # of those, how many lack a fresh .vec.json (the embed backlog)
+        stale_cis: list[str] = []  # which ones, for the /status backlog popup
         # ONE directory scan per lane, not a glob per CIS (see build.dist_pages_index):
         # the per-CIS glob cost ~10 minutes of CPU per pass on the full catalog.
         pages = {subdir: build.dist_pages_index(subdir)
@@ -406,12 +435,14 @@ class Embedder:
                                   dim=self.encoder.dim, quant=self.quant):
                 continue
             stale += 1
+            if len(stale_cis) < _BACKLOG_LIST_MAX:
+                stale_cis.append(cis)
             if self._enqueue(cis, "sweep", front=False) == "queued":
                 queued += 1
         # Record for /api/sem/summary: total crawled pages vs how many still await an
         # embed, so the /status page can show whether embedding trails the crawl.
         self._last_scan = {"overlays": overlays, "stale": stale,
-                           "at": time.monotonic()}
+                           "stale_cis": stale_cis, "at": time.monotonic()}
         return queued
 
     def _reconcile_loop(self) -> None:
@@ -539,6 +570,138 @@ class Embedder:
         base["model_rss_mb"] = round(self._model_rss or 0)
         return base
 
+    # -- /status backlog popup ---------------------------------------------
+    def _token_counts(self, texts: list[str]) -> list[int]:
+        """Token count of each passage exactly as encode_passages feeds it (same
+        prefix, same tokenizer). Tokenising only, no ONNX inference: cheap."""
+        prefix = self.encoder.passage_prefix or ""
+        encs = self.encoder.tokenizer.encode_batch([prefix + t for t in texts])
+        return [len(e.ids) for e in encs]
+
+    def _chunk_stats(self, cis: str, raw: str, src_hash: str) -> dict:
+        """Chunk + token counts of a page as the worker would embed it, cached per
+        content hash so a polling popup re-segments nothing. ``truncated`` counts the
+        passages longer than onnx_embed.PASSAGE_MAX_TOKENS, whose tail the encoder drops."""
+        key = (cis, src_hash)
+        with self._lock:
+            hit = self._chunk_stats_cache.get(key)
+        if hit is not None:
+            return hit
+        chunks = build.section_chunks(raw, cis)
+        tokens = self._token_counts([text for _sec, _snip, text in chunks])
+        ceiling = onnx_embed.PASSAGE_MAX_TOKENS
+        stats = {"chunks": len(chunks), "tokens": sum(tokens),
+                 "max_chunk_tokens": max(tokens, default=0),
+                 "truncated": sum(1 for t in tokens if t > ceiling)}
+        with self._lock:
+            self._chunk_stats_cache[key] = stats
+            while len(self._chunk_stats_cache) > _BACKLOG_DEEP * 4:
+                self._chunk_stats_cache.popitem(last=False)
+        return stats
+
+    def _describe(self, cis: str, pages: dict, deep: bool) -> dict:
+        """One backlog row: where the page and its overlay are, and (``deep``) WHY it
+        counts as stale plus its chunk/token counts. The reason uses the worker's own
+        gate (build.vec_is_current), so "touch" means the worker will answer "fresh":
+        the vectors match and only the file date lags the overlay's."""
+        row: dict = {"cis": cis}
+        for subdir, odir in build.OVERLAY_LANES:
+            ov = build._overlay_path(cis, odir)
+            if ov is not None:
+                row["lane"] = subdir
+                break
+        else:
+            row["reason"] = "no-overlay"
+            return row
+        try:
+            st = ov.stat()
+            row["overlay"] = {"path": f"data/{ov.parent.name}/{ov.name}",
+                              "bytes": st.st_size, "mtime": st.st_mtime}
+        except OSError:
+            row["overlay"] = {"path": f"data/{ov.parent.name}/{ov.name}"}
+        page = pages.get(subdir, {}).get(cis)
+        if page is None:
+            row["reason"] = "no-page"
+            return row
+        row["page"] = f"/{subdir}/{page.name}"
+        vec = self._vec_path(page)
+        row["vec_mtime"] = build.served_mtime(vec)
+        if not deep:
+            return row
+        raw = build._read_overlay(ov)
+        src_hash = build.raw_hash(raw)
+        meta = self._read_vec_meta(vec)
+        if meta is None:
+            row["reason"] = "missing"
+        elif build.vec_is_current(meta, src_hash, self.model, self.encoder.dim,
+                                  self.quant):
+            row["reason"] = "touch"
+        elif meta.get("src_hash") != src_hash:
+            row["reason"] = "content"
+        else:
+            row["reason"] = "config"
+        try:
+            row.update(self._chunk_stats(cis, raw, src_hash))
+        except Exception as exc:  # still list a page that won't even segment
+            row["chunk_error"] = f"{type(exc).__name__}: {exc}"[:300]
+        return row
+
+    def backlog_detail(self) -> dict:
+        """GET /api/sem/backlog, for the /status popup: every page the service knows is
+        not embedded (in flight, failed, queued, or flagged stale by the last scan),
+        with its state and last error, and for the first _BACKLOG_DEEP why it is stale
+        and how many chunks/tokens it would embed; plus the last worker results. Only
+        page paths, page text stats and errors, all public; never any query data."""
+        with self._lock:
+            running = self._running
+            pending = dict(self._pending)
+            queue = list(self._queue)
+            failures = {c: dict(f, source=_SOURCE_LABEL.get(f["source"], f["source"]))
+                        for c, f in self._failures.items()}
+            recent = list(self._recent)
+        last = dict(self._last_scan)
+        order: list[str] = []
+        seen: set[str] = set()
+        for cis in (([running] if running else []) + list(reversed(failures)) + queue
+                    + list(last.get("stale_cis", []))):
+            if cis not in seen:
+                seen.add(cis)
+                order.append(cis)
+        pages = {subdir: build.dist_pages_index(subdir)
+                 for subdir, _odir in build.OVERLAY_LANES}
+        items = []
+        for i, cis in enumerate(order[:_BACKLOG_LIST_MAX]):
+            row = self._describe(cis, pages, deep=i < _BACKLOG_DEEP)
+            row["state"] = ("running" if cis == running else "queued" if cis in pending
+                            else "failed" if cis in failures else "stale")
+            if cis in pending:
+                row["source"] = _SOURCE_LABEL.get(pending[cis], pending[cis])
+            if cis in failures:
+                row["failure"] = failures[cis]
+            items.append(row)
+        return {"now": time.time(), "total": len(order), "items": items,
+                "token_ceiling": onnx_embed.PASSAGE_MAX_TOKENS,
+                "stale_at_last_scan": last.get("stale"),
+                "scan_age_seconds": (round(time.monotonic() - last["at"], 1)
+                                     if last else None),
+                "recent": [dict(r, source=_SOURCE_LABEL.get(r["source"], r["source"]))
+                           for r in reversed(recent)]}
+
+    def chunks_detail(self, cis: str) -> dict:
+        """GET /api/sem/chunks/<cis>: the exact passages this page embeds (heading-path
+        prefix included, as the encoder sees them), each with its token count, so the
+        /status popup can show what a stuck page is made of."""
+        ov = self._overlay_for(cis)
+        if ov is None:
+            return {"cis": cis, "error": "aucun texte exploré pour ce CIS"}
+        raw, subdir = ov
+        chunks = build.section_chunks(raw, cis)
+        tokens = self._token_counts([text for _sec, _snip, text in chunks])
+        return {"cis": cis, "lane": subdir, "token_ceiling": onnx_embed.PASSAGE_MAX_TOKENS,
+                "chars": len(raw), "tokens": sum(tokens),
+                "chunks": [{"sec": sec, "tokens": n, "chars": len(text), "text": text}
+                           for (sec, _snip, text), n in zip(chunks, tokens)]}
+
     def public_summary(self) -> dict:
         """A curated, public-safe view of the embedder for the /status page, served at
         GET /api/sem/summary. Derived from stats() (single source of truth): it keeps the
@@ -604,6 +767,8 @@ class _Handler(BaseHTTPRequestHandler):
     ``GET  /api/sem/stats``                  -> full counters + RAM gauge (INTERNAL:
                                                 blocked at the edge)
     ``GET  /api/sem/summary``                -> curated, public-safe view for /status
+    ``GET  /api/sem/backlog``                -> pages not yet embedded + recent results
+    ``GET  /api/sem/chunks/<cis>``           -> one page's embedded passages + tokens
     ``GET  /api/sem/health``                 -> {ok: true} (never logged)
     """
 
@@ -646,6 +811,13 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/api/sem/summary":  # public curated view for the /status page
             self._send(200, EMBEDDER.public_summary())
+            return
+        if self.path == "/api/sem/backlog":  # the /status backlog popup
+            self._send(200, EMBEDDER.backlog_detail())
+            return
+        m = re.fullmatch(r"/api/sem/chunks/(\d{8})", self.path)
+        if m:  # the popup's per-page chunk preview
+            self._send(200, EMBEDDER.chunks_detail(m.group(1)))
             return
         m = re.fullmatch(r"/api/sem/page/(\d{8})", self.path)
         if m:

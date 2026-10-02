@@ -42,6 +42,8 @@
 	# /status page instead consumes the curated /api/summary + /api/sem/summary
 	# endpoints (progress %, counts, ETA; no host internals), which fall through to the
 	# wildcard proxies below like any other API call and are rate-limited the same way.
+	# Same for its backlog popup, /api/sem/backlog + /api/sem/chunks/<cis> (page paths,
+	# public page text, chunk/token counts and embed errors; no host internals).
 	handle /api/stats {
 		respond 404
 	}

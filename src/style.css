@@ -253,6 +253,23 @@ a:hover { text-decoration: underline; }
 .status-note-off { color: var(--muted); font-style: italic; }
 .status-note-ok { color: var(--status-ok); }
 .status-note-warn { color: var(--status-warn); }
+/* Backlog popup (status.js openBacklog): changelog.js's popup frame, widened for a
+   table. The buttons reuse .changelog-all (the site's secondary button). */
+.changelog-modal.status-modal { width: min(72rem, 100%); max-height: 88vh; }
+.status-more { margin-top: .8rem; }
+.status-table-wrap { overflow-x: auto; margin: .4rem 0 1rem; }
+.status-table { width: 100%; border-collapse: collapse; font-size: .82rem; }
+.status-table th, .status-table td {
+  text-align: left; vertical-align: top; padding: .35rem .5rem;
+  border-bottom: 1px solid var(--line);
+}
+.status-table th { color: var(--muted); font-weight: 600; white-space: nowrap; }
+.status-table-title { margin-top: 1rem; }
+.status-mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .75rem; color: var(--muted); overflow-wrap: anywhere; }
+.status-warn, .status-mono.status-warn { color: var(--status-warn); }
+.status-chunk { border-top: 1px solid var(--line); padding: .5rem 0; }
+.status-chunk-cut { border-left: 3px solid var(--status-warn); padding-left: .5rem; }
+.status-chunk-text { white-space: pre-wrap; font: inherit; font-size: .85rem; margin: .25rem 0 0; }
 
 /* --- A-Z browse --- */
 .browse { max-width: var(--maxw); margin: 0 auto; padding: 1.5rem 1.2rem 4rem; }
