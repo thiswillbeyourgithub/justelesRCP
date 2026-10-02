@@ -3616,10 +3616,40 @@ def main() -> None:
             e["ret"] = 1
     idx_json = json.dumps(search_rows, ensure_ascii=False, separators=(",", ":"))
     (DIST / "search-index.json").write_text(idx_json, encoding="utf-8")
+    compress(DIST / "search-index.json")
+    write_static_assets(changelog)
+
+    # Per-drug semantic search: the section vectors (dist/<slug>.vec.json) are now
+    # written server-side by the embed service (or embed-rcp.py offline), NOT baked
+    # here; build.py only prunes orphaned .vec.json above when a slug is dropped.
+
+    browse_pages = write_browse(index)
+
+    # SEO discovery: sitemap.xml (home + /a-propos + browse + every RCP + full /eu/)
+    # and robots.txt pointing at it. Regenerated in full each build (cheap) so they
+    # always reflect the current page set; the refresh service, which rebuilds single
+    # pages, does not touch them (a new full /eu/ page appears at the next full build).
+    sitemap_urls = write_sitemap(index, stub_index, new_records)
+    write_robots()
+
+    print(
+        f"done: {len(index)} RCP pages ({reused} reused, {pruned} pruned, "
+        f"{unplained} plain/.gz copies dropped) "
+        f"+ {len(stub_index)} EU stubs ({stub_reused} reused, {stub_rendered} built) "
+        f"+ {browse_pages} browse pages ({skipped_empty} empty CIS skipped) "
+        f"+ sitemap.xml ({sitemap_urls} urls) + robots.txt -> {DIST}"
+    )
+
+
+def write_static_assets(changelog: dict) -> None:
+    """Everything in dist/ that is not a drug page: the hand-written pages, the client
+    JS/CSS, app-version.js, changelog.json and og.png (+ their .br). Shared by main()
+    and ``build.py --assets-only``, which runs ONLY this, so a change to the frontend
+    assets or a version bump ships in seconds instead of re-rendering ~15k pages."""
     # The version is served at runtime (window.__APP_VERSION__) and injected into
     # the page by src/app-init.js, so it is NOT baked into page HTML. This keeps
     # rendered pages independent of the version, so a version bump alone does not
-    # invalidate the incremental cache above.
+    # invalidate the incremental page cache.
     (DIST / "app-version.js").write_text(
         f'window.__APP_VERSION__ = "{__version__}";\n', encoding="utf-8"
     )
@@ -3660,32 +3690,11 @@ def main() -> None:
             shutil.copy(src, DIST / asset)
     # Release notes for the "Quoi de neuf ?" popup (validated at the top of main()).
     write_changelog(changelog)
-    for f in (*static_assets, "app-version.js", "search-index.json"):
+    for f in (*static_assets, "app-version.js"):
         compress(DIST / f)
     # og.png (the social-card image for og:image / twitter:image) is a raster already
     # compressed by PNG, so copy it as-is without a .br sibling.
     shutil.copy(SRC / "og.png", DIST / "og.png")
-
-    # Per-drug semantic search: the section vectors (dist/<slug>.vec.json) are now
-    # written server-side by the embed service (or embed-rcp.py offline), NOT baked
-    # here; build.py only prunes orphaned .vec.json above when a slug is dropped.
-
-    browse_pages = write_browse(index)
-
-    # SEO discovery: sitemap.xml (home + /a-propos + browse + every RCP + full /eu/)
-    # and robots.txt pointing at it. Regenerated in full each build (cheap) so they
-    # always reflect the current page set; the refresh service, which rebuilds single
-    # pages, does not touch them (a new full /eu/ page appears at the next full build).
-    sitemap_urls = write_sitemap(index, stub_index, new_records)
-    write_robots()
-
-    print(
-        f"done: {len(index)} RCP pages ({reused} reused, {pruned} pruned, "
-        f"{unplained} plain/.gz copies dropped) "
-        f"+ {len(stub_index)} EU stubs ({stub_reused} reused, {stub_rendered} built) "
-        f"+ {browse_pages} browse pages ({skipped_empty} empty CIS skipped) "
-        f"+ sitemap.xml ({sitemap_urls} urls) + robots.txt -> {DIST}"
-    )
 
 
 def _esc(text: str) -> str:
@@ -3698,4 +3707,13 @@ def _esc(text: str) -> str:
 
 
 if __name__ == "__main__":
-    main()
+    if sys.argv[1:] == ["--assets-only"]:
+        # Rewrites only the static assets (see write_static_assets); the drug pages,
+        # browse pages, search index and sitemap from the last full build stay as is.
+        # Same release-notes gate as a full build.
+        print(f"build justelesRCP v{__version__} (assets only)")
+        write_static_assets(load_changelog())
+    elif sys.argv[1:]:
+        sys.exit(f"unknown arguments {sys.argv[1:]}; the only option is --assets-only")
+    else:
+        main()
