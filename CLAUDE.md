@@ -1314,7 +1314,7 @@ uv run src/build.py           # build ./dist from ./data (overlay wins over the 
                           #  overlay makes /eu/<cis> a full converted page instead of a stub). Does NOT
                           #  bake vectors anymore: the embed service / embed-rcp.py write .vec.json
                           #  directly; build.py only prunes orphan .vec.json when a slug is dropped.
-uv run src/build.py --assets-only  # rewrite ONLY the static assets (home/about/status/browse-free
+uv run src/build.py --assets-only  # rewrite ONLY the static assets (home, /a-propos, /status
                           #  pages, JS, CSS, app-version.js, changelog.json; still runs the changelog
                           #  gate) in under a second, no drug page touched. Used by `deploy.sh --quick`
                           #  (local, gitignored), which also skips the overlay down-sync, excludes
