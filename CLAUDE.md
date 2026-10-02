@@ -606,6 +606,10 @@ Key facts that aren't obvious from a single file:
   button expands the "since" view into the full history. `[data-changelog]` elements
   open it in full-history mode: the "Nouveautés" section of `/a-propos` and the home
   footer link. CSP-safe (same-origin script, no inline handlers, no `innerHTML`).
+  Its modal frame (backdrop, card, scrolling body, footer, close cross, Escape/focus
+  handling) is generic and exported as `window.jlrcpModal.open({title, label, sub, cls})`
+  -> `{card, body, foot, ok, close}`; the `/status` backlog popup reuses it rather than
+  duplicating a modal, so a change to the frame goes in `frame()` there.
   Keep the contract in sync across `docs/changelog/*/changelog.md` +
   `docs/changelog/README.md`, `parse_changelog`/`load_changelog`/`write_changelog`/
   `CHANGELOG_DIR`/`CHANGELOG_CATEGORIES`/`COMMIT_URL`/`_version_key` + the `main()`
@@ -651,10 +655,28 @@ Key facts that aren't obvious from a single file:
   `noindex` (thin, ever-changing: `_static_page_head` prepends the robots meta for
   `status.html`) and deliberately kept OUT of the sitemap; it is discoverable via the
   home + `/a-propos` footers. Both services track a monotonic `_started` for uptime and
-  the counters are per-process ("since last reboot"). Keep the contract in sync across
+  the counters are per-process ("since last reboot").
+  **The backlog popup.** The embed card has a "Voir le détail de la file d'indexation"
+  button opening a `window.jlrcpModal` table (built in `src/status.js`) fed by `GET
+  /api/sem/backlog` (`Embedder.backlog_detail`): every page the service knows is not
+  embedded (running, failed, queued, or in the last scan's `stale_cis`, capped at
+  `_BACKLOG_LIST_MAX`), with its state, overlay file, rendered page, last error +
+  timestamp + attempts (`_failures`, set by the worker), and for the first
+  `_BACKLOG_DEEP` rows WHY it is stale (`_describe`: `missing` no vectors, `content`
+  overlay changed, `config` model/width/quant changed, `touch` vectors current but older
+  than the overlay so the worker will just bump the date, `no-page`, `no-overlay`) plus
+  its chunk/token counts (`_chunk_stats`, cached per content hash; tokenising only, no
+  inference). A row's "Aperçu" fetches `GET /api/sem/chunks/<cis>` (`chunks_detail`: the
+  exact passages the encoder sees, heading prefix included, each with its token count).
+  It also lists the last `_RECENT_MAX` worker results. Both routes are public (page text
+  stats and errors only, never query data) and rate-limited like any `/api/sem/*` call;
+  a deep row costs ~1 s of CPU on a long page, once per content hash. Keep the contract
+  in sync across
   `public_summary`/`_started` + the `/api/summary` route (refresh-service.py),
-  `public_summary`/`_started`/`_last_scan` (set in `_scan_and_enqueue`) + the
-  `/api/sem/summary` route (embed-service.py), `src/status.html`, `src/status.js`,
+  `public_summary`/`_started`/`_last_scan` (set in `_scan_and_enqueue`) +
+  `backlog_detail`/`chunks_detail`/`_describe`/`_chunk_stats`/`_failures`/`_recent` + the
+  `/api/sem/summary`, `/api/sem/backlog`, `/api/sem/chunks/<cis>` routes
+  (embed-service.py), `src/status.html`, `src/status.js`,
   `.status-*` in `style.css`, `_STATIC_META`/`_static_page_head`/`static_assets`/
   `head_pages` (build.py), the footer links in `src/index.html` + `src/a-propos.html`,
   and the blocked-vs-public comment in `docker/Caddyfile`.
@@ -986,8 +1008,14 @@ Key facts that aren't obvious from a single file:
   gate is `build.vec_is_fresh` (stat-only mtime), but its FIRST pass runs with
   `check_model=True` so a MODEL swap (which leaves each already-embedded `.vec.json`
   newer than its unchanged overlay, hiding the mismatch from a pure mtime gate) is
-  re-embedded across the whole catalog on restart; the authoritative `src_hash`+`model`
-  gate still lives in `embed_page_to_vec`. It writes the served
+  re-embedded across the whole catalog on restart; the authoritative gate is
+  `build.vec_is_current` (src_hash + model + width + quant), shared by
+  `embed_page_to_vec`, `embed-rcp.py` and the service. When that gate says "fresh" but
+  the mtime gate did not (an overlay re-fetched with identical bytes, or vectors pushed
+  by `deploy.sh --push-vectors`, which keeps the LOCAL mtime), `embed_page_to_vec` bumps
+  the vector's date with `build.touch_served`, which touches the `.br` (a plain
+  `os.utime` on the logical path silently missed the br-only file, so such a page was
+  re-queued on every sweep forever: the "backlog=1 that never clears" bug). It writes the served
   `dist/rcp/<slug>.vec.json` / `dist/eu/<slug>.vec.json` (`{model, dim, query_prefix,
   src_hash, chunks:[{sec, snippet, q}]}`) DIRECTLY via `build.write_vec_json`, in a
   SEPARATE sidecar (NOT inline in the page, NOT in `_record_hash`/the template), so
@@ -1286,6 +1314,13 @@ uv run src/build.py           # build ./dist from ./data (overlay wins over the 
                           #  overlay makes /eu/<cis> a full converted page instead of a stub). Does NOT
                           #  bake vectors anymore: the embed service / embed-rcp.py write .vec.json
                           #  directly; build.py only prunes orphan .vec.json when a slug is dropped.
+uv run src/build.py --assets-only  # rewrite ONLY the static assets (home/about/status/browse-free
+                          #  pages, JS, CSS, app-version.js, changelog.json; still runs the changelog
+                          #  gate) in under a second, no drug page touched. Used by `deploy.sh --quick`
+                          #  (local, gitignored), which also skips the overlay down-sync, excludes
+                          #  dist/rcp + dist/eu from the mirror, but still rebuilds the refresh + embed
+                          #  images. Only valid when nothing that RENDERS a drug page changed; note any
+                          #  build.py edit busts `_global_key`, so the next full build re-renders all.
 uv run src/refresh-service.py # optional: run the refresh API on :8460 (behind Caddy /api/*)
                           # runs TWO perpetual frequency-ordered crawlers (ANSM + EMA /eu/) +
                           #  on-demand button/auto refreshes for both; pings the embed service
