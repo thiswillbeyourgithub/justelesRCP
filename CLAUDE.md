@@ -1088,7 +1088,7 @@ Key facts that aren't obvious from a single file:
   sync across `section_chunks`/`_heading_context`/`_titre_level`/`_merge_small`/
   `quantize_int8`/`raw_hash`/`iter_overlay_paths`/
   `iter_overlay_raw`/`dist_page_for`/`dist_pages_index`/`read_vec_meta`/`vec_is_fresh`/`vec_payload`/
-  `write_vec_json`/`embed_page_to_vec` (+ the shared `OVERLAY_LANES`/`CIS_RE`)
+  `write_vec_json`/`vec_is_current`/`embed_page_to_vec` (+ the shared `OVERLAY_LANES`/`CIS_RE`)
   (build.py), `onnx_embed.py`, `embed-service.py`, `embed-rcp.py`,
   `src/rcp-semsearch.js`, the `<script>` in `src/rcp.html`, `.semsearch*` in
   `style.css`, `scripts/download-model.sh`, the `/api/sem/*` route + strict CSP in
@@ -1265,6 +1265,10 @@ uv run src/embed-rcp.py --limit 60    # OPTIONAL offline pre-bake of the semanti
                                   # service uses, over build.iter_overlay_raw (CRAWLED overlays only,
                                   # --no-eu for RCP only), writing dist/<rcp|eu>/<slug>.vec.json
                                   # DIRECTLY with the same src_hash. No manifest (content-hash gated).
+                                  # RESUMABLE: a no-encode pre-scan (~1 min) keeps only STALE pages
+                                  # (build.vec_is_current, the gate embed_page_to_vec uses), so
+                                  # --limit N = the next N stale pages and --all = every stale page;
+                                  # stop/re-run freely. Only --force re-embeds up-to-date pages.
                                   # Needs ./scripts/download-model.sh's model + a prior `uv run src/build.py`.
                                   # Shows a tqdm bar (overlay order is SHUFFLED so long /eu/ + short /rcp/
                                   # pages interleave and the ETA is representative). Depends on

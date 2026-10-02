@@ -79,8 +79,10 @@ onnx_embed = _load_module("onnx_embed.py", "onnx_embed")  # warm ONNX encoder (n
 
 @click.command(context_settings={"help_option_names": ["-h", "--help"]})
 @click.option("--limit", default=60, show_default=True,
-              help="Max number of pages to embed this run (ignored with --all).")
-@click.option("--all", "do_all", is_flag=True, help="Embed every eligible page.")
+              help="Embed at most this many STALE pages this run (up-to-date ones never "
+                   "count); re-run to continue. Ignored with --all.")
+@click.option("--all", "do_all", is_flag=True, help="Embed every stale page (up-to-date ones are still skipped; "
+              "--force re-embeds those too).")
 @click.option("--only", metavar="CIS", multiple=True,
               help="Embed only these CIS code(s); repeatable. Implies --force.")
 @click.option("--eu/--no-eu", default=True, show_default=True,
@@ -179,54 +181,59 @@ def main(limit, do_all, only, eu, model_dir, out_dim, vec_quant, weights, intra_
                 ", ".join(encoder.session.get_providers()), batch_size, encoder.dim,
                 vec_quant, weights or "profile default (int8)")
 
-    # Progress-bar total: the path-level overlay count (a cheap dir scan, no content
-    # reads). It slightly over-counts what actually embeds (iter_overlay_raw skips
-    # zero-byte archived overlays), so the bar may finish a hair under 100%; close
-    # enough to show position + ETA. Each page's .vec.json is written as it is embedded,
-    # so a Ctrl-C is safe and a re-run resumes (unchanged pages are skipped as "fresh").
-    # SHUFFLE the overlay order: /eu/ (long EMA SmPCs) and /rcp/ (short) pages are grouped
+    # Two passes, so a run can be stopped and resumed any number of times and each run
+    # only spends time on what is still stale. Pass 1 (no encoding) reads every overlay,
+    # hashes it and compares with the meta baked in its .vec.json through the SAME gate
+    # embed_page_to_vec applies (build.vec_is_current); pages resolve through ONE
+    # dist_pages_index scan per lane, not a per-CIS glob of a ~40k-entry directory.
+    # Pass 2 embeds only the stale pages, so the bar's total and ETA are the work left
+    # (e.g. "embedding 3120/9412" on a resume, not "15000 overlays, mostly unchanged"),
+    # and --limit N means "the next N stale pages". Each .vec.json is written as soon as
+    # its page is embedded, so a Ctrl-C loses at most the page in flight.
+    # SHUFFLE the stale list: /eu/ (long EMA SmPCs) and /rcp/ (short) pages are grouped
     # by lane on disk, so a lane-ordered walk makes tqdm's smoothed rate/ETA swing wildly
     # (all-fast then all-slow). Interleaving long + short randomly keeps the running
     # per-page cost representative from early on, so the ETA is trustworthy sooner.
-    paths = list(build.iter_overlay_paths())
-    random.shuffle(paths)
-    total = len(paths)
-    logger.info("encoder ready; {} overlay(s) to consider{}", total,
-                "" if do_all else f", stopping after {limit} embedded")
-
-    done = fresh = skipped = errors = no_page = 0
-    bar = tqdm(build.iter_overlay_raw(paths), total=total, unit="page",
-               desc="embedding", smoothing=0.05)
-    for cis, raw, subdir in bar:
-        if only_set and cis not in only_set:
-            continue
-        if not eu and subdir == "eu":
-            continue
-        try:
-            result = build.embed_page_to_vec(cis, raw, subdir, encoder,
-                                             model=model, quant=vec_quant, force=force)
-        except Exception as exc:  # never let one bad page abort the batch
-            errors += 1
-            bar.write(f"cis {cis} failed: {exc}")  # write() keeps the bar intact
-            continue
-        if result == "ok":
-            done += 1
-        elif result == "fresh":
-            fresh += 1
-        elif result == "no-page":
+    pages = {subdir: build.dist_pages_index(subdir) for subdir, _ in build.OVERLAY_LANES}
+    paths = [(cis, path, subdir) for cis, path, subdir in build.iter_overlay_paths()
+             if (not only_set or cis in only_set) and (eu or subdir != "eu")]
+    stale, fresh, no_page = [], 0, 0
+    for cis, path, subdir in tqdm(paths, unit="page", desc="scanning", smoothing=0.05):
+        page = pages[subdir].get(cis)
+        if page is None:
             # Overlay exists but the page isn't built yet: run `uv run build.py` first.
             no_page += 1
             continue
-        # Live counters in the bar's postfix (redrawn on tqdm's own schedule).
-        bar.set_postfix(embedded=done, unchanged=fresh, notbuilt=no_page,
-                        err=errors, refresh=False)
-        # Count against the limit only pages we actually embedded this run.
-        if not do_all and done >= limit:
-            break
+        if not force:
+            raw = build._read_overlay(path)
+            meta = build.read_vec_meta(build.vec_path_for(page))
+            if build.vec_is_current(meta, build.raw_hash(raw), model, encoder.dim,
+                                    vec_quant):
+                fresh += 1
+                continue
+        stale.append((cis, path, subdir, page))
+    random.shuffle(stale)
+    todo = stale if do_all else stale[:limit]
+    logger.info("{} page(s) up to date, {} stale, {} not built yet; embedding {}{}",
+                fresh, len(stale), no_page, len(todo),
+                "" if len(todo) == len(stale) else " this run (--all for every one)")
+
+    done = errors = 0
+    bar = tqdm(todo, unit="page", desc="embedding", smoothing=0.05)
+    for cis, path, subdir, page in bar:
+        try:
+            raw = build._read_overlay(path)
+            build.embed_page_to_vec(cis, raw, subdir, encoder, model=model,
+                                    quant=vec_quant, force=force, page=page)
+            done += 1
+        except Exception as exc:  # never let one bad page abort the batch
+            errors += 1
+            bar.write(f"cis {cis} failed: {exc}")  # write() keeps the bar intact
+        bar.set_postfix(embedded=done, err=errors, refresh=False)
     bar.close()
 
-    logger.info("done: {} embedded, {} unchanged, {} not-built-yet, {} errors",
-                done, fresh, no_page, errors)
+    logger.info("done: {} embedded, {} unchanged, {} not-built-yet, {} errors, {} still "
+                "stale", done, fresh, no_page, errors, len(stale) - done)
     if no_page:
         logger.info("{} overlay(s) had no built page: run `uv run build.py` first",
                     no_page)

@@ -2459,9 +2459,26 @@ def iter_overlay_raw(paths=None):
             yield cis, raw, subdir
 
 
+def vec_is_current(meta: dict | None, src_hash: str, model: str, dim: int,
+                   quant: str) -> bool:
+    """The AUTHORITATIVE staleness gate on a ``.vec.json``'s ``read_vec_meta``: True when
+    it was embedded from this exact text (``src_hash``, which also folds in
+    ``_CHUNK_FORMAT_VERSION``) with this model, served width and quantisation, i.e.
+    re-embedding would write the same vectors. Shared by ``embed_page_to_vec`` and
+    embed-rcp.py's pre-scan (which sizes a resumed run to the pages still stale) so the
+    two can never disagree on what "fresh" means."""
+    # Re-embed on ANY of: content change (src_hash), model swap, served-width
+    # change (EMBED_OUT_DIM) or quantisation change (EMBED_VEC_QUANT). A stored dim
+    # of 0 = a chunkless page, dimensionless and vectorless, so it stays fresh
+    # regardless of the current width AND quantisation.
+    return bool(meta and meta.get("src_hash") == src_hash and meta.get("model") == model
+                and meta.get("dim") in (0, dim)
+                and (meta.get("dim") == 0 or meta.get("quant") == quant))
+
+
 def embed_page_to_vec(cis: str, raw: str, subdir: str, encoder, *,
                       model: str, quant: str = "binary", force: bool = False,
-                      stats: dict | None = None) -> str:
+                      stats: dict | None = None, page: Path | None = None) -> str:
     """Segment a crawled page's raw HTML into sections, embed them with ``encoder``,
     and write ``dist/<subdir>/<slug>.vec.json``. Returns ``"ok"`` (wrote fresh
     vectors), ``"fresh"`` (content hash + model unchanged, skipped the encode) or
@@ -2483,21 +2500,19 @@ def embed_page_to_vec(cis: str, raw: str, subdir: str, encoder, *,
     ``stats`` is an optional out-dict the caller can pass to learn how much work the
     encode actually did (for logging/throughput): on the ``"ok"`` path it is filled
     with ``chunks`` (sections encoded) and ``chars`` (total characters fed to the
-    encoder). Left untouched on the skip paths (nothing was encoded)."""
-    page = dist_page_for(cis, subdir)
+    encoder). Left untouched on the skip paths (nothing was encoded).
+
+    ``page`` the already-resolved rendered page, for a caller that resolved a whole lane
+    with ONE ``dist_pages_index`` scan; omitted, it is looked up with
+    ``dist_page_for``, which globs the directory per call."""
+    if page is None:
+        page = dist_page_for(cis, subdir)
     if page is None:
         return "no-page"
     vec = vec_path_for(page)
     src_hash = raw_hash(raw)
     if not force:
-        meta = read_vec_meta(vec)
-        # Re-embed on ANY of: content change (src_hash), model swap, served-width
-        # change (EMBED_OUT_DIM) or quantisation change (EMBED_VEC_QUANT). A stored dim
-        # of 0 = a chunkless page, dimensionless and vectorless, so it stays fresh
-        # regardless of the current width AND quantisation.
-        if (meta and meta.get("src_hash") == src_hash and meta.get("model") == model
-                and meta.get("dim") in (0, encoder.dim)
-                and (meta.get("dim") == 0 or meta.get("quant") == quant)):
+        if vec_is_current(read_vec_meta(vec), src_hash, model, encoder.dim, quant):
             try:
                 os.utime(vec, None)
             except OSError:
