@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Quick checks run on every `git push`. Nothing here rebuilds anything, so it is never
+# worth skipping. Activate once per clone: git config core.hooksPath .githooks
+set -u
+cd "$(git rev-parse --show-toplevel)" || exit 1
+
+if command -v node > /dev/null 2>&1; then
+  node scripts/check_js.mjs || {
+    echo "[pre-push] refusing to push: a src/*.js file would not run in the browser." >&2
+    exit 1
+  }
+else
+  echo "[pre-push] note: node not found, skipping the JavaScript syntax check" >&2
+fi
