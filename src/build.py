@@ -331,7 +331,7 @@ def _load_ema_links() -> dict[str, str]:
     links: dict[str, str] = {}
     for cis, entry in raw.items():
         url = (entry or {}).get("ema_pdf")
-        if url:
+        if url and bdpm.is_ema_pdf_url(url):  # it is fetched server-side (SSRF)
             links[cis] = url
     return links
 
@@ -3075,9 +3075,12 @@ def _eu_fetched(overlay_html: str) -> str:
 def _eu_pdf(overlay_html: str) -> str:
     """The source EMA PDF URL scrape-ema.py baked onto the overlay wrapper (the
     exact doc we converted), unescaped back to a raw URL. "" if absent (an overlay
-    seeded before this feature); the caller then falls back to the EMA search."""
+    seeded before this feature, or not on the EMA host); the caller then falls back
+    to the EMA search. The host check matters: this URL is re-fetched server-side by
+    the refresh service's EMA lane (SSRF) and becomes a link on the page."""
     m = _EU_PDF_RE.search(overlay_html)
-    return _stdhtml.unescape(m.group(1)) if m else ""
+    url = _stdhtml.unescape(m.group(1)) if m else ""
+    return url if bdpm.is_ema_pdf_url(url) else ""
 
 
 def _eu_via_archive(overlay_html: str) -> bool:

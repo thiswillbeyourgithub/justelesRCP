@@ -189,7 +189,7 @@ def extract_ema_pdf(page_html: str) -> str:
     ema = [
         href.strip()
         for href in (a.get("href", "") for a in doc.xpath("//a[@href]"))
-        if "ema.europa.eu" in href
+        if bdpm.is_ema_pdf_url(href)  # parsed host, not a substring (SSRF)
         and "product-information" in href.lower()
         and href.strip().lower().endswith(".pdf")
     ]

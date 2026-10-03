@@ -37,13 +37,13 @@ _spec.loader.exec_module(sema)
 MINI = (
     '{\n"meta": {"total_records": 3},\n"data": [\n'
     '    {"id":"1","type":"overview","medicine_name":"Zerene",'
-    '"document_url":"https://x/en/zerene-overview_en.pdf"},\n'
+    '"document_url":"https://www.ema.europa.eu/en/zerene-overview_en.pdf"},\n'
     '    {"id":"2","type":"product-information","medicine_name":"Abilify",'
-    '"document_url":"https://x/en/abilify-maintena-epar-product-information_en.pdf",'
-    '"translations":{"fr":"https://x/fr/abilify-maintena-epar-product-information_fr.pdf",'
-    '"de":"https://x/de/abilify_de.pdf"}}    '
+    '"document_url":"https://www.ema.europa.eu/en/abilify-maintena-epar-product-information_en.pdf",'
+    '"translations":{"fr":"https://www.ema.europa.eu/fr/abilify-maintena-epar-product-information_fr.pdf",'
+    '"de":"https://www.ema.europa.eu/de/abilify_de.pdf"}}    '
     '{"id":"3","type":"product-information","medicine_name":"Onlyen",'
-    '"document_url":"https://x/en/onlyen-epar-product-information_en.pdf"}\n]}'
+    '"document_url":"https://www.ema.europa.eu/en/onlyen-epar-product-information_en.pdf"}\n]}'
 )
 
 
@@ -226,6 +226,68 @@ def test_refresh_refuses_unknown_cis():
             rs.build.DIST = saved
 
 
+def test_ema_url_host_check_blocks_spoofs():
+    # SSRF guard: the EMA links come from scraped third-party HTML and are fetched
+    # server-side, so only https on the EMA host (parsed, not a substring) passes.
+    ok = sema.scrape.bdpm.is_ema_pdf_url
+    real = [  # shapes actually found in data/.scrape-manifest.json
+        "https://www.ema.europa.eu/fr/documents/product-information/abilify-epar-product-information_fr.pdf",
+        "https://www.ema.europa.eu/fr/documents/product-information/x-epar-product-information_fr.pdf-0",
+        "https://www.ema.europa.eu/fr/media/55066",
+        "https://ema.europa.eu/a.pdf",
+    ]
+    for u in real:
+        assert ok(u), u
+    for u in ("https://ema.europa.eu.evil.example/a.pdf",       # suffix spoof
+              "https://evil.example/ema.europa.eu/a.pdf",       # path spoof
+              "https://www.ema.europa.eu@169.254.169.254/a.pdf",  # userinfo spoof
+              "https://notema.europa.eu/a.pdf",                 # no dot boundary
+              "http://www.ema.europa.eu/a.pdf",                 # plain http
+              "https://www.ema.europa.eu:8080/a.pdf",           # odd port
+              "file:///etc/passwd", "", "https://[::1/"):
+        assert not ok(u), u
+    # The JSON-dump index drops an off-host PI link instead of seeding it.
+    recs = [{"type": "product-information", "medicine_name": "Evil",
+             "document_url": "https://ema.europa.eu.evil.example/evil.pdf"}]
+    assert sema._ema_pi_index(recs) == {}
+    print("ok  test_ema_url_host_check_blocks_spoofs")
+
+
+def test_pdf_fetch_refuses_offhost_redirect():
+    # A redirect hop to an internal host must be refused, not followed: the old
+    # client followed redirects blindly after checking nothing at all.
+    import httpx
+    seen = []
+
+    def handler(req):
+        seen.append(str(req.url))
+        if req.url.host == "www.ema.europa.eu":
+            return httpx.Response(302, headers={"location": "http://127.0.0.1:8461/api/sem/stats"})
+        return httpx.Response(200, content=b"%PDF-1.7 internal")
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        try:
+            sema._fetch_pdf(client, "https://www.ema.europa.eu/fr/a.pdf")
+            assert False, "off-host redirect was followed"
+        except RuntimeError as exc:
+            assert "off-host" in str(exc), exc
+        assert seen == ["https://www.ema.europa.eu/fr/a.pdf"], seen
+        try:
+            sema._fetch_pdf(client, "https://169.254.169.254/latest/meta-data")
+            assert False, "off-host URL was fetched"
+        except RuntimeError:
+            pass
+        assert len(seen) == 1, seen
+    # An on-host redirect is followed and the PDF comes back.
+    def ok_handler(req):
+        if req.url.path == "/old.pdf":
+            return httpx.Response(301, headers={"location": "/new.pdf"})
+        return httpx.Response(200, content=b"%PDF-1.7 ok")
+    with httpx.Client(transport=httpx.MockTransport(ok_handler)) as client:
+        assert sema._fetch_pdf(client, "https://www.ema.europa.eu/old.pdf") == b"%PDF-1.7 ok"
+    print("ok  test_pdf_fetch_refuses_offhost_redirect")
+
+
 if __name__ == "__main__":
     test_parse_tolerates_runon_records()
     test_pi_index_prefers_french_and_filters_type()
@@ -235,4 +297,6 @@ if __name__ == "__main__":
     test_table_merged_title_row_spans_columns()
     test_error_entry_keeps_last_success_and_backs_off()
     test_refresh_refuses_unknown_cis()
+    test_ema_url_host_check_blocks_spoofs()
+    test_pdf_fetch_refuses_offhost_redirect()
     print("\nAll tests passed.")

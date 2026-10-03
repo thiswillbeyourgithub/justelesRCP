@@ -811,7 +811,13 @@ Key facts that aren't obvious from a single file:
   helpers are covered by `test_ema_seed.py`. Keep in sync across
   `seed_ema_links`/`_parse_ema_documents`/`_ema_pi_index`/`_match_brand`/
   `EMA_EPAR_JSON_URL` (scrape-ema.py) and `load_cap_meta`/`auth_groups`/
-  `_brand_root`/`resolve_eu` (build.py). **Internet
+  `_brand_root`/`resolve_eu` (build.py). **SSRF guard:** every EMA link is
+  scraped off third-party HTML and fetched server-side, so `bdpm.is_ema_pdf_url`
+  (https on `ema.europa.eu` or a subdomain, parsed host, NOT a substring; the path is
+  not required to end in `.pdf`, real links include `..._fr.pdf-0` and `/fr/media/N`)
+  gates it everywhere: `extract_ema_pdf`, `_ema_pi_index`, `_load_ema_links`, `_eu_pdf`,
+  and `_fetch_pdf`, which follows redirects by hand (`_get_on_hosts`) so EVERY hop is
+  checked; the Wayback path is allowed only on `bdpm.WAYBACK_HOSTS`. **Internet
   Archive fallback:** when the live EMA PDF fails to download (network error, 404,
   or a 200 that is actually an HTML error page: `_fetch_pdf` requires the `%PDF-`
   signature), `process_one` falls back to the Wayback Machine (`_wayback_pdf`, the

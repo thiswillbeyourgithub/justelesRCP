@@ -25,6 +25,7 @@ import math
 import re
 from pathlib import Path
 import unicodedata
+import urllib.parse
 
 
 def tokens(text: str) -> set[str]:
@@ -37,6 +38,37 @@ def tokens(text: str) -> set[str]:
     folded = unicodedata.normalize("NFKD", text.upper())
     folded = folded.encode("ascii", "ignore").decode("ascii")
     return {tok for tok in re.split(r"[^A-Z0-9]+", folded) if tok}
+
+
+# Hosts the EMA PDF fetchers may contact. The EMA links are scraped off third-party
+# HTML (the ANSM page, the EMA JSON dump) and fetched server-side, so an
+# unchecked href would let a poisoned page point our fetcher at an internal
+# address (SSRF). Matching is on the parsed hostname, never a substring, so
+# "https://ema.europa.eu.evil.example/x.pdf" is rejected.
+EMA_HOSTS = ("ema.europa.eu",)
+WAYBACK_HOSTS = ("archive.org",)  # web.archive.org (snapshots) + archive.org (API)
+
+
+def url_on_hosts(url: str, hosts: tuple[str, ...]) -> bool:
+    """True when ``url`` is plain https on one of ``hosts`` or a subdomain of one
+    (no userinfo, no non-default port). Pure, never raises."""
+    try:
+        parts = urllib.parse.urlsplit((url or "").strip())
+        port = parts.port
+    except ValueError:
+        return False
+    host = (parts.hostname or "").rstrip(".").lower()
+    if parts.scheme != "https" or not host or "@" in parts.netloc or port not in (None, 443):
+        return False
+    return any(host == h or host.endswith("." + h) for h in hosts)
+
+
+def is_ema_pdf_url(url: str) -> bool:
+    """True when ``url`` may be fetched as an EMA product-information PDF: https on
+    ema.europa.eu or a subdomain. The path is NOT required to end in ``.pdf``: real
+    harvested links include ``..._fr.pdf-0`` and ``/fr/media/55066`` (the fetcher
+    checks the ``%PDF-`` signature of what comes back instead)."""
+    return url_on_hosts(url, EMA_HOSTS)
 
 
 def read_catalog(path: Path) -> list[tuple[str, str]]:

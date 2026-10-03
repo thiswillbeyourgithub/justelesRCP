@@ -202,6 +202,8 @@ def _ema_pi_index(records: list[dict]) -> dict[str, str]:
         if r.get("type") != "product-information":
             continue
         url = (r.get("translations") or {}).get("fr") or r.get("document_url") or ""
+        if not scrape.bdpm.is_ema_pdf_url(url):  # we fetch it server-side (SSRF)
+            continue
         name = _fold(r.get("medicine_name", ""))
         if url and name and name not in idx:
             idx[name] = url
@@ -328,10 +330,28 @@ def _looks_like_pdf(data: bytes) -> bool:
     return data[:5] == b"%PDF-"
 
 
+_MAX_REDIRECTS = 5
+
+
+def _get_on_hosts(client: httpx.Client, url: str, hosts: tuple[str, ...]) -> httpx.Response:
+    """GET ``url``, following redirects BY HAND so every hop (not just the first
+    URL) must be https on ``hosts``: the URLs come from scraped third-party HTML and
+    are fetched server-side, so a hop to an internal address must never be taken
+    (SSRF). Raises on a disallowed hop, too many redirects, or an HTTP error."""
+    for _ in range(_MAX_REDIRECTS + 1):
+        if not scrape.bdpm.url_on_hosts(url, hosts):
+            raise RuntimeError(f"refusing to fetch off-host URL {url[:120]!r}")
+        resp = client.get(url, follow_redirects=False)
+        if not resp.is_redirect:
+            resp.raise_for_status()
+            return resp
+        url = str(resp.url.join(resp.headers.get("location", "")))
+    raise RuntimeError(f"too many redirects ({_MAX_REDIRECTS})")
+
+
 def _fetch_pdf(client: httpx.Client, url: str) -> bytes:
-    """GET one URL and return its bytes, raising unless it is a real PDF."""
-    resp = client.get(url)
-    resp.raise_for_status()
+    """GET one EMA URL and return its bytes, unless it is not a real PDF."""
+    resp = _get_on_hosts(client, url, scrape.bdpm.EMA_HOSTS)
     if not _looks_like_pdf(resp.content):
         ct = resp.headers.get("content-type", "?")
         raise RuntimeError(f"not a PDF (content-type={ct}, {len(resp.content)}B)")
@@ -343,15 +363,15 @@ def _wayback_pdf(client: httpx.Client, url: str) -> bytes:
     fallback when the live EMA URL fails. Queries the availability API for the
     closest snapshot, then fetches the RAW archived bytes (the ``id_`` modifier, so
     no Wayback HTML chrome is injected). Raises if there is no usable snapshot."""
-    meta = client.get(WAYBACK_API + urllib.parse.quote(url, safe=""))
-    meta.raise_for_status()
+    meta = _get_on_hosts(client, WAYBACK_API + urllib.parse.quote(url, safe=""),
+                         scrape.bdpm.WAYBACK_HOSTS)
     snap = (meta.json().get("archived_snapshots") or {}).get("closest") or {}
     ts = snap.get("timestamp")
     if not snap.get("available") or not ts:
         raise RuntimeError("no Internet Archive snapshot")
     # https://web.archive.org/web/<timestamp>id_/<original-url> -> the raw file.
-    resp = client.get(f"https://web.archive.org/web/{ts}id_/{url}")
-    resp.raise_for_status()
+    resp = _get_on_hosts(client, f"https://web.archive.org/web/{ts}id_/{url}",
+                         scrape.bdpm.WAYBACK_HOSTS)
     if not _looks_like_pdf(resp.content):
         raise RuntimeError("Internet Archive snapshot is not a PDF")
     return resp.content
