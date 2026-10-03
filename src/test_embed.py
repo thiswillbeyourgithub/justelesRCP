@@ -3,12 +3,16 @@
 # dependencies = [
 #   "lxml>=5.0",
 #   "brotli>=1.1",
+#   "numpy",
+#   "onnxruntime",
+#   "tokenizers",
 # ]
 # ///
 """Unit tests for the pure semantic-search helpers in build.py.
 
-Run: ``uv run test_embed.py`` (no ML dependency; the model-side embedding lives in
-onnx_embed.py / embed-service.py). Covers the fiddly pure pieces the feature relies
+Run: ``uv run test_embed.py`` (no model needed: onnxruntime/tokenizers are listed
+only so onnx_embed.py imports, for its pure query-cache test; the model-side embedding
+lives in onnx_embed.py / embed-service.py). Covers the fiddly pure pieces the feature relies
 on:
 
 1. int8 quantise/dequantise round-trip stays within the ~1/127 error bound, so a
@@ -1460,6 +1464,59 @@ def test_changelog_requires_notes_for_the_current_version():
     raise AssertionError("a version with no release notes did not fail the build")
 
 
+def test_query_cache_survives_concurrent_purge_and_inserts():
+    """The query LRU is hit by concurrent HTTP threads AND the reconcile purge.
+
+    It used to be a bare OrderedDict: the purge iterated it while request threads
+    inserted, which raises "OrderedDict mutated during iteration" (and the purge ran
+    outside the reconcile loop's try, so that killed the loop thread)."""
+    import threading
+    import onnx_embed
+    cache = onnx_embed._QueryCache(max_items=64, ttl=0.001)
+    errors = []
+    stop = threading.Event()
+
+    def writer(seed):
+        try:
+            i = 0
+            while not stop.is_set():
+                now = i * 0.0005
+                cache.put(bytes([seed, i % 256]), i, now)
+                cache.get(bytes([seed, (i - 1) % 256]), now)
+                i += 1
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    def purger():
+        try:
+            while not stop.is_set():
+                cache.purge(1e9)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=writer, args=(n,)) for n in range(4)]
+    threads.append(threading.Thread(target=purger))
+    for t in threads:
+        t.start()
+    import time
+    time.sleep(0.5)
+    stop.set()
+    for t in threads:
+        t.join()
+    assert not errors, errors
+    assert len(cache) <= 64
+    # LRU + TTL semantics.
+    c = onnx_embed._QueryCache(max_items=2, ttl=10)
+    c.put(b"a", 1, 0)
+    c.put(b"b", 2, 0)
+    assert c.get(b"a", 1) == 1          # refreshes a's slot
+    c.put(b"c", 3, 1)                   # evicts b, the least recently used
+    assert c.get(b"b", 1) is None and c.get(b"c", 1) == 3
+    assert c.get(b"a", 11) is None      # expired
+    assert c.purge(100) == 1 and len(c) == 0
+    assert len(onnx_embed._QueryCache(max_items=0, ttl=10)) == 0
+
+
 if __name__ == "__main__":
     test_load_cap_meta_excludes_decentralised()
     test_clean_substance_strips_salt_hydrate()
@@ -1507,4 +1564,5 @@ if __name__ == "__main__":
     test_changelog_parses_bilingual_bullets_and_shas()
     test_changelog_rejects_malformed_notes()
     test_changelog_requires_notes_for_the_current_version()
+    test_query_cache_survives_concurrent_purge_and_inserts()
     print("\nAll tests passed.")

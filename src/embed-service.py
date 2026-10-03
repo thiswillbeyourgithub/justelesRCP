@@ -463,13 +463,19 @@ class Embedder:
                                 n, depth, breakdown)
             except Exception as exc:
                 logger.warning("reconcile scan failed: {}", exc)
-            # While a backlog is draining, emit the throughput + RAM summary each pass so
-            # speed/memory stay visible even between the every-50-pages worker aggregates.
-            if self._queue:
-                self._log_aggregate()
-            # Bound how long cached query hashes+vectors linger even while idle: the
-            # lazy per-request purge only fires when a query arrives, so sweep here too.
-            self.encoder.purge_expired_queries()
+            # Guarded separately from the scan (a scan failure must not skip the purge)
+            # but still guarded: an exception escaping here would kill this thread and
+            # with it every later reconcile pass and query purge.
+            try:
+                # While a backlog is draining, emit the throughput + RAM summary each
+                # pass so speed/memory stay visible between the worker aggregates.
+                if self._queue:
+                    self._log_aggregate()
+                # Bound how long cached query hashes+vectors linger even while idle:
+                # the per-request purge only fires when a query arrives.
+                self.encoder.purge_expired_queries()
+            except Exception as exc:
+                logger.warning("reconcile housekeeping failed: {}", exc)
             check_model = False
             time.sleep(self.reconcile_seconds)
 

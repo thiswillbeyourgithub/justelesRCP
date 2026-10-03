@@ -36,6 +36,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import threading
 import time
 from collections import OrderedDict
 from pathlib import Path
@@ -402,6 +403,65 @@ def _resolve_intra_threads(n: int) -> int:
     return min(cpu, max(1, cpu + 1 + n))
 
 
+class _QueryCache:
+    """Bounded, TTL-limited LRU (key -> value), safe to share across threads.
+
+    ``Encoder`` keeps one for query vectors. Every access (get, move-to-end, insert,
+    evict, purge) runs under one lock: the embed service hits it from concurrent HTTP
+    request threads AND from its reconcile loop's purge, and iterating an OrderedDict
+    while another thread mutates it raises RuntimeError. Callers compute the value
+    OUTSIDE the cache (so an encode never holds the lock); a racing miss just encodes
+    twice, which is harmless. ``max_items`` 0 disables caching, ``ttl`` 0 disables
+    expiry.
+    """
+
+    def __init__(self, max_items: int, ttl: float) -> None:
+        self._data: "OrderedDict[bytes, tuple[object, float]]" = OrderedDict()
+        self._max = max(0, int(max_items))
+        self._ttl = max(0.0, float(ttl))
+        self._lock = threading.Lock()
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._data)
+
+    def get(self, key: bytes, now: float):
+        """The live value for ``key`` (refreshing its LRU slot), else None. An
+        expired entry is dropped on the spot."""
+        with self._lock:
+            hit = self._data.get(key)
+            if hit is None:
+                return None
+            value, exp = hit
+            if not self._ttl or now < exp:
+                self._data.move_to_end(key)
+                return value
+            del self._data[key]
+            return None
+
+    def put(self, key: bytes, value, now: float) -> None:
+        if not self._max:
+            return
+        with self._lock:
+            self._purge_locked(now)
+            self._data[key] = (value, now + self._ttl if self._ttl else float("inf"))
+            while len(self._data) > self._max:
+                self._data.popitem(last=False)
+
+    def purge(self, now: float | None = None) -> int:
+        """Drop every entry past its TTL; return how many were removed."""
+        with self._lock:
+            return self._purge_locked(time.monotonic() if now is None else now)
+
+    def _purge_locked(self, now: float) -> int:
+        if not self._ttl:
+            return 0
+        dead = [k for k, (_, exp) in self._data.items() if now >= exp]
+        for k in dead:
+            del self._data[k]
+        return len(dead)
+
+
 class Encoder:
     """A warm ONNX feature-extraction encoder: load once, embed many.
 
@@ -533,9 +593,7 @@ class Encoder:
         # of letting entries sit until LRU eviction. Purged lazily on access AND swept by
         # the caller's periodic loop so idle entries do not persist. Encoder-only concern;
         # passages aren't cached (each is embedded once and persisted to its .vec.json).
-        self._q_cache: "OrderedDict[bytes, tuple[np.ndarray, float]]" = OrderedDict()
-        self._q_cache_max = max(0, int(query_cache))
-        self._q_ttl = max(0.0, float(query_ttl))  # 0 => no expiry
+        self._q_cache = _QueryCache(query_cache, query_ttl)  # 0 => off / no expiry
 
     # -- core --------------------------------------------------------------
     def encode(
@@ -635,18 +693,10 @@ class Encoder:
 
     def purge_expired_queries(self, now: float | None = None) -> int:
         """Drop every cached query entry past its TTL and return how many were removed.
-        Called lazily by encode_query and by the service's periodic loop so idle
-        entries do not linger past query_ttl even when no new query arrives. No-op when
-        query_ttl is 0 (expiry disabled). Not thread-locked: the OrderedDict ops are
-        atomic under the GIL and a racing miss just re-encodes, which is harmless."""
-        if not self._q_ttl or not self._q_cache:
-            return 0
-        if now is None:
-            now = time.monotonic()
-        dead = [k for k, (_, exp) in self._q_cache.items() if now >= exp]
-        for k in dead:
-            self._q_cache.pop(k, None)
-        return len(dead)
+        Called by the service's periodic loop so idle entries do not linger past
+        query_ttl even when no new query arrives (``encode_query`` also purges on
+        insert). No-op when query_ttl is 0 (expiry disabled)."""
+        return self._q_cache.purge(now)
 
     def encode_query(self, query: str, dim: int | None = None) -> np.ndarray:
         """Embed ONE query (adds the query prefix), memoised in the TTL-bounded LRU.
@@ -676,22 +726,14 @@ class Encoder:
             cut = vec[:want]
             return (cut / max(float(np.linalg.norm(cut)), 1e-12)).astype(np.float32)
 
-        cached = self._q_cache.get(key)
+        cached = self._q_cache.get(key, now)
         if cached is not None:
-            vec, exp = cached
-            if not self._q_ttl or now < exp:
-                self._q_cache.move_to_end(key)
-                return fit(vec)
-            self._q_cache.pop(key, None)  # expired: forget this query's derived data
+            return fit(cached)
         # width=0: encode at the model's native width regardless of out_dim, so the
         # cached vector can serve any requested width. Same forward pass, same cost;
         # MRL truncation happens after it.
         vec = self.encode([text], prefix=self.query_prefix, width=0)[0]
-        if self._q_cache_max:
-            self.purge_expired_queries(now)  # cheap sweep (<= cache_max entries)
-            self._q_cache[key] = (vec, now + self._q_ttl if self._q_ttl else float("inf"))
-            while len(self._q_cache) > self._q_cache_max:
-                self._q_cache.popitem(last=False)
+        self._q_cache.put(key, vec, now)
         return fit(vec)
 
 
