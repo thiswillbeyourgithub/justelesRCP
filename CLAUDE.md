@@ -781,7 +781,7 @@ Key facts that aren't obvious from a single file:
   `/eu/` HTML, stored once per sibling and again in each precompressed copy, for
   ~0.45 GB of distinct images. `build_stubs`' `_prune` ends with
   `_prune_eu_images`, which deletes the figures no `/eu/` page links (it scans the
-  pages, not a manifest, so figures the refresh service wrote count too). The
+  pages, not a manifest, so figures the refresh service wrote count too; and it spares any figure modified since `build_stubs` started, since the refresh service writes figures before their page, and `_externalize_images` bumps a reused figure's date for the same reason). The
   Caddyfile serves `/eu/img/*` as `immutable` (a hash URL never changes content)
   and everything else `no-cache`. The refresh container writes them through its
   existing `dist/eu` mount. Keep in sync across `EU_IMG_DIR`/`_externalize_images`/

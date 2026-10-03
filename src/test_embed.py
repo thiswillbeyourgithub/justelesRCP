@@ -1395,7 +1395,24 @@ def test_eu_figures_become_shared_files_and_orphans_are_pruned():
             # Only the PNG is still linked by a page: the JPEG is an orphan.
             build.write_served(build.EU_IMG_DIR.parent / "1-x.html",
                                f'<img src="/eu/img/{files[1]}" loading="lazy">'.encode())
-            assert build._prune_eu_images() == 1
+            # A figure written AFTER the build started is spared even though no page
+            # links it yet: the refresh service writes figures before their page.
+            # (one second of slack: the filesystem's coarse clock can stamp a file a
+            # few ms before time.time()).
+            started = __import__("time").time() - 1
+            for f in files:
+                os.utime(build.EU_IMG_DIR / f, (started - 10, started - 10))
+            fresh = build._externalize_images(
+                f'<img src="data:image/png;base64,{base64.b64encode(b"new fig").decode()}">')
+            fresh_name = fresh.split("/eu/img/", 1)[1].split('"', 1)[0]
+            assert build._prune_eu_images(since=started) == 1
+            assert sorted(f.name for f in build.EU_IMG_DIR.iterdir()) == sorted([files[1], fresh_name])
+            # Reusing an existing figure bumps its date, so it is spared as well.
+            os.utime(build.EU_IMG_DIR / files[1], (started - 10, started - 10))
+            build._externalize_images(page)  # re-creates the pruned JPEG, touches the PNG
+            assert (build.EU_IMG_DIR / files[1]).stat().st_mtime >= started
+            # Once the build start is past them, the unlinked figures go.
+            assert build._prune_eu_images(since=__import__("time").time() + 10) == 2
             assert [f.name for f in build.EU_IMG_DIR.iterdir()] == [files[1]]
         finally:
             build.EU_IMG_DIR = old

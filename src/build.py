@@ -41,6 +41,7 @@ import re
 import shutil
 import struct
 import sys
+import time
 import unicodedata
 import urllib.parse
 from datetime import date, datetime
@@ -3223,7 +3224,12 @@ def _externalize_images(page: str) -> str:
         data = base64.b64decode(m[2])
         name = f"{hashlib.sha256(data).hexdigest()[:20]}.{'jpg' if m[1] == 'jpeg' else 'png'}"
         out = EU_IMG_DIR / name
-        if not out.exists():
+        try:
+            # Reused figure: bump its date so a concurrent build's prune (which
+            # spares figures newer than its start) cannot delete it before the
+            # page linking it is written.
+            os.utime(out)
+        except FileNotFoundError:
             EU_IMG_DIR.mkdir(parents=True, exist_ok=True)
             tmp = out.with_name(f"{name}.{os.getpid()}.tmp")
             tmp.write_bytes(data)
@@ -3232,11 +3238,15 @@ def _externalize_images(page: str) -> str:
     return _DATA_IMG_RE.sub(_one, page)
 
 
-def _prune_eu_images() -> int:
+def _prune_eu_images(since: float) -> int:
     """Delete the figures in EU_IMG_DIR that no /eu/ page links any more (a product
     whose SmPC changed its figures, a page dropped from the build). Scans the pages
     themselves rather than a manifest, so a figure written by the refresh service for
-    a page re-rendered on the server counts as used too. Returns the count removed."""
+    a page re-rendered on the server counts as used too. Only figures last modified
+    BEFORE ``since`` (the build's start) are candidates: the refresh service writes a
+    page's figures first and the page itself last, so a figure it wrote during the
+    build may not be linked by any page YET when the pages are scanned. Returns the
+    count removed."""
     if not EU_IMG_DIR.is_dir():
         return 0
     used: set[str] = set()
@@ -3244,9 +3254,15 @@ def _prune_eu_images() -> int:
         used.update(_EU_IMG_REF_RE.findall((read_served(page) or b"").decode("utf-8")))
     removed = 0
     for img in EU_IMG_DIR.iterdir():
-        if img.name not in used:
+        if img.name in used:
+            continue
+        try:
+            if img.stat().st_mtime >= since:
+                continue
             img.unlink()
-            removed += 1
+        except FileNotFoundError:
+            continue
+        removed += 1
     return removed
 
 
@@ -3455,10 +3471,12 @@ def build_stubs(
     # (_init_stub_worker), so siblings landing in one worker still share a read.
     groups = auth_groups(cap)
     eu_dir = DIST / "eu"
+    # Figures newer than this are never pruned (see _prune_eu_images).
+    started = time.time()
 
     def _prune(keep: set[str]) -> None:
         _prune_pages(eu_dir, keep)
-        _prune_eu_images()
+        _prune_eu_images(since=started)
 
     if not cap:  # no BDPM file: build nothing, sweep away any prior stubs
         _prune(set())
