@@ -46,13 +46,21 @@ WANT_FP16=0
 KEEP_FP32=0
 for arg in "$@"; do
   case "$arg" in
-    --fp16) WANT_FP16=1 ;;
+    --fp16) WANT_FP16=1; KEEP_FP32=1 ;;  # same intent as --keep-fp32, see below
     --keep-fp32) KEEP_FP32=1 ;;
     *) echo "unknown argument: $arg (--fp16 and --keep-fp32 are understood)" >&2; exit 2 ;;
   esac
 done
 
 mkdir -p "models/${MODEL_REPO}/onnx"
+
+# Download to "<dest>.part" and rename only once wget succeeded: an interrupted
+# download used to leave a truncated file under the final name, which the
+# "skip files already present" checks below then trusted forever.
+fetch() {  # fetch <url> <dest>
+  wget -O "$2.part" "$1"
+  mv "$2.part" "$2"
+}
 
 # The int8-quantised ${ONNX_FILE} is the ~570 MB payload; config.json + tokenizer.json
 # are tiny (the fast tokenizer.json is self-contained, so no separate tokenizer_config /
@@ -62,7 +70,7 @@ mkdir -p "models/${MODEL_REPO}/onnx"
 for f in config.json tokenizer.json; do
   if [ ! -f "models/${MODEL_REPO}/$f" ]; then
     echo "Downloading ${MODEL_REPO}/$f ..."
-    wget -O "models/${MODEL_REPO}/$f" "${HF_BASE}/$f"
+    fetch "${HF_BASE}/$f" "models/${MODEL_REPO}/$f"
   fi
 done
 # The fp32 pair, then the int8 graph quantised from it. model.onnx is a 1.3 MB stub and
@@ -72,7 +80,7 @@ if [ ! -f "models/${MODEL_REPO}/onnx/${ONNX_FILE}" ]; then
   for f in "${FP32_FILE}" "${FP32_FILE}_data"; do
     if [ ! -f "models/${MODEL_REPO}/onnx/$f" ]; then
       echo "Downloading ${MODEL_REPO}/onnx/$f (the pair is ~2.4 GB, one time)..."
-      wget -O "models/${MODEL_REPO}/onnx/$f" "${HF_BASE}/onnx/$f"
+      fetch "${HF_BASE}/onnx/$f" "models/${MODEL_REPO}/onnx/$f"
     fi
   done
   echo "Quantising to int8 (a few minutes, needs ~10 GB of RAM)..."
@@ -85,12 +93,14 @@ if [ ! -f "models/${MODEL_REPO}/onnx/${ONNX_FILE}" ]; then
   fi
 fi
 
-# Jina publishes no fp16 graph either, so the GPU bake reads the fp32 pair. --fp16 keeps
-# it rather than downloading anything, which is what --keep-fp32 does; it stays as a
-# spelling of the same intent so the sibling's documented invocation does not break.
-if [ "$WANT_FP16" = "1" ] && [ ! -f "models/${MODEL_REPO}/onnx/${FP32_FILE}" ]; then
-  echo "This model publishes no fp16 graph. Re-run with --keep-fp32 to keep the fp32"
-  echo "pair for an offline GPU bake (uv run src/embed-rcp.py --weights model.onnx)."
+# Jina publishes no fp16 graph either, so the GPU bake reads the fp32 pair. --fp16 sets
+# KEEP_FP32 above rather than downloading anything; it stays as a spelling of the same
+# intent so the sibling's documented invocation does not break. The fp32 pair is only
+# fetched alongside a quantisation, so when the int8 graph was already there it is absent.
+if [ "$KEEP_FP32" = "1" ] && [ ! -f "models/${MODEL_REPO}/onnx/${FP32_FILE}" ]; then
+  [ "$WANT_FP16" = "1" ] && echo "This model publishes no fp16 graph; the GPU bake uses the fp32 pair."
+  echo "The fp32 pair is not present: delete models/${MODEL_REPO}/onnx/${ONNX_FILE} and re-run"
+  echo "with --keep-fp32 to fetch it for an offline GPU bake (uv run src/embed-rcp.py --weights model.onnx)."
 fi
 
 echo "Done. models/${MODEL_REPO} ready (mounted read-only into the embed container)."
