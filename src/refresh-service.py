@@ -936,16 +936,12 @@ class Refresher:
 
     def _process_ansm(self, client, cis: str, source: str) -> None:
         logger.debug("fetching {} [{}] from {}", cis, source, scrape.PAGE_URL.format(cis=cis))
-        page, status = scrape.fetch_one(client, cis)
-        if status != 200:
-            raise RuntimeError(f"HTTP {status}")
-        rcp = scrape.extract_rcp(page)
-        scrape.write_overlay(cis, rcp, self.gzip_overlay)
-        asof = _asof_today()
-        digest = scrape.hashlib.sha256(rcp.encode("utf-8")).hexdigest()
         with self._lock:
-            self._manifest[cis] = {"last_fetch": scrape._now_iso(), "hash": digest,
-                                   "status": "ok", "http": status}
+            prev = self._manifest.get(cis)
+        rcp, entry = scrape.scrape_one(client, cis, self.gzip_overlay, prev)
+        asof = _asof_today()
+        with self._lock:
+            scrape.store_entry(self._manifest, cis, entry)
         # Re-render this ONE page (writes dist/rcp/<slug>.html, stored as .br) BEFORE
         # persisting the manifest. The rebuilt page, carrying today's "vérifiée
         # par justelesRCP le" capture date, IS the point of the refresh; the
@@ -983,21 +979,23 @@ class Refresher:
         none. Only the on-demand button reaches this path (the crawl order already
         excludes never-seeded groups), so a user never has to wait for the batch
         scraper to catch up before their refresh does anything."""
+        # The same single-CIS scrape as the ANSM lane and the batch scraper, so the
+        # entry it records (empty RCP status, harvested link) is the one they would.
+        with self._lock:
+            prev = self._manifest.get(cis)
         try:
-            page, status = scrape.fetch_one(client, cis)
+            _rcp, entry = scrape.scrape_one(client, cis, self.gzip_overlay, prev)
         except Exception as exc:
             logger.warning("ANSM harvest for {} failed: {}", cis, str(exc)[:120])
             return ""
-        if status != 200:
-            return ""
-        url = scrape.extract_ema_pdf(page)
-        if not url:
-            return ""
+        url = entry.get("ema_pdf", "")
         with self._lock:
-            entry = dict(self._manifest.get(cis) or {})
-            entry["ema_pdf"] = url
-            self._manifest[cis] = entry
-            self._ema_links[cis] = url  # so this + sibling lookups resolve it now
+            scrape.store_entry(self._manifest, cis, entry)
+            if url:
+                self._ema_links[cis] = url  # so this + sibling lookups resolve it now
+        if not url:
+            self._persist_manifest()
+            return ""
         # The EMA crawl order only covers groups that had a link when it was built:
         # have the crawler rebuild it so this group's siblings join the rotation.
         self._eu_lane.stale = True

@@ -349,6 +349,44 @@ def fetch_one(client: httpx.Client, cis: str) -> tuple[str, int]:
     return resp.text, resp.status_code
 
 
+def scrape_one(client: httpx.Client, cis: str, gzip_overlay: bool,
+               prev: dict | None = None) -> tuple[str, dict]:
+    """Fetch ONE drug's ANSM page, write its overlay, and return ``(rcp, entry)``.
+
+    The single-CIS scrape shared by this script's batch loop and the refresh
+    service (its ANSM lane and its live EMA-link harvest), so all of them record
+    the same manifest entry: ``status`` is ``"empty"`` when the page carries no RCP
+    (a delisted or centrally-authorized drug, stored as the zero-byte overlay) and
+    ``"ok"`` otherwise, and the EMA product-information link the page publishes is
+    harvested into ``ema_pdf``. When the page links none, the ``ema_pdf`` of
+    ``prev`` (the CIS's previous manifest entry) is carried over, so a link that
+    was harvested or bulk-seeded earlier is not lost on a re-fetch.
+
+    Raises on a network error or a non-200 answer; the caller records it with
+    ``record_error``. The caller stores ``entry`` (``store_entry``), so a caller
+    that shares the manifest across threads can do it under its own lock.
+    """
+    page, status = fetch_one(client, cis)
+    if status != 200:
+        raise RuntimeError(f"HTTP {status}")
+    rcp = extract_rcp(page)
+    dest = write_overlay(cis, rcp, gzip_overlay)
+    logger.debug("{}: wrote {} ({} bytes on disk) from {} bytes of HTML",
+                 cis, dest.name, dest.stat().st_size, len(page))
+    entry = {
+        "last_fetch": _now_iso(),
+        "hash": hashlib.sha256(rcp.encode("utf-8")).hexdigest(),
+        "status": "empty" if rcp == "" else "ok", "http": status,
+    }
+    # Centrally-authorized (empty-RCP) pages link the real EMA PDF; capture it so
+    # build.py's /eu/ page points straight at the doc. Only stored when known (real
+    # ANSM RCPs carry no such link).
+    ema_pdf = extract_ema_pdf(page) or (prev or {}).get("ema_pdf", "")
+    if ema_pdf:
+        entry["ema_pdf"] = ema_pdf
+    return rcp, entry
+
+
 def _fmt_dur(seconds: float) -> str:
     """Format a duration as H:MM:SS, or MM:SS when under an hour."""
     s = int(max(0.0, seconds))
@@ -503,27 +541,8 @@ def main(limit: int, fetch_all: bool, only: tuple[str, ...], ttl_days: int,
         for i, cis in enumerate(targets, 1):
             logger.debug("[{}/{}] {} {}: GET {}", i, total, source, cis, PAGE_URL.format(cis=cis))
             try:
-                page, status = fetch_one(client, cis)
-                if status != 200:
-                    raise RuntimeError(f"HTTP {status}")
-                logger.debug("[{}/{}] {} {}: extracting RCP from {} bytes of HTML",
-                             i, total, source, cis, len(page))
-                rcp = extract_rcp(page)
-                dest = write_overlay(cis, rcp, gzip_overlay)
-                logger.debug("[{}/{}] {} {}: wrote {} ({} bytes on disk)",
-                             i, total, source, cis, dest.name, dest.stat().st_size)
-                digest = hashlib.sha256(rcp.encode("utf-8")).hexdigest()
-                entry = {
-                    "last_fetch": _now_iso(), "hash": digest,
-                    "status": "empty" if rcp == "" else "ok", "http": status,
-                }
-                # Centrally-authorized (empty-RCP) pages link the real EMA PDF;
-                # capture it so build.py's /eu/ stub points straight at the doc.
-                # Only stored when present (real ANSM RCPs carry no such link).
-                ema_pdf = extract_ema_pdf(page)
-                if ema_pdf:
-                    entry["ema_pdf"] = ema_pdf
-                manifest[cis] = entry
+                rcp, entry = scrape_one(client, cis, gzip_overlay, manifest.get(cis))
+                store_entry(manifest, cis, entry)
                 if rcp == "":
                     n_empty += 1
                     result = "no RCP (empty overlay)"

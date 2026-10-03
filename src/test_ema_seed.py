@@ -387,18 +387,71 @@ def test_crawl_order_is_rebuilt_after_a_rotation_and_a_live_harvest():
     assert "33333333" in seen, seen
 
     # A live harvest marks the EMA lane stale and wakes its worker.
+    import tempfile
     r._eu_lane, r._manifest, r._ema_links = lane, {}, {}
-    r._persist_manifest = lambda: None
+    r._persist_manifest, r.gzip_overlay = (lambda: None), True
     lane.wake.clear()
-    saved = rs.scrape.fetch_one, rs.scrape.extract_ema_pdf
+    saved = rs.scrape.fetch_one, rs.scrape.extract_ema_pdf, rs.scrape.RCP_OVERLAY_DIR
     rs.scrape.fetch_one = lambda client, cis: ("<html/>", 200)
     rs.scrape.extract_ema_pdf = lambda page: "https://www.ema.europa.eu/x_fr.pdf"
     try:
-        assert r._harvest_ema_url(None, "44444444")
+        with tempfile.TemporaryDirectory() as d:
+            rs.scrape.RCP_OVERLAY_DIR = Path(d)  # the harvest writes the empty overlay
+            assert r._harvest_ema_url(None, "44444444")
     finally:
-        rs.scrape.fetch_one, rs.scrape.extract_ema_pdf = saved
+        rs.scrape.fetch_one, rs.scrape.extract_ema_pdf, rs.scrape.RCP_OVERLAY_DIR = saved
     assert lane.stale and lane.wake.is_set()
     print("ok  test_crawl_order_is_rebuilt_after_a_rotation_and_a_live_harvest")
+
+
+def test_single_cis_scrape_records_empty_status_and_keeps_ema_link():
+    """The refresh service's ANSM lane used to record every scrape as ``ok``, even a
+    page with no RCP (a delisted drug), and to rebuild the entry from scratch, losing
+    its ``ema_pdf``; its live EMA-link harvest wrote the link but no fetch result.
+    All three paths now go through scrape.scrape_one, which records ``empty`` for an
+    RCP-less page, harvests the EMA link off it, and keeps a previous link when the
+    page links none."""
+    import tempfile
+    import threading
+    spec = importlib.util.spec_from_file_location(
+        "refresh_service", Path(__file__).parent / "refresh-service.py")
+    rs = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(rs)
+    sc = rs.scrape
+    link = "https://www.ema.europa.eu/fr/documents/product-information/x-epar-product-information_fr.pdf"
+    empty_page = f'<html><body><a href="{link}">RCP</a></body></html>'
+    rcp_page = ('<html><body><div id="tabpanel-rcp-panel"><div id="contenu">'
+                '<p class="AmmAnnexeTitre1">1. DENOMINATION</p><p>X</p></div></div>'
+                '</body></html>')
+    pages = {"11111111": empty_page, "22222222": rcp_page}
+    saved = sc.fetch_one, sc.RCP_OVERLAY_DIR
+    sc.fetch_one = lambda client, cis: (pages[cis], 200)
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            sc.RCP_OVERLAY_DIR = Path(d)
+            # The shared core: empty page -> "empty" + harvested link, zero-byte overlay.
+            rcp, entry = sc.scrape_one(None, "11111111", True)
+            assert rcp == "" and entry["status"] == "empty", entry
+            assert entry["ema_pdf"] == link, entry
+            assert (Path(d) / "11111111.html.gz").stat().st_size == 0
+            # A page with an RCP and no link keeps the previous entry's link.
+            rcp, entry = sc.scrape_one(None, "22222222", True, {"ema_pdf": link})
+            assert rcp and entry["status"] == "ok" and entry["ema_pdf"] == link, entry
+
+            # The refresh service's ANSM lane records the same thing.
+            r = rs.Refresher.__new__(rs.Refresher)  # no I/O: only what _process_ansm uses
+            r._lock, r.gzip_overlay = threading.Lock(), True
+            r._manifest = {"11111111": {"status": "ok", "ema_pdf": link}}
+            r._persist_manifest = lambda: None
+            outcomes = []
+            r._record = lambda cis, source, result, msg: outcomes.append(result)
+            r._process_ansm(None, "11111111", "user")
+            assert r._manifest["11111111"]["status"] == "empty", r._manifest
+            assert r._manifest["11111111"]["ema_pdf"] == link, r._manifest
+            assert outcomes == ["empty"], outcomes
+    finally:
+        sc.fetch_one, sc.RCP_OVERLAY_DIR = saved
+    print("ok  test_single_cis_scrape_records_empty_status_and_keeps_ema_link")
 
 
 if __name__ == "__main__":
@@ -415,4 +468,5 @@ if __name__ == "__main__":
     test_pdf_fetch_and_convert_are_size_capped()
     test_persist_snapshots_inside_write_lock()
     test_crawl_order_is_rebuilt_after_a_rotation_and_a_live_harvest()
+    test_single_cis_scrape_records_empty_status_and_keeps_ema_link()
     print("\nAll tests passed.")

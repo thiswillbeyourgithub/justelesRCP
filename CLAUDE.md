@@ -322,8 +322,10 @@ Key facts that aren't obvious from a single file:
   auto-refresh (both in `src/app-init.js`) that `POST /api/refresh/<cis>`. Caddy
   reverse-proxies `/api/*` to this service, which runs as a SEPARATE hardened
   container so the web server stays read-only. It does NOT duplicate the scrape or
-  build logic: it imports `scrape-rcp.py` and `build.py` by path (importlib) and
-  reuses `fetch_one` -> `extract_rcp` -> `write_overlay` -> `render_record` to
+  build logic: it imports `scrape-rcp.py` and `build.py` by path (`svc_http.load_sibling`) and
+  reuses `scrape.scrape_one` (fetch -> extract RCP + EMA link -> write overlay -> manifest
+  entry, the SAME single-CIS scrape the batch `scrape-rcp.py` loop and `_harvest_ema_url`
+  use, so all three record `empty` for an RCP-less page and keep `ema_pdf`) -> `render_record` to
   fetch one live page and rebuild just that one `dist/rcp/<slug>.html` (stored as .br).
   It also calls `build_xref_index(names, page_cis)` once at startup and passes the
   result into `build._init_worker`, so a refreshed page keeps the SAME cross-drug
@@ -817,9 +819,9 @@ Key facts that aren't obvious from a single file:
   *product* number `EMEA/H/C/xxxxxx`, NOT the `EU/x/xx/xxx` marketing-auth number
   `load_cap_meta` keys on, so there is no id join; it covers ~97% of auth-groups
   (~1080/1114), the ~3% brand-mismatched generics still falling to the per-CIS ANSM
-  harvest. A harvested link always wins (never overwritten); a later scrape-rcp
-  re-fetch of a seeded CIS may drop the seeded link, but by then the overlay is
-  fetched + self-describing, so the /eu/ page stays full. `--dry-run` reports the
+  harvest. A harvested link always wins (never overwritten), and a later ANSM
+  re-fetch of a seeded CIS keeps the seeded link when the page links none
+  (`scrape_one` carries the previous entry's `ema_pdf` over). `--dry-run` reports the
   plan and writes nothing. It lazily imports `build.py` (needs `brotli`); pure
   helpers are covered by `test_ema_seed.py`. Keep in sync across
   `seed_ema_links`/`_parse_ema_documents`/`_ema_pi_index`/`_match_brand`/
