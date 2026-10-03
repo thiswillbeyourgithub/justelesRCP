@@ -554,8 +554,9 @@ Key facts that aren't obvious from a single file:
   query carrying "trihydratée"; "ACIDE" is deliberately kept so multi-word acids
   survive, and an all-qualifier term (e.g. "SULFATE DE MAGNESIUM") is kept whole. It
   falls back to the drug's `_brand_root` when the composition is unknown. Nothing is fetched at build time (plain search links). The substance map
-  is a process-wide global (`_SUBSTANCES`, primed by `_init_worker` for pool
-  workers, set in `main()` for build_stubs/render_eu_page, and by the refresh
+  is a process-wide global (`_SUBSTANCES`, primed by `_init_worker` AND
+  `_init_stub_worker` (via initargs, never fork inheritance, so a spawn/forkserver
+  start method still sees it) for pool workers, set in `main()`, and by the refresh
   service at startup) and is folded into `_global_key` (it feeds the pills but is
   NOT in `_record_hash`, so a composition change must bust the whole cache). The
   SAME block is rendered a second time at the very BOTTOM of `/rcp/` + full `/eu/`

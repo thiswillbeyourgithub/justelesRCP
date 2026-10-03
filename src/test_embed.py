@@ -1551,6 +1551,29 @@ def test_failed_render_is_reported_and_previous_page_kept():
         raise AssertionError("too many render failures must abort the build")
 
 
+def _stub_worker_pills(cis):
+    """Spawned-pool probe for the test below (module-level, so it pickles)."""
+    return build._ref_links_html(cis, "ZZBRAND", include_ema=True)
+
+
+def test_stub_workers_receive_the_substance_map():
+    """/eu/ stub workers must get the substance map through initargs.
+
+    _init_stub_worker used to prime every global but _SUBSTANCES, which only
+    reached the workers by fork inheritance: under spawn/forkserver (Python 3.14's
+    Linux default) every /eu/ "En savoir plus" pill searched the brand instead of
+    the active substance."""
+    import multiprocessing
+    ctx = multiprocessing.get_context("spawn")
+    with ctx.Pool(1, initializer=build._init_stub_worker,
+                  initargs=({}, {}, {}, set(), {}, "", {}, {"12345678": "SUBSTANCEX"})) as pool:
+        # get(timeout): before the fix the initializer raised and the pool
+        # respawned workers forever, so a bare apply() would hang.
+        html = pool.apply_async(_stub_worker_pills, ("12345678",)).get(timeout=120)
+    assert "substancex" in html and "zzbrand" not in html, html
+    print("ok  test_stub_workers_receive_the_substance_map")
+
+
 if __name__ == "__main__":
     test_load_cap_meta_excludes_decentralised()
     test_clean_substance_strips_salt_hydrate()
@@ -1600,4 +1623,5 @@ if __name__ == "__main__":
     test_changelog_requires_notes_for_the_current_version()
     test_query_cache_survives_concurrent_purge_and_inserts()
     test_failed_render_is_reported_and_previous_page_kept()
+    test_stub_workers_receive_the_substance_map()
     print("\nAll tests passed.")

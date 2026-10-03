@@ -3317,7 +3317,9 @@ def render_eu_page(cis: str, overlay_html: str, meta: tuple[str, str, str] | Non
 # set is ~2.3k pages and a full converted SmPC page is brotli-heavy, so a serial
 # loop was the build's slowest stage once a batch of EMA overlays lands (each ~a
 # few seconds). These module-level globals are primed per worker by
-# _init_stub_worker (read-only, pickled once at pool start); _render_stub does the
+# _init_stub_worker (read-only, pickled once at pool start; that includes the
+# substance map behind the "En savoir plus" pills, which a fork-free start method
+# such as spawn/forkserver would otherwise leave EMPTY); _render_stub does the
 # pure per-CIS work, byte-for-byte what the old inline loop did.
 _EU_CAP: dict[str, tuple[str, str, str]] = {}
 _EU_LINKS: dict[str, str] = {}
@@ -3329,8 +3331,11 @@ _EU_PREV: dict = {}
 _EU_MEMO: dict[str, str] = {}
 
 
-def _init_stub_worker(cap, ema_links, groups, page_tokens, compo, tpl, prev_records) -> None:
+def _init_stub_worker(cap, ema_links, groups, page_tokens, compo, tpl, prev_records,
+                      substances=None) -> None:
     global _EU_CAP, _EU_LINKS, _EU_GROUPS, _EU_PAGE_TOKENS, _EU_COMPO, _EU_TPL, _EU_PREV, _EU_MEMO
+    global _SUBSTANCES
+    _SUBSTANCES = substances or {}
     _EU_CAP, _EU_LINKS, _EU_GROUPS = cap, ema_links, groups
     _EU_PAGE_TOKENS, _EU_COMPO, _EU_TPL, _EU_PREV = page_tokens, compo, tpl, prev_records
     _EU_MEMO = {}  # per-worker overlay-read memo (a group's siblings in one worker share it)
@@ -3487,7 +3492,7 @@ def build_stubs(
     with tqdm(total=len(stub_cis), desc="  rendering /eu/ pages", unit="page") as pbar, \
             Pool(workers, initializer=_init_stub_worker,
                  initargs=(cap, ema_links, groups, page_tokens, compo, page_tpl,
-                           prev_records)) as pool:
+                           prev_records, _SUBSTANCES)) as pool:
         for r in pool.imap_unordered(_render_stub, stub_cis, chunksize=8):
             pbar.update(1)
             if "error" in r:
