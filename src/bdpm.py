@@ -78,6 +78,19 @@ def is_ema_pdf_url(url: str) -> bool:
     return url_on_hosts(url, EMA_HOSTS)
 
 
+def ema_links(scrape_manifest: dict) -> dict[str, str]:
+    """CIS -> EMA product-information PDF URL, from the ``ema_pdf`` field scrape-rcp.py
+    harvests into its manifest. Only an EMA-host URL is kept (is_ema_pdf_url): every
+    consumer fetches it server-side or links it. Shared by build.py, scrape-ema.py and
+    the refresh service."""
+    links: dict[str, str] = {}
+    for cis, entry in scrape_manifest.items():
+        url = entry.get("ema_pdf") if isinstance(entry, dict) else None
+        if url and is_ema_pdf_url(url):
+            links[cis] = url
+    return links
+
+
 def read_catalog(path: Path) -> list[tuple[str, str]]:
     """Return ``(cis, denomination)`` pairs from ``CIS_bdpm.txt`` in file order.
 

@@ -326,12 +326,7 @@ def _load_ema_links() -> dict[str, str]:
         raw = json.loads(SCRAPE_MANIFEST_PATH.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
-    links: dict[str, str] = {}
-    for cis, entry in raw.items():
-        url = (entry or {}).get("ema_pdf")
-        if url and bdpm.is_ema_pdf_url(url):  # it is fetched server-side (SSRF)
-            links[cis] = url
-    return links
+    return bdpm.ema_links(raw) if isinstance(raw, dict) else {}
 
 
 def _overlay_path(cis: str, overlay_dir: Path | None = None) -> Path | None:

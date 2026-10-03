@@ -74,6 +74,7 @@ from urllib.parse import parse_qs
 import click
 from loguru import logger
 
+import bdpm  # pure-stdlib sibling: ema_links
 import svc_http  # shared JSON handler / server / logging / sibling loader
 
 scrape = svc_http.load_sibling("scrape-rcp.py", "scrape_rcp")
@@ -277,7 +278,7 @@ class Refresher:
         # one; ema_links maps CIS -> the exact EMA PDF URL harvested into the ANSM
         # manifest (fallback: the URL baked on an existing overlay, see _eu_url).
         self._ema_manifest = scrape.load_manifest(ema_scrape.EMA_MANIFEST_PATH)
-        self._ema_links = ema_scrape.ema_links(self._manifest)
+        self._ema_links = bdpm.ema_links(self._manifest)
         logger.info("primed EMA lane: {} centrally-authorized /eu/ CIS, {} PDF links",
                     len(self._eu_cis), len(self._ema_links))
         # Two perpetual crawler lanes, each rotating its own frequency-ordered set on

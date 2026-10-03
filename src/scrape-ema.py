@@ -46,12 +46,10 @@ EMA once it recovers).
 
 from __future__ import annotations
 
-import gzip
 import hashlib
 import html
 import json
 import os
-import re
 import time
 import urllib.parse
 from pathlib import Path
@@ -93,19 +91,6 @@ USER_AGENT = os.environ.get(
 )
 
 
-def ema_links(ansm_manifest: dict) -> dict[str, str]:
-    """CIS -> EMA product-information PDF URL, from the ANSM manifest's ema_pdf field."""
-    out: dict[str, str] = {}
-    for cis, entry in ansm_manifest.items():
-        url = (entry or {}).get("ema_pdf") if isinstance(entry, dict) else None
-        if url:
-            out[cis] = url
-    return out
-
-
-_EMA_PDF_ATTR_RE = re.compile(rb'data-ema-pdf="([^"]+)"')
-
-
 def _overlay_pdf_url(cis: str) -> str | None:
     """The EMA PDF URL baked into an already-converted overlay (its ``data-ema-pdf``).
 
@@ -113,22 +98,17 @@ def _overlay_pdf_url(cis: str) -> str | None:
     manifest because it was first fetched via a SIBLING's link (build.resolve_eu
     group-sharing). The overlay is self-describing (render_eu_page bakes the source
     URL), so its own page can be refreshed in place from that baked URL without any
-    dependency on the harvested link map. Returns None if there is no overlay / no
+    dependency on the harvested link map. Reads it the way the build does (newest of
+    the plain/.gz pair, EMA host only). Returns None if there is no overlay / no
     baked URL."""
-    for suffix in (".html", ".html.gz"):
-        path = EU_OVERLAY_DIR / f"{cis}{suffix}"
-        if not path.is_file():
-            continue
-        try:
-            raw = path.read_bytes()
-            if suffix.endswith(".gz"):
-                raw = gzip.decompress(raw)
-        except Exception:
-            return None
-        match = _EMA_PDF_ATTR_RE.search(raw)
-        if match:
-            return html.unescape(match.group(1).decode("utf-8", "replace"))
-    return None
+    build = svc_http.load_sibling("build.py", "build")  # lazy: only --only needs it
+    path = build._overlay_path(cis, EU_OVERLAY_DIR)
+    if path is None:
+        return None
+    try:
+        return build._eu_pdf(build._read_overlay(path)) or None
+    except Exception:
+        return None
 
 
 # --- Bulk-seeding ema_pdf links from the EMA's own EPAR-documents JSON dump ------
@@ -499,7 +479,7 @@ def main(limit, fetch_all, only, local_file, local_cis, local_src, local_via_arc
         seed_ema_links(ansm, ema_json_path=ema_json, dry_run=dry_run)
         if dry_run:
             return
-    links = ema_links(ansm)
+    links = bdpm.ema_links(ansm)
     if not links:
         logger.info("no ema_pdf links in {} yet; run scrape-rcp.py first "
                     "(or --seed-from-ema-json to seed them from the EMA dump)",
