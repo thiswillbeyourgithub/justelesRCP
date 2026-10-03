@@ -844,8 +844,8 @@ class Refresher:
 
         A manifest is only a TTL cache (build.py re-derives each page's capture
         date from the overlay itself), so a failure to write it must not sink a
-        refresh. It is snapshotted under the lock and written outside it, and is
-        always called AFTER the page has been re-rendered, so the user-visible
+        refresh. It is snapshotted under ``_lock`` (held only for the copy) INSIDE
+        ``_persist_lock``, and is always called AFTER the page has been re-rendered, so the user-visible
         page update lands even when /app/data cannot be written. save_manifest
         already falls back to an in-place write when its atomic temp+rename cannot
         work (an EROFS .tmp on the read-only refresh rootfs); this additionally
@@ -853,12 +853,15 @@ class Refresher:
         selects the lane's manifest file (None = the ANSM one; the EMA lane passes
         its own); save_manifest derives a per-path temp so the two never collide.
         """
-        with self._lock:
-            snapshot = dict(manifest)
-        # Serialise the actual write across both workers: save_manifest uses one
-        # temp path per manifest, so two concurrent writers of the SAME manifest
-        # would clobber each other's .tmp.
+        # Serialise snapshot AND write across both workers. The snapshot must be
+        # taken inside this lock: taken before it, a worker holding an OLDER copy
+        # could write after one holding a newer copy, silently dropping the newer
+        # entry (lost update). It also keeps save_manifest's one temp path per
+        # manifest from being clobbered by two concurrent writers. Lock order is
+        # _persist_lock -> _lock; nothing takes them the other way round.
         with self._persist_lock:
+            with self._lock:
+                snapshot = dict(manifest)
             try:
                 scrape.save_manifest(snapshot, path)
             except OSError as exc:

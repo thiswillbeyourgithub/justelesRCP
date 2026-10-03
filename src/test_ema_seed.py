@@ -325,6 +325,38 @@ def test_pdf_fetch_and_convert_are_size_capped():
     print("ok  test_pdf_fetch_and_convert_are_size_capped")
 
 
+def test_persist_snapshots_inside_write_lock():
+    """Two workers persisting the same manifest must not lose an update.
+
+    ``_persist`` used to copy the manifest BEFORE taking ``_persist_lock``, so a
+    worker holding an older copy could write it after another worker had written a
+    newer one, dropping that entry. Here a worker blocks on the write lock while the
+    manifest gains an entry: what it finally writes must include that entry."""
+    import threading
+    import time
+    spec = importlib.util.spec_from_file_location(
+        "refresh_service", Path(__file__).parent / "refresh-service.py")
+    rs = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(rs)
+    r = rs.Refresher.__new__(rs.Refresher)  # no I/O: only the two locks
+    r._lock, r._persist_lock = threading.Lock(), threading.Lock()
+    manifest, written = {"1": {"status": "ok"}}, []
+    saved = rs.scrape.save_manifest
+    rs.scrape.save_manifest = lambda snap, path=None: written.append(dict(snap))
+    try:
+        with r._persist_lock:  # another worker is mid-write
+            t = threading.Thread(target=r._persist, args=(manifest,))
+            t.start()
+            time.sleep(0.2)  # let it reach the lock (it used to snapshot first)
+            with r._lock:
+                manifest["2"] = {"status": "ok"}
+        t.join(5)
+    finally:
+        rs.scrape.save_manifest = saved
+    assert written and set(written[-1]) == {"1", "2"}, written
+    print("ok  test_persist_snapshots_inside_write_lock")
+
+
 if __name__ == "__main__":
     test_parse_tolerates_runon_records()
     test_pi_index_prefers_french_and_filters_type()
@@ -337,4 +369,5 @@ if __name__ == "__main__":
     test_ema_url_host_check_blocks_spoofs()
     test_pdf_fetch_refuses_offhost_redirect()
     test_pdf_fetch_and_convert_are_size_capped()
+    test_persist_snapshots_inside_write_lock()
     print("\nAll tests passed.")
