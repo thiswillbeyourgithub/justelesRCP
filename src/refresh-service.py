@@ -413,6 +413,10 @@ class _Stats:
         snap["queued"] = queued  # on-demand (button/auto) requests waiting
         snap["pending"] = pending
         snap["eta_seconds"] = round(self._eta_seconds(queued), 1)
+        # The ANSM gauge takes the "crawl" key (documented /api/stats shape), which
+        # would otherwise shadow the crawler's refresh counter: keep that under its
+        # own key so public_summary can still report it.
+        snap["crawl_refreshes"] = snap["crawl"]
         snap["crawl"] = crawl        # ANSM /rcp/ lane (unchanged shape)
         snap["crawl_eu"] = crawl_eu  # EMA /eu/ lane, same shape
         return snap
@@ -446,8 +450,9 @@ class _Stats:
             "crawl": lane_view(s["crawl"]),        # ANSM /rcp/ lane
             "crawl_eu": lane_view(s["crawl_eu"]),  # EMA /eu/ lane
             # Completed refreshes since boot, by outcome and by trigger source.
-            "refreshes": {k: s[k] for k in ("ok", "empty", "error", "done",
-                                            "user", "auto", "crawl")},
+            "refreshes": {**{k: s[k] for k in ("ok", "empty", "error", "done",
+                                               "user", "auto")},
+                          "crawl": s["crawl_refreshes"]},
             # Request-level short-circuits (min-interval hit / queue full / hourly cap).
             "shortcircuits": {k: s[k] for k in ("fresh", "busy", "budget")},
             # On-demand (button/auto) lane queue depth + drain ETA.

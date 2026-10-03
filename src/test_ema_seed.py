@@ -454,6 +454,30 @@ def test_single_cis_scrape_records_empty_status_and_keeps_ema_link():
     print("ok  test_single_cis_scrape_records_empty_status_and_keeps_ema_link")
 
 
+def test_summary_reports_crawler_refresh_count_not_the_lane_gauge():
+    """stats() reuses the "crawl" key for the ANSM lane gauge, which used to shadow
+    the crawler's refresh COUNTER, so /api/summary's refreshes.crawl (shown on
+    /status as "Déclenchés par l'explorateur") was a dict instead of a number."""
+    import queue
+    import threading
+    import time
+    spec = importlib.util.spec_from_file_location(
+        "refresh_service", Path(__file__).parent / "refresh-service.py")
+    rs = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(rs)
+    r = rs.Refresher.__new__(rs.Refresher)  # no I/O: only what stats() reads
+    r._lock, r._pending, r._demand = threading.Lock(), {}, queue.Queue()
+    r._started, r.demand_rate = time.monotonic(), 5
+    r._stats = {"ok": 3, "empty": 0, "error": 0, "user": 1, "auto": 0, "crawl": 2,
+                "fresh": 0, "busy": 0, "budget": 0}
+    r._ansm_lane = rs._CrawlLane("rcp", True, 365, 120, {}, lambda: [])
+    r._eu_lane = rs._CrawlLane("eu", True, 180, 300, {}, lambda: [])
+    summary = r.public_summary()
+    assert summary["refreshes"]["crawl"] == 2, summary["refreshes"]
+    assert isinstance(summary["crawl"], dict)  # the lane gauge keeps its key
+    print("ok  test_summary_reports_crawler_refresh_count_not_the_lane_gauge")
+
+
 if __name__ == "__main__":
     test_parse_tolerates_runon_records()
     test_pi_index_prefers_french_and_filters_type()
@@ -469,4 +493,5 @@ if __name__ == "__main__":
     test_persist_snapshots_inside_write_lock()
     test_crawl_order_is_rebuilt_after_a_rotation_and_a_live_harvest()
     test_single_cis_scrape_records_empty_status_and_keeps_ema_link()
+    test_summary_reports_crawler_refresh_count_not_the_lane_gauge()
     print("\nAll tests passed.")
