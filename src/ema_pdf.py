@@ -223,16 +223,15 @@ def _line_text(line) -> tuple[str, bool]:
 def convert(pdf_bytes: bytes) -> dict:
     """Convert an EMA product-information PDF to clean, structured HTML.
 
-    Returns ``{"html": <div id=textDocument>…</div>, "date": "YYYY-MM-DD",
-    "title": <pdf title>, "toc": [{"sid", "label", "subs": [(sid, label), …]}, …]}``.
+    Returns ``{"html": <div id=textDocument>…</div>, "date": "YYYY-MM-DD"}``
+    (the page's Sommaire is rebuilt from the HTML at render, ``build._eu_toc``).
 
     The body groups the doc's macro dividers (each ANNEXE, the SmPC, the
     labelling halves, each notice variant) into collapsible ``<details
     class="ema-annexe">`` blocks so the reader gets a handful of foldable
     sections instead of a flat wall (the labelling annex repeats its 1-18 block
     per pack; the notice recurs per presentation). The SmPC group opens by
-    default. ``toc`` is two levels: the groups, with the SmPC group's numbered
-    sections as children. Figures are de-duplicated by xref (the same chart is
+    default. Figures are de-duplicated by xref (the same chart is
     embedded once). ``html`` is "" for an empty/broken PDF. Raises ValueError on a
     PDF over ``MAX_PAGES`` (the input is untrusted: a huge or crafted PDF must not
     pin the CPU of the refresh service converting it); the doc is always closed."""
@@ -245,7 +244,6 @@ def convert(pdf_bytes: bytes) -> dict:
 def _convert_doc(doc) -> dict:
     """``convert``'s body, on an already-open, page-capped ``fitz`` document."""
     date = capture_date(doc)
-    title = (doc.metadata or {}).get("title", "").strip()
     groups: list[dict] = []
     seen_xrefs: set[int] = set()
     sec_n = 0
@@ -262,7 +260,7 @@ def _convert_doc(doc) -> dict:
             return g
         g = {
             "sid": f"grp-{len(groups) + 1}", "title": gtitle,
-            "open": bool(_SMPC_TITLE.search(gtitle)), "parts": [], "subs": [],
+            "open": bool(_SMPC_TITLE.search(gtitle)), "parts": [],
         }
         groups.append(g)
         return g
@@ -356,8 +354,6 @@ def _convert_doc(doc) -> dict:
                         sec_n += 1
                         sid = f"sec-{sec_n}"
                         add_html(_heading(1, label, sid))
-                        if groups and groups[-1]["open"]:
-                            groups[-1]["subs"].append((sid, label))
                     pending_marker = ""
                     continue
                 # A bold ANNEXE divider or a whitelisted annex title opens a group.
@@ -369,7 +365,7 @@ def _convert_doc(doc) -> dict:
         prev_bottom = None
     flush_para(para)
 
-    body_parts, toc = [], []
+    body_parts = []
     for g in groups:
         inner = "".join(g["parts"])
         if not inner.strip():
@@ -380,11 +376,8 @@ def _convert_doc(doc) -> dict:
             f'<details class="ema-annexe"{openattr}>'
             f'<summary id="{g["sid"]}">{html.escape(label)}</summary>{inner}</details>'
         )
-        toc.append({"sid": g["sid"], "label": label, "subs": g["subs"]})
     body = "".join(body_parts)
     return {
         "html": f'<div id="textDocument">{body}</div>' if body else "",
         "date": date,
-        "title": title,
-        "toc": toc,
     }

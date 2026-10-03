@@ -58,7 +58,6 @@ import threading
 import time
 import urllib.request
 from collections import Counter, OrderedDict, deque
-from pathlib import Path
 from urllib.parse import parse_qs
 
 import click
@@ -69,7 +68,7 @@ import svc_http  # shared JSON handler / server / logging / sibling loader
 build = svc_http.load_sibling("build.py", "build")          # segmentation + shared vec writer
 onnx_embed = svc_http.load_sibling("onnx_embed.py", "onnx_embed")  # warm ONNX encoder
 
-# Overlay lanes (build.OVERLAY_LANES) and the CIS matcher (build.CIS_RE) are defined
+# Overlay lanes (build.OVERLAY_LANES) are defined
 # once in build.py; reuse them here rather than re-declaring. The reconcile sweep also
 # iterates build.iter_overlay_paths, so the "which overlays exist" logic lives in one
 # place.
@@ -263,19 +262,6 @@ class Embedder:
                 return False
         return False
 
-    # Page resolution + vec-meta reading live in build.py (shared with embed-rcp.py's
-    # offline pre-bake, so the two never disagree); these are thin adapters.
-    def _dist_page(self, cis: str, subdir: str) -> Path | None:
-        return build.dist_page_for(cis, subdir)
-
-    @staticmethod
-    def _vec_path(page: Path) -> Path:
-        return build.vec_path_for(page)
-
-    def _read_vec_meta(self, vec: Path) -> dict | None:
-        """{src_hash, model} baked into an existing .vec.json, else None."""
-        return build.read_vec_meta(vec)
-
     def _is_embedded(self, cis: str) -> bool:
         """The page has a .vec.json whose baked src_hash + model match its CURRENT
         overlay (so a reader can search it right now)."""
@@ -283,10 +269,10 @@ class Embedder:
         if ov is None:
             return False
         raw, subdir = ov
-        page = self._dist_page(cis, subdir)
+        page = build.dist_page_for(cis, subdir)
         if page is None:
             return False
-        return build.vec_is_current(self._read_vec_meta(self._vec_path(page)),
+        return build.vec_is_current(build.read_vec_meta(build.vec_path_for(page)),
                                     build.raw_hash(raw), self.model, self.encoder.dim,
                                     self.quant)
 
@@ -445,7 +431,7 @@ class Embedder:
             if page is None:
                 continue
             overlays += 1
-            vec = self._vec_path(page)
+            vec = build.vec_path_for(page)
             if build.vec_is_fresh(vec, ov, self.model, check_model=check_model,
                                   dim=self.encoder.dim, quant=self.quant):
                 continue
@@ -506,7 +492,7 @@ class Embedder:
             # overlay-write notify (or the reconcile sweep) then drives the embed.
             return {"status": self._trigger_crawl(cis)}
         raw, subdir = ov
-        page = self._dist_page(cis, subdir)
+        page = build.dist_page_for(cis, subdir)
         if page is None:
             return {"status": "unavailable"}
         if self._is_embedded(cis):
@@ -652,13 +638,13 @@ class Embedder:
             row["reason"] = "no-page"
             return row
         row["page"] = f"/{subdir}/{page.name}"
-        vec = self._vec_path(page)
+        vec = build.vec_path_for(page)
         row["vec_mtime"] = build.served_mtime(vec)
         if not deep:
             return row
         raw = build._read_overlay(ov)
         src_hash = build.raw_hash(raw)
-        meta = self._read_vec_meta(vec)
+        meta = build.read_vec_meta(vec)
         if meta is None:
             row["reason"] = "missing"
         elif build.vec_is_current(meta, src_hash, self.model, self.encoder.dim,

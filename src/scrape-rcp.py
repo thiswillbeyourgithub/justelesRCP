@@ -61,7 +61,6 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
-import os
 import random
 import time
 from datetime import datetime, timedelta, timezone

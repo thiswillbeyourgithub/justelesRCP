@@ -739,12 +739,11 @@ class Encoder:
 
 if __name__ == "__main__":
     # Tiny self-test / latency probe (needs ./scripts/download-model.sh's model).
-    import time
-
     enc = Encoder(intra_threads=1)
-    q = "query: puis-je le prendre pendant la grossesse ?"
+    # The bare question: encode_query adds the model's own query prefix itself.
+    q = "puis-je le prendre pendant la grossesse ?"
     t0 = time.perf_counter()
-    v = enc.encode_query("puis-je le prendre pendant la grossesse ?")
+    v = enc.encode_query(q)
     dt = (time.perf_counter() - t0) * 1000
     print(f"model={enc.model_name} dim={enc.dim} |v|={np.linalg.norm(v):.4f} "
           f"first-query={dt:.1f} ms")

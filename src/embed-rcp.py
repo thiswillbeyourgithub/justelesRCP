@@ -56,7 +56,6 @@ import random
 from pathlib import Path
 
 import click
-import onnxruntime as ort
 from loguru import logger
 from tqdm import tqdm
 

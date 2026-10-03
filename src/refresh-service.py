@@ -84,7 +84,6 @@ build = svc_http.load_sibling("build.py", "build")
 # pymupdf, hence the dep above); all import-safe (__main__-guarded).
 ema_scrape = svc_http.load_sibling("scrape-ema.py", "scrape_ema")
 
-CIS_RE = re.compile(r"\d{8}")
 # Trigger sources tracked for the crawl stats: a manual button click ("user"),
 # the >1-year auto-refresh a page fires on load ("auto"), and the perpetual
 # background crawler ("crawl", set internally). Any other value a caller passes

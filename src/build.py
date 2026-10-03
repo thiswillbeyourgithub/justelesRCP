@@ -563,23 +563,6 @@ def iter_rcp_raw(scrape_dates: dict[str, str] | None = None, stats: dict | None 
         yield cis, raw, scrape_dates.get(cis) or _overlay_date(cis)
 
 
-def iter_eu_raw():
-    """Yield ``(cis, raw)`` for every /eu/ page that has a converted EMA overlay (a
-    FULL page, rendered by render_eu_page), skipping lightweight stubs (which have no
-    overlay = no captured text). The EMA counterpart of iter_rcp_raw, used by
-    embed-rcp.py so per-drug semantic search covers /eu/ pages too. The overlay is
-    the same ``<div id="textDocument">`` envelope, with sec-N anchors already baked
-    by ema_pdf, so section_chunks segments it exactly like an RCP page. A CIS is
-    either an ANSM RCP page OR an /eu/ page (never both), so their per-CIS
-    <slug>.vec.json under dist/rcp vs dist/eu never collide across the two lanes."""
-    for cis in sorted(_overlay_cis(EU_OVERLAY_DIR)):
-        path = _overlay_path(cis, EU_OVERLAY_DIR)
-        if path is None:
-            continue
-        raw = _read_overlay(path)
-        if not raw.strip():  # zero-byte sentinel: scraped, no document
-            continue
-        yield cis, raw
 
 
 # --- cross-drug backlinks (xref) --------------------------------------------
@@ -1180,7 +1163,9 @@ def quantize_int8(values) -> list[int]:
 
 
 def dequantize_int8(q) -> list[float]:
-    """Inverse of quantize_int8 (the reference src/rcp-semsearch.js mirrors)."""
+    """Inverse of quantize_int8 (the reference src/rcp-semsearch.js mirrors).
+
+    Only the tests call it: at runtime the dequantisation happens in the browser."""
     return [x / 127 for x in q]
 
 
@@ -1754,10 +1739,6 @@ def touch_served(path: Path) -> None:
             os.utime(p, None)
         except OSError:
             pass
-
-
-def served_exists(path: Path) -> bool:
-    return br_path(path).exists() or path.exists()
 
 
 def delete_served(path: Path) -> None:
@@ -3334,7 +3315,6 @@ def render_eu_page(cis: str, overlay_html: str, meta: tuple[str, str, str] | Non
         content=_eu_full_content(name, eu, holder, body), xref="", more_bottom=refs,
     )
     out = DIST / "eu" / f"{slug}.html"
-    out.parent.mkdir(parents=True, exist_ok=True)
     write_served(out, _externalize_images(page).encode("utf-8"))
     return {"cis": cis, "name": name, "slug": slug, "eu": 1}
 
