@@ -452,7 +452,12 @@ Key facts that aren't obvious from a single file:
   manifest, order function, cursor/idle state), and there are two instances,
   `_ansm_lane` and `_eu_lane`, driven by the SAME lane-parameterised methods
   (`_build_crawl_order(lane)`, `_claim_next_crawl(lane)`, `_gauge_locked(lane)`,
-  `_crawl_run(lane)`, …). `_process` dispatches on `_is_eu(cis)` (a CIS is EU iff
+  `_crawl_run(lane)`, …). The `Refresher` class is split by concern: `RenderContext`
+  (the startup render priming: names, template, backlink index, substances, page
+  set, cap-meta + auth groups), the `_LaneScheduler` mixin (`_build_crawl_order`/
+  `_claim_next_crawl`/`_idle_wait_seconds`/`request_recrawl` + the gauges) and the
+  `_Stats` mixin (`_record`/`stats`/`public_summary`), with `Refresher` keeping the
+  queue, workers and fetch paths. `_process` dispatches on `_is_eu(cis)` (a CIS is EU iff
   it is in the cap-meta set but has no RCP page) to `_process_ema` vs
   `_process_ansm`, and `_entry(cis)` / `_persist(manifest, path)` route to the EMA
   manifest (`data/.scrape-ema-manifest.json`) vs the ANSM one, so the two lanes'

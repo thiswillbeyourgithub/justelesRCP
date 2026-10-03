@@ -154,7 +154,354 @@ class _CrawlLane:
         self.stale = False  # order must be rebuilt: rotation wrapped, or a new EMA link
 
 
-class Refresher:
+class RenderContext:
+    """The render inputs a refresh needs, loaded once at startup: build.py's
+    worker globals primed (names, template, backlink index, substances), the set
+    of CIS with a built /rcp/ page, and the EMA lane's centrally-authorized CIS
+    and authorization groups. Read-only after construction."""
+
+    def __init__(self) -> None:
+        # Prime build.py's render globals (names + page template + cross-drug
+        # backlink index) once, so render_record() can run outside its normal pool
+        # worker AND a refreshed page carries the same "Médicaments liés" links a
+        # full build would produce (build_xref_index needs the BDPM composition +
+        # frequency files, mounted read-only into this container; absent them it
+        # returns {} and the rebuilt page simply has no backlinks).
+        names = build.load_names()
+        tpl = (build.SRC / "rcp.html").read_text(encoding="utf-8")
+        # Restrict link targets to CIS that already have a built page. This
+        # container has no CIS_RCP.csv (only dist/rcp is mounted), so derive the
+        # page set from the rendered files rather than the source. Prevents a
+        # backlink to a pageless CIS (which would 404, e.g. HELICOBACTER). The
+        # crawler is also restricted to this set (it never fetches a pageless CIS).
+        page_cis = build.page_cis_from_dist()
+        self.page_cis = page_cis
+        xref = build.build_xref_index(names, page_cis)
+        # Active-substance search strings for the external-reference pill row a
+        # refreshed page carries (build._ref_links_html), same as a full build. Reads
+        # CIS_COMPO_bdpm.txt, mounted read-only here for the backlink index; absent it
+        # the row falls back to each drug's brand root.
+        substances = build.load_substances()
+        logger.info(
+            "primed render: {} names, {} pages, {} backlink terms, {} substance links",
+            len(names), len(page_cis), len(xref), len(substances),
+        )
+        build._init_worker(names, tpl, xref, substances)
+        self.tpl = tpl  # reused by render_eu_page for on-demand /eu/ refreshes
+        # EMA (/eu/) lane state. A centrally-authorized drug has no /rcp/ page; its
+        # SmPC/notice lives in an EMA PDF that scrape-ema.py fetches + converts into
+        # a data/eu overlay, which build.render_eu_page turns into the /eu/ page.
+        # An on-demand refresh of such a page must go through THIS lane, not the
+        # ANSM scrape (which would come back empty). A CIS is a /eu/ one when it is
+        # centrally authorized (in the cap-meta set) but has no /rcp/ page.
+        self.cap = build.load_cap_meta()
+        self.eu_cis = frozenset(c for c in self.cap if c not in page_cis)
+        # Presentations of one product share a single EMA PDF/overlay, so a /eu/
+        # page with no overlay of its own borrows a sibling's (build.resolve_eu).
+        # Group once; drives _eu_url + the EMA crawl order.
+        self.auth_groups = build.auth_groups(self.cap)
+
+
+class _LaneScheduler:
+    """The perpetual crawlers' scheduling: which page each lane fetches next, how
+    long an idle lane sleeps, the forced re-crawl, and the per-lane gauges. A mixin
+    of Refresher, which owns the state it reads: ``_lock`` (always held around
+    lane + ``_pending`` reads), ``_pending`` (CIS queued or in flight, shared with
+    the on-demand lane so a CIS is never fetched twice at once) and ``_crawl_lanes``.
+    The fetching itself (``_crawl_run`` -> ``_handle``) stays in Refresher."""
+
+    def _due_count_locked(self, lane: _CrawlLane) -> int:
+        """Count a lane's crawl pages still due per its TTL. CALLER MUST HOLD ``_lock``.
+
+        A live sweep-size hint: how many pages the lane still has to fetch before it
+        goes idle. O(len(order)) but cheap (a dict lookup + one ISO parse each), and
+        only ever run under the lock the callers already hold.
+        """
+        if not lane.enabled:
+            return 0
+        return sum(1 for cis in lane.order
+                   if scrape.is_due(lane.manifest.get(cis), lane.ttl_days))
+
+    @staticmethod
+    def _crawl_eta_seconds(due: int, rate: float) -> float:
+        """Rough seconds to finish a crawl sweep of ``due`` pages on a lane's ``rate``.
+
+        Each lane crawler is serial on its slow rate: each due page costs the base
+        rate plus, on average, half the 0..min(rate,10)s jitter. Mirrors
+        ``_eta_seconds`` for the on-demand lane. Zero when nothing is due (idle).
+        """
+        return due * scrape.mean_gap(rate)
+
+    def _gauge_locked(self, lane: _CrawlLane) -> dict:
+        """One lane's crawl gauge for GET /api/stats. CALLER MUST HOLD ``_lock``.
+
+        During a forced re-crawl (deploy.sh --rebuild), pages are refetched
+        regardless of the TTL, so the remaining-to-fetch count is the larger of the
+        TTL-due count and the forced backlog; ``forced`` exposes that backlog so an
+        operator can watch a --rebuild sweep drain.
+        """
+        due = max(self._due_count_locked(lane), len(lane.force_pending))
+        return {"enabled": lane.enabled, "total": len(lane.order), "idx": lane.idx,
+                "ttl_days": lane.ttl_days, "idle": lane.idle, "due": due,
+                "forced": len(lane.force_pending),
+                "rate_seconds": round(lane.rate, 1),
+                "eta_seconds": round(self._crawl_eta_seconds(due, lane.rate), 1)}
+
+    def _build_crawl_order(self, lane: _CrawlLane) -> None:
+        """Build the frequency-ordered page list a lane rotates through.
+
+        Reuses the lane's ``order_fn`` (scrape.build_queue's frequency ordering, the
+        SAME the batch scrapers use), restricted to CIS that actually render a page.
+        Runs in the worker thread so the HTTP server can start serving
+        immediately; per-page due-ness is checked live in _claim_next_crawl, not
+        frozen here. Degrades to no crawler (empty order) if the BDPM inputs are
+        missing rather than crashing the service.
+
+        Also REBUILT whenever ``lane.stale`` is set (once per completed rotation, and
+        after _harvest_ema_url seeds a new EMA group), so an order is never frozen at
+        startup: a /eu/ group seeded later, or a page that appeared since, joins the
+        rotation. A rebuild that fails keeps the previous order.
+        """
+        if not lane.enabled:
+            return
+        lane.stale = False  # cleared BEFORE building, so a link harvested meanwhile re-marks it
+        try:
+            order = lane.order_fn()
+        except SystemExit as exc:  # e.g. missing CIS_bdpm; degrade, don't crash
+            if lane.order:
+                logger.warning("{} crawler: order rebuild failed, keeping the previous "
+                               "one: {}", lane.name, exc)
+                return
+            logger.warning("{} crawler disabled: {}", lane.name, exc)
+            lane.enabled = False
+            return
+        previous = len(lane.order)
+        with self._lock:
+            lane.order = order
+            if lane.idx >= len(order):
+                lane.idx = 0
+        if len(order) != previous:
+            logger.info("{} crawler armed: {} pages in frequency order, ttl {}d, rate {}s",
+                        lane.name, len(order), lane.ttl_days, lane.rate)
+
+    def _claim_next_crawl(self, lane: _CrawlLane) -> str | None:
+        """Claim the lane's next page to crawl, or None if there is nothing to do.
+
+        Normally rotates a cursor through the frequency-ordered page list, returning
+        the first CIS that is due per the lane TTL (see scrape.is_due) and not already
+        queued/in flight (in the SHARED ``_pending``, so the two lanes + on-demand
+        never double-fetch a CIS). The claimed CIS is marked pending as "crawl"; a
+        full rotation with nothing due flips the lane to idle and returns None.
+
+        When a full re-crawl was armed (deploy.sh --rebuild -> SIGHUP set
+        ``lane.force``), the flag is consumed here by seeding ``force_pending`` with
+        the whole order, and those pages are then handed out in frequency order
+        IGNORING the TTL, one full pass, before normal rotation resumes. Seeding
+        happens here (not in the handler) so it always reads the fully-built order,
+        even if the signal raced ahead of _build_crawl_order.
+        """
+        with self._lock:
+            n = len(lane.order)
+            if not n:
+                lane.idle = True
+                return None
+            if lane.force:
+                # Consume the one-shot force flag: (re)start a full forced pass.
+                lane.force_pending = set(lane.order)
+                lane.force = False
+                # Logged here, not in the SIGHUP handler: loguru takes a lock, and a
+                # handler interrupting the main thread mid-log would deadlock on it.
+                logger.info("{} crawler: forced re-crawl started ({} page(s)); overlays "
+                            "keep serving until each is re-fetched",
+                            lane.name, len(lane.force_pending))
+            if lane.force_pending:
+                # Forced pass: next not-in-flight page, in frequency order, regardless
+                # of TTL. Existing overlays keep serving until each is re-fetched.
+                for cis in lane.order:
+                    if cis in lane.force_pending and cis not in self._pending:
+                        lane.force_pending.discard(cis)
+                        self._pending[cis] = "crawl"
+                        lane.idle = False
+                        lane.idle_logged = False
+                        return cis
+                # All still-forced pages are momentarily in flight elsewhere; fall
+                # through to the TTL rotation (they get re-checked next call).
+            for _ in range(n):
+                cis = lane.order[lane.idx]
+                lane.idx = (lane.idx + 1) % n
+                if lane.idx == 0:  # a rotation completed: refresh the order
+                    lane.stale = True
+                if cis in self._pending:
+                    continue  # already queued/in flight (on-demand or other lane)
+                if scrape.is_due(lane.manifest.get(cis), lane.ttl_days):
+                    self._pending[cis] = "crawl"
+                    lane.idle = False
+                    lane.idle_logged = False
+                    return cis
+            lane.idle = True
+            return None
+
+    def _idle_wait_seconds(self, lane: _CrawlLane) -> float:
+        """Seconds until the lane's oldest fresh page next crosses its TTL (capped).
+
+        Called only after a full rotation found nothing due: wake at the soonest
+        ``scrape.due_at`` (a page aging past the TTL, or a failed one reaching its
+        retry window) so the crawler resumes exactly then, but re-poll at least
+        hourly so a manifest or clock change is noticed. A page due now (no/invalid
+        timestamp) returns ~immediately.
+        """
+        cap = 3600.0
+        now = datetime.now(timezone.utc)
+        soonest: float | None = None
+        with self._lock:
+            for cis in lane.order:
+                at = scrape.due_at(lane.manifest.get(cis), lane.ttl_days)
+                if at is None:
+                    return 1.0
+                secs = (at - now).total_seconds()
+                if soonest is None or secs < soonest:
+                    soonest = secs
+        if soonest is None:
+            return cap
+        return max(1.0, min(soonest, cap))
+
+    def request_recrawl(self) -> None:
+        """Arm a full forced re-crawl of every enabled lane (deploy.sh --rebuild,
+        delivered as SIGHUP; see the handler in main()).
+
+        Signal-safe: it only flips each lane's one-shot ``force`` flag and sets its
+        ``wake`` Event, both plain non-blocking writes, so it never takes ``_lock``
+        (the main thread runs this from the signal handler and must not risk blocking
+        on a worker's critical section). The real work (seeding ``force_pending`` from
+        the lane order and handing pages out ignoring the TTL) happens in the worker
+        via ``_claim_next_crawl``; ``wake`` bumps an idle worker out of its sleep so
+        the sweep starts at once. Existing overlays are kept the whole time and keep
+        serving until each page is re-fetched. Logs nothing (a signal handler must
+        not take loguru's lock): the worker logs when it consumes the flag.
+        """
+        for lane in self._crawl_lanes:
+            if not lane.enabled:
+                continue
+            lane.force = True
+            lane.wake.set()
+
+
+class _Stats:
+    """Refresh counters, their log lines and the two stats views (GET /api/stats
+    and the public /api/summary). A mixin of Refresher, which owns ``_stats``,
+    ``_started``, ``_lock``, the on-demand queue and the lanes; the lane gauges come
+    from _LaneScheduler."""
+
+    def _eta_seconds(self, n: int) -> float:
+        """Rough seconds to drain ``n`` queued fetches at the on-demand rate limit.
+
+        The queued items live on the on-demand lane, which drains at ``demand_rate``:
+        each fetch waits the base rate plus, on average, half the 0..min(rate,10)s
+        jitter, plus ~1s for the request itself. Good enough for an ETA hint.
+        """
+        return n * (scrape.mean_gap(self.demand_rate) + 1.0)
+
+    def stats(self) -> dict:
+        """Snapshot of the crawl counters (served at GET /api/stats)."""
+        with self._lock:
+            snap = dict(self._stats)
+            queued = self._demand.qsize()
+            pending = len(self._pending)
+            crawl = self._gauge_locked(self._ansm_lane)
+            crawl_eu = self._gauge_locked(self._eu_lane)
+        snap["done"] = snap["ok"] + snap["empty"] + snap["error"]
+        snap["queued"] = queued  # on-demand (button/auto) requests waiting
+        snap["pending"] = pending
+        snap["eta_seconds"] = round(self._eta_seconds(queued), 1)
+        snap["crawl"] = crawl        # ANSM /rcp/ lane (unchanged shape)
+        snap["crawl_eu"] = crawl_eu  # EMA /eu/ lane, same shape
+        return snap
+
+    def public_summary(self) -> dict:
+        """A curated, public-safe view of the crawl/refresh state for the /status page,
+        served at GET /api/summary. Derived from stats() (single source of truth), it
+        keeps the reader-facing progress (crawl sweep %, ETA, refresh outcomes by source,
+        on-demand queue) and adds uptime + a per-lane percent-done, but omits nothing
+        sensitive here (the refresh counters mirror public data). The detailed /api/stats
+        stays internal-only; this is the one meant to be reachable from a browser."""
+        s = self.stats()
+
+        def lane_view(g: dict) -> dict:
+            total = g["total"]
+            done = max(0, total - g["due"])
+            # Effective per-page crawl cadence (base rate + mean jitter), matching
+            # _crawl_eta_seconds, so /status can turn it into a pages/min rate and
+            # compare it against the embedder's indexing speed (the catch-up gauge).
+            rate = g["rate_seconds"]
+            cadence = scrape.mean_gap(rate) if rate > 0 else 0.0
+            return {"enabled": g["enabled"], "total": total, "due": g["due"],
+                    "done": done, "idle": g["idle"], "ttl_days": g["ttl_days"],
+                    "forced": g["forced"], "eta_seconds": g["eta_seconds"],
+                    "rate_seconds": rate,
+                    "pages_per_min": round(60.0 / cadence, 1) if cadence > 0 else 0.0,
+                    "pct": round(100.0 * done / total, 1) if total else 0.0}
+
+        return {
+            "uptime_seconds": round(time.monotonic() - self._started, 1),
+            "crawl": lane_view(s["crawl"]),        # ANSM /rcp/ lane
+            "crawl_eu": lane_view(s["crawl_eu"]),  # EMA /eu/ lane
+            # Completed refreshes since boot, by outcome and by trigger source.
+            "refreshes": {k: s[k] for k in ("ok", "empty", "error", "done",
+                                            "user", "auto", "crawl")},
+            # Request-level short-circuits (min-interval hit / queue full / hourly cap).
+            "shortcircuits": {k: s[k] for k in ("fresh", "busy", "budget")},
+            # On-demand (button/auto) lane queue depth + drain ETA.
+            "ondemand": {"queued": s["queued"], "pending": s["pending"],
+                         "eta_seconds": s["eta_seconds"]},
+        }
+
+    def _record(self, cis: str, source: str, outcome: str, result: str) -> None:
+        """Tally one completed refresh and emit its progress line.
+
+        ``outcome`` is 'ok' | 'empty' | 'error'. A crawler item logs which lane
+        (rcp/eu) plus its position in that lane's rotation and its sweep ETA
+        (still-due pages x the lane's rate); an on-demand item logs the live
+        on-demand queue depth + ETA. A compact aggregate line (both lanes' due +
+        ETA) follows at the first completion and every 10th, so the overall run is
+        visible at INFO without the per-request DEBUG chatter.
+        """
+        with self._lock:
+            self._stats[outcome] += 1
+            self._stats[source] += 1
+            snap = dict(self._stats)
+            to_go = self._demand.qsize()
+            lane = None
+            if source == "crawl":
+                lane = self._eu_lane if self._is_eu(cis) else self._ansm_lane
+                lane_name, lane_idx, lane_total = lane.name, lane.idx, len(lane.order)
+                lane_due = self._due_count_locked(lane)
+                lane_rate = lane.rate
+            agg = None
+            done = snap["ok"] + snap["empty"] + snap["error"]
+            if done == 1 or done % 10 == 0:  # both lanes' due, only for the aggregate
+                agg = (self._due_count_locked(self._ansm_lane),
+                       self._due_count_locked(self._eu_lane))
+        if source == "crawl":
+            logger.info("crawl[{}] {}/{} {} -> {} | due~{} sweep-eta {} | on-demand to-go={}",
+                        lane_name, lane_idx, lane_total, cis, result, lane_due,
+                        _fmt_dhm(self._crawl_eta_seconds(lane_due, lane_rate)), to_go)
+        else:
+            logger.info("refreshed {} [{}] -> {} | on-demand to-go={} eta {}", cis, source,
+                        result, to_go, scrape._fmt_dur(self._eta_seconds(to_go)))
+        if agg is not None:
+            a_due, e_due = agg
+            logger.info(
+                "stats | done={} (crawl={} auto={} user={}) ok={} empty={} err={} "
+                "| rcp-crawl due~{} eta {} | eu-crawl due~{} eta {} | on-demand to-go={} eta {}",
+                done, snap["crawl"], snap["auto"], snap["user"],
+                snap["ok"], snap["empty"], snap["error"],
+                a_due, _fmt_dhm(self._crawl_eta_seconds(a_due, self._ansm_lane.rate)),
+                e_due, _fmt_dhm(self._crawl_eta_seconds(e_due, self._eu_lane.rate)),
+                to_go, scrape._fmt_dur(self._eta_seconds(to_go)),
+            )
+
+
+class Refresher(_LaneScheduler, _Stats):
     """Serialises refreshes behind rate-limited worker threads, one per lane.
 
     Splitting the lanes onto separate workers is what makes a click feel instant:
@@ -234,45 +581,10 @@ class Refresher:
         # Monotonic start mark, so the public /api/summary can report uptime and the
         # reader of the /status page knows the counters above are "since last reboot".
         self._started = time.monotonic()
-        # Prime build.py's render globals (names + page template + cross-drug
-        # backlink index) once, so render_record() can run outside its normal pool
-        # worker AND a refreshed page carries the same "Médicaments liés" links a
-        # full build would produce (build_xref_index needs the BDPM composition +
-        # frequency files, mounted read-only into this container; absent them it
-        # returns {} and the rebuilt page simply has no backlinks).
-        names = build.load_names()
-        tpl = (build.SRC / "rcp.html").read_text(encoding="utf-8")
-        # Restrict link targets to CIS that already have a built page. This
-        # container has no CIS_RCP.csv (only dist/rcp is mounted), so derive the
-        # page set from the rendered files rather than the source. Prevents a
-        # backlink to a pageless CIS (which would 404, e.g. HELICOBACTER). The
-        # crawler is also restricted to this set (it never fetches a pageless CIS).
-        page_cis = build.page_cis_from_dist()
-        self._page_cis = page_cis
-        xref = build.build_xref_index(names, page_cis)
-        # Active-substance search strings for the external-reference pill row a
-        # refreshed page carries (build._ref_links_html), same as a full build. Reads
-        # CIS_COMPO_bdpm.txt, mounted read-only here for the backlink index; absent it
-        # the row falls back to each drug's brand root.
-        substances = build.load_substances()
-        logger.info(
-            "primed render: {} names, {} pages, {} backlink terms, {} substance links",
-            len(names), len(page_cis), len(xref), len(substances),
-        )
-        build._init_worker(names, tpl, xref, substances)
-        self._tpl = tpl  # reused by render_eu_page for on-demand /eu/ refreshes
-        # EMA (/eu/) lane state. A centrally-authorized drug has no /rcp/ page; its
-        # SmPC/notice lives in an EMA PDF that scrape-ema.py fetches + converts into
-        # a data/eu overlay, which build.render_eu_page turns into the /eu/ page.
-        # An on-demand refresh of such a page must go through THIS lane, not the
-        # ANSM scrape (which would come back empty). A CIS is a /eu/ one when it is
-        # centrally authorized (in the cap-meta set) but has no /rcp/ page.
-        self._cap = build.load_cap_meta()
-        self._eu_cis = frozenset(c for c in self._cap if c not in page_cis)
-        # Presentations of one product share a single EMA PDF/overlay, so a /eu/
-        # page with no overlay of its own borrows a sibling's (build.resolve_eu).
-        # Group once; drives _eu_url + the EMA crawl order.
-        self._auth_groups = build.auth_groups(self._cap)
+        ctx = RenderContext()
+        page_cis = ctx.page_cis
+        self._page_cis, self._tpl, self._cap = page_cis, ctx.tpl, ctx.cap
+        self._eu_cis, self._auth_groups = ctx.eu_cis, ctx.auth_groups
         # Separate manifest so the EMA TTL/last_fetch never collides with the ANSM
         # one; ema_links maps CIS -> the exact EMA PDF URL harvested into the ANSM
         # manifest (fallback: the URL baked on an existing overlay, see _eu_url).
@@ -424,246 +736,6 @@ class Refresher:
     def is_pending(self, cis: str) -> bool:
         with self._lock:
             return cis in self._pending
-
-    def _eta_seconds(self, n: int) -> float:
-        """Rough seconds to drain ``n`` queued fetches at the on-demand rate limit.
-
-        The queued items live on the on-demand lane, which drains at ``demand_rate``:
-        each fetch waits the base rate plus, on average, half the 0..min(rate,10)s
-        jitter, plus ~1s for the request itself. Good enough for an ETA hint.
-        """
-        return n * (scrape.mean_gap(self.demand_rate) + 1.0)
-
-    def _due_count_locked(self, lane: _CrawlLane) -> int:
-        """Count a lane's crawl pages still due per its TTL. CALLER MUST HOLD ``_lock``.
-
-        A live sweep-size hint: how many pages the lane still has to fetch before it
-        goes idle. O(len(order)) but cheap (a dict lookup + one ISO parse each), and
-        only ever run under the lock the callers already hold.
-        """
-        if not lane.enabled:
-            return 0
-        return sum(1 for cis in lane.order
-                   if scrape.is_due(lane.manifest.get(cis), lane.ttl_days))
-
-    @staticmethod
-    def _crawl_eta_seconds(due: int, rate: float) -> float:
-        """Rough seconds to finish a crawl sweep of ``due`` pages on a lane's ``rate``.
-
-        Each lane crawler is serial on its slow rate: each due page costs the base
-        rate plus, on average, half the 0..min(rate,10)s jitter. Mirrors
-        ``_eta_seconds`` for the on-demand lane. Zero when nothing is due (idle).
-        """
-        return due * scrape.mean_gap(rate)
-
-    def _gauge_locked(self, lane: _CrawlLane) -> dict:
-        """One lane's crawl gauge for GET /api/stats. CALLER MUST HOLD ``_lock``.
-
-        During a forced re-crawl (deploy.sh --rebuild), pages are refetched
-        regardless of the TTL, so the remaining-to-fetch count is the larger of the
-        TTL-due count and the forced backlog; ``forced`` exposes that backlog so an
-        operator can watch a --rebuild sweep drain.
-        """
-        due = max(self._due_count_locked(lane), len(lane.force_pending))
-        return {"enabled": lane.enabled, "total": len(lane.order), "idx": lane.idx,
-                "ttl_days": lane.ttl_days, "idle": lane.idle, "due": due,
-                "forced": len(lane.force_pending),
-                "rate_seconds": round(lane.rate, 1),
-                "eta_seconds": round(self._crawl_eta_seconds(due, lane.rate), 1)}
-
-    def stats(self) -> dict:
-        """Snapshot of the crawl counters (served at GET /api/stats)."""
-        with self._lock:
-            snap = dict(self._stats)
-            queued = self._demand.qsize()
-            pending = len(self._pending)
-            crawl = self._gauge_locked(self._ansm_lane)
-            crawl_eu = self._gauge_locked(self._eu_lane)
-        snap["done"] = snap["ok"] + snap["empty"] + snap["error"]
-        snap["queued"] = queued  # on-demand (button/auto) requests waiting
-        snap["pending"] = pending
-        snap["eta_seconds"] = round(self._eta_seconds(queued), 1)
-        snap["crawl"] = crawl        # ANSM /rcp/ lane (unchanged shape)
-        snap["crawl_eu"] = crawl_eu  # EMA /eu/ lane, same shape
-        return snap
-
-    def public_summary(self) -> dict:
-        """A curated, public-safe view of the crawl/refresh state for the /status page,
-        served at GET /api/summary. Derived from stats() (single source of truth), it
-        keeps the reader-facing progress (crawl sweep %, ETA, refresh outcomes by source,
-        on-demand queue) and adds uptime + a per-lane percent-done, but omits nothing
-        sensitive here (the refresh counters mirror public data). The detailed /api/stats
-        stays internal-only; this is the one meant to be reachable from a browser."""
-        s = self.stats()
-
-        def lane_view(g: dict) -> dict:
-            total = g["total"]
-            done = max(0, total - g["due"])
-            # Effective per-page crawl cadence (base rate + mean jitter), matching
-            # _crawl_eta_seconds, so /status can turn it into a pages/min rate and
-            # compare it against the embedder's indexing speed (the catch-up gauge).
-            rate = g["rate_seconds"]
-            cadence = scrape.mean_gap(rate) if rate > 0 else 0.0
-            return {"enabled": g["enabled"], "total": total, "due": g["due"],
-                    "done": done, "idle": g["idle"], "ttl_days": g["ttl_days"],
-                    "forced": g["forced"], "eta_seconds": g["eta_seconds"],
-                    "rate_seconds": rate,
-                    "pages_per_min": round(60.0 / cadence, 1) if cadence > 0 else 0.0,
-                    "pct": round(100.0 * done / total, 1) if total else 0.0}
-
-        return {
-            "uptime_seconds": round(time.monotonic() - self._started, 1),
-            "crawl": lane_view(s["crawl"]),        # ANSM /rcp/ lane
-            "crawl_eu": lane_view(s["crawl_eu"]),  # EMA /eu/ lane
-            # Completed refreshes since boot, by outcome and by trigger source.
-            "refreshes": {k: s[k] for k in ("ok", "empty", "error", "done",
-                                            "user", "auto", "crawl")},
-            # Request-level short-circuits (min-interval hit / queue full / hourly cap).
-            "shortcircuits": {k: s[k] for k in ("fresh", "busy", "budget")},
-            # On-demand (button/auto) lane queue depth + drain ETA.
-            "ondemand": {"queued": s["queued"], "pending": s["pending"],
-                         "eta_seconds": s["eta_seconds"]},
-        }
-
-    # -- perpetual crawler (one instance per lane) ---------------------------
-
-    def _build_crawl_order(self, lane: _CrawlLane) -> None:
-        """Build the frequency-ordered page list a lane rotates through.
-
-        Reuses the lane's ``order_fn`` (scrape.build_queue's frequency ordering, the
-        SAME the batch scrapers use), restricted to CIS that actually render a page.
-        Runs in the worker thread so the HTTP server can start serving
-        immediately; per-page due-ness is checked live in _claim_next_crawl, not
-        frozen here. Degrades to no crawler (empty order) if the BDPM inputs are
-        missing rather than crashing the service.
-
-        Also REBUILT whenever ``lane.stale`` is set (once per completed rotation, and
-        after _harvest_ema_url seeds a new EMA group), so an order is never frozen at
-        startup: a /eu/ group seeded later, or a page that appeared since, joins the
-        rotation. A rebuild that fails keeps the previous order.
-        """
-        if not lane.enabled:
-            return
-        lane.stale = False  # cleared BEFORE building, so a link harvested meanwhile re-marks it
-        try:
-            order = lane.order_fn()
-        except SystemExit as exc:  # e.g. missing CIS_bdpm; degrade, don't crash
-            if lane.order:
-                logger.warning("{} crawler: order rebuild failed, keeping the previous "
-                               "one: {}", lane.name, exc)
-                return
-            logger.warning("{} crawler disabled: {}", lane.name, exc)
-            lane.enabled = False
-            return
-        previous = len(lane.order)
-        with self._lock:
-            lane.order = order
-            if lane.idx >= len(order):
-                lane.idx = 0
-        if len(order) != previous:
-            logger.info("{} crawler armed: {} pages in frequency order, ttl {}d, rate {}s",
-                        lane.name, len(order), lane.ttl_days, lane.rate)
-
-    def _claim_next_crawl(self, lane: _CrawlLane) -> str | None:
-        """Claim the lane's next page to crawl, or None if there is nothing to do.
-
-        Normally rotates a cursor through the frequency-ordered page list, returning
-        the first CIS that is due per the lane TTL (see scrape.is_due) and not already
-        queued/in flight (in the SHARED ``_pending``, so the two lanes + on-demand
-        never double-fetch a CIS). The claimed CIS is marked pending as "crawl"; a
-        full rotation with nothing due flips the lane to idle and returns None.
-
-        When a full re-crawl was armed (deploy.sh --rebuild -> SIGHUP set
-        ``lane.force``), the flag is consumed here by seeding ``force_pending`` with
-        the whole order, and those pages are then handed out in frequency order
-        IGNORING the TTL, one full pass, before normal rotation resumes. Seeding
-        happens here (not in the handler) so it always reads the fully-built order,
-        even if the signal raced ahead of _build_crawl_order.
-        """
-        with self._lock:
-            n = len(lane.order)
-            if not n:
-                lane.idle = True
-                return None
-            if lane.force:
-                # Consume the one-shot force flag: (re)start a full forced pass.
-                lane.force_pending = set(lane.order)
-                lane.force = False
-                # Logged here, not in the SIGHUP handler: loguru takes a lock, and a
-                # handler interrupting the main thread mid-log would deadlock on it.
-                logger.info("{} crawler: forced re-crawl started ({} page(s)); overlays "
-                            "keep serving until each is re-fetched",
-                            lane.name, len(lane.force_pending))
-            if lane.force_pending:
-                # Forced pass: next not-in-flight page, in frequency order, regardless
-                # of TTL. Existing overlays keep serving until each is re-fetched.
-                for cis in lane.order:
-                    if cis in lane.force_pending and cis not in self._pending:
-                        lane.force_pending.discard(cis)
-                        self._pending[cis] = "crawl"
-                        lane.idle = False
-                        lane.idle_logged = False
-                        return cis
-                # All still-forced pages are momentarily in flight elsewhere; fall
-                # through to the TTL rotation (they get re-checked next call).
-            for _ in range(n):
-                cis = lane.order[lane.idx]
-                lane.idx = (lane.idx + 1) % n
-                if lane.idx == 0:  # a rotation completed: refresh the order
-                    lane.stale = True
-                if cis in self._pending:
-                    continue  # already queued/in flight (on-demand or other lane)
-                if scrape.is_due(lane.manifest.get(cis), lane.ttl_days):
-                    self._pending[cis] = "crawl"
-                    lane.idle = False
-                    lane.idle_logged = False
-                    return cis
-            lane.idle = True
-            return None
-
-    def _idle_wait_seconds(self, lane: _CrawlLane) -> float:
-        """Seconds until the lane's oldest fresh page next crosses its TTL (capped).
-
-        Called only after a full rotation found nothing due: wake at the soonest
-        ``scrape.due_at`` (a page aging past the TTL, or a failed one reaching its
-        retry window) so the crawler resumes exactly then, but re-poll at least
-        hourly so a manifest or clock change is noticed. A page due now (no/invalid
-        timestamp) returns ~immediately.
-        """
-        cap = 3600.0
-        now = datetime.now(timezone.utc)
-        soonest: float | None = None
-        with self._lock:
-            for cis in lane.order:
-                at = scrape.due_at(lane.manifest.get(cis), lane.ttl_days)
-                if at is None:
-                    return 1.0
-                secs = (at - now).total_seconds()
-                if soonest is None or secs < soonest:
-                    soonest = secs
-        if soonest is None:
-            return cap
-        return max(1.0, min(soonest, cap))
-
-    def request_recrawl(self) -> None:
-        """Arm a full forced re-crawl of every enabled lane (deploy.sh --rebuild,
-        delivered as SIGHUP; see the handler in main()).
-
-        Signal-safe: it only flips each lane's one-shot ``force`` flag and sets its
-        ``wake`` Event, both plain non-blocking writes, so it never takes ``_lock``
-        (the main thread runs this from the signal handler and must not risk blocking
-        on a worker's critical section). The real work (seeding ``force_pending`` from
-        the lane order and handing pages out ignoring the TTL) happens in the worker
-        via ``_claim_next_crawl``; ``wake`` bumps an idle worker out of its sleep so
-        the sweep starts at once. Existing overlays are kept the whole time and keep
-        serving until each page is re-fetched. Logs nothing (a signal handler must
-        not take loguru's lock): the worker logs when it consumes the flag.
-        """
-        for lane in self._crawl_lanes:
-            if not lane.enabled:
-                continue
-            lane.force = True
-            lane.wake.set()
 
     # -- public API ----------------------------------------------------------
 
@@ -879,51 +951,6 @@ class Refresher:
     def _persist_manifest(self) -> None:
         """Persist the ANSM scrape manifest (thin wrapper over _persist)."""
         self._persist(self._manifest)
-
-    def _record(self, cis: str, source: str, outcome: str, result: str) -> None:
-        """Tally one completed refresh and emit its progress line.
-
-        ``outcome`` is 'ok' | 'empty' | 'error'. A crawler item logs which lane
-        (rcp/eu) plus its position in that lane's rotation and its sweep ETA
-        (still-due pages x the lane's rate); an on-demand item logs the live
-        on-demand queue depth + ETA. A compact aggregate line (both lanes' due +
-        ETA) follows at the first completion and every 10th, so the overall run is
-        visible at INFO without the per-request DEBUG chatter.
-        """
-        with self._lock:
-            self._stats[outcome] += 1
-            self._stats[source] += 1
-            snap = dict(self._stats)
-            to_go = self._demand.qsize()
-            lane = None
-            if source == "crawl":
-                lane = self._eu_lane if self._is_eu(cis) else self._ansm_lane
-                lane_name, lane_idx, lane_total = lane.name, lane.idx, len(lane.order)
-                lane_due = self._due_count_locked(lane)
-                lane_rate = lane.rate
-            agg = None
-            done = snap["ok"] + snap["empty"] + snap["error"]
-            if done == 1 or done % 10 == 0:  # both lanes' due, only for the aggregate
-                agg = (self._due_count_locked(self._ansm_lane),
-                       self._due_count_locked(self._eu_lane))
-        if source == "crawl":
-            logger.info("crawl[{}] {}/{} {} -> {} | due~{} sweep-eta {} | on-demand to-go={}",
-                        lane_name, lane_idx, lane_total, cis, result, lane_due,
-                        _fmt_dhm(self._crawl_eta_seconds(lane_due, lane_rate)), to_go)
-        else:
-            logger.info("refreshed {} [{}] -> {} | on-demand to-go={} eta {}", cis, source,
-                        result, to_go, scrape._fmt_dur(self._eta_seconds(to_go)))
-        if agg is not None:
-            a_due, e_due = agg
-            logger.info(
-                "stats | done={} (crawl={} auto={} user={}) ok={} empty={} err={} "
-                "| rcp-crawl due~{} eta {} | eu-crawl due~{} eta {} | on-demand to-go={} eta {}",
-                done, snap["crawl"], snap["auto"], snap["user"],
-                snap["ok"], snap["empty"], snap["error"],
-                a_due, _fmt_dhm(self._crawl_eta_seconds(a_due, self._ansm_lane.rate)),
-                e_due, _fmt_dhm(self._crawl_eta_seconds(e_due, self._eu_lane.rate)),
-                to_go, scrape._fmt_dur(self._eta_seconds(to_go)),
-            )
 
     def _process(self, client, cis: str, source: str) -> None:
         """Dispatch one refresh to the right lane: the EMA PDF path for a /eu/ CIS,
