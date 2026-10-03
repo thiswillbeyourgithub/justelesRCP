@@ -121,46 +121,52 @@
       });
     }
 
-    const box = document.createElement("p");
-    box.className = "rcp-refresh";
-    const btn = document.createElement("button");
-    btn.type = "button";
-    // On a stub we have no copy yet, so the action is "fetch it", not "refresh it".
-    // Be explicit that justelesRCP ITSELF downloads + shows the document here: readers
-    // misread the old "Récupérer le RCP depuis l'EMA" as a link to go read it at the EMA.
-    btn.textContent = isEuStub
-      ? "Importer le RCP de l'EMA sur justelesRCP"
-      : "Rafraîchir maintenant";
-    const msg = document.createElement("span");
-    msg.className = "msg";
-    box.append(btn);
-    // Pull the server-rendered "Ouvrir la source officielle" link (baked as a
-    // no-JS fallback in .rcp-source) up INTO this control, right after the button
-    // with an "ou" separator, so the reader sees "Rafraîchir maintenant ou Ouvrir
-    // la source officielle" inside the freshness card. Only a lone source link is
-    // paired: both ANSM RCP pages and full /eu/ pages now carry a single source
-    // button (the direct EMA PDF on /eu/; the EMA search moved to "En savoir plus").
-    // No .rcp-source (e.g. a stub) => nothing to pair.
-    const srcP = document.querySelector(".rcp-source");
-    if (srcP && srcP.querySelectorAll(".official-link").length === 1) {
-      const link = srcP.querySelector(".official-link");
-      const or = document.createElement("span");
-      or.className = "rcp-refresh-or";
-      or.textContent = "ou";
-      box.append(or, link);
-      srcP.remove();
+    // The control: a button + a status span, placed in the freshness card. Returns
+    // the two elements the rest of this module drives.
+    function buildControl() {
+      const box = document.createElement("p");
+      box.className = "rcp-refresh";
+      const btn = document.createElement("button");
+      btn.type = "button";
+      // On a stub we have no copy yet, so the action is "fetch it", not "refresh it".
+      // Be explicit that justelesRCP ITSELF downloads + shows the document here: readers
+      // misread the old "Récupérer le RCP depuis l'EMA" as a link to go read it at the EMA.
+      btn.textContent = isEuStub
+        ? "Importer le RCP de l'EMA sur justelesRCP"
+        : "Rafraîchir maintenant";
+      const msg = document.createElement("span");
+      msg.className = "msg";
+      box.append(btn);
+      // Pull the server-rendered "Ouvrir la source officielle" link (baked as a
+      // no-JS fallback in .rcp-source) up INTO this control, right after the button
+      // with an "ou" separator, so the reader sees "Rafraîchir maintenant ou Ouvrir
+      // la source officielle" inside the freshness card. Only a lone source link is
+      // paired: both ANSM RCP pages and full /eu/ pages now carry a single source
+      // button (the direct EMA PDF on /eu/; the EMA search moved to "En savoir plus").
+      // No .rcp-source (e.g. a stub) => nothing to pair.
+      const srcP = document.querySelector(".rcp-source");
+      if (srcP && srcP.querySelectorAll(".official-link").length === 1) {
+        const link = srcP.querySelector(".official-link");
+        const or = document.createElement("span");
+        or.className = "rcp-refresh-or";
+        or.textContent = "ou";
+        box.append(or, link);
+        srcP.remove();
+      }
+      box.append(msg);
+      // Prefer to sit INSIDE the freshness "carton" (.rcp-asof), so the refresh
+      // control reads as belonging to those capture dates. A stub has no such card
+      // (no asofEl): fall back to just after the CIS line, else prepend to main.
+      if (asofEl) {
+        asofEl.append(box);
+      } else {
+        const anchor = main.querySelector(".cis");
+        if (anchor && anchor.parentNode) anchor.after(box);
+        else main.prepend(box);
+      }
+      return { btn, msg };
     }
-    box.append(msg);
-    // Prefer to sit INSIDE the freshness "carton" (.rcp-asof), so the refresh
-    // control reads as belonging to those capture dates. A stub has no such card
-    // (no asofEl): fall back to just after the CIS line, else prepend to main.
-    if (asofEl) {
-      asofEl.append(box);
-    } else {
-      const anchor = main.querySelector(".cis");
-      if (anchor && anchor.parentNode) anchor.after(box);
-      else main.prepend(box);
-    }
+    const { btn, msg } = buildControl();
 
     let polling = false;
     function setMsg(text) {
@@ -267,7 +273,8 @@
         });
     }
 
-    btn.addEventListener("click", () => {
+    // The button: ask for a refresh, then poll, or report busy/fresh/unavailable.
+    function onClick() {
       if (polling) return;
       btn.disabled = true;
       setMsg(askedMsg);
@@ -309,25 +316,31 @@
           setMsg("rafraîchissement indisponible.");
           forget();
         });
-    });
+    }
+    btn.addEventListener("click", onClick);
 
     // Restore the last outcome for this drug so a reload doesn't lose the feedback.
-    const stored = recall();
-    if (stored) {
-      if (stored.o === "retired") {
-        setNote(retiredNote);
-      } else if (stored.o === "pending") {
-        // A refresh was in flight when the page was left/reloaded: resume its poll.
-        polling = true;
-        btn.disabled = true;
-        setMsg(workingMsg);
-        pollUntilFresh(Date.now() + 90000);
-      } else if (stored.o === "updated") {
-        // Just reloaded after a successful refresh: one-shot confirmation, then clear.
-        setMsg("à jour, vérifié à l'instant.");
-        forget();
+    // Returns the stored record (or null) for autoRefresh's "known retired" check.
+    function restore() {
+      const stored = recall();
+      if (stored) {
+        if (stored.o === "retired") {
+          setNote(retiredNote);
+        } else if (stored.o === "pending") {
+          // A refresh was in flight when the page was left/reloaded: resume its poll.
+          polling = true;
+          btn.disabled = true;
+          setMsg(workingMsg);
+          pollUntilFresh(Date.now() + 90000);
+        } else if (stored.o === "updated") {
+          // Just reloaded after a successful refresh: one-shot confirmation, then clear.
+          setMsg("à jour, vérifié à l'instant.");
+          forget();
+        }
       }
+      return stored;
     }
+    const stored = restore();
 
     // Automatic, fire-and-forget refresh when the page is over a year old. The
     // server dedups + rate-limits, so many visitors on the same stale page cause a
@@ -341,16 +354,19 @@
     // Treat that as "known retired" so we skip the pointless >1yr auto-refetch of a
     // delisted RCP and don't stack a second note on top of the baked banner; a manual
     // click still re-checks and confirms via showRetired if it's still gone.
-    const bakedRetired = !!document.querySelector(".rcp-retired");
-    const knownRetired = bakedRetired || (stored && stored.o === "retired");
-    if (!knownRetired && Number.isFinite(ageDays) && ageDays > 365) {
-      refresh(cis, "auto")
-        .then((r) => r.json())
-        .then((s) => {
-          if (s && s.archived) showRetired();
-        })
-        .catch(() => {});
+    function autoRefresh(stored) {
+      const bakedRetired = !!document.querySelector(".rcp-retired");
+      const knownRetired = bakedRetired || (stored && stored.o === "retired");
+      if (!knownRetired && Number.isFinite(ageDays) && ageDays > 365) {
+        refresh(cis, "auto")
+          .then((r) => r.json())
+          .then((s) => {
+            if (s && s.archived) showRetired();
+          })
+          .catch(() => {});
+      }
     }
+    autoRefresh(stored);
   })();
 
   // A value is "set" only if it is a non-empty, non-placeholder string.
