@@ -308,9 +308,14 @@
       setMsg(askedMsg);
       remember("pending");
       refresh(cis, "user")
-        // 429 still carries a JSON {status: "busy"}; any other error (e.g. 404
+        // 429 means "busy" from either side: the service's own carries a JSON
+        // {status: "busy"}, Caddy's per-IP rate limit an empty body, so a body that
+        // does not parse still reads as busy. Any other error (e.g. 404
         // {status: "unknown"}) must not start a poll, so it lands in the catch.
-        .then((r) => (r.ok || r.status === 429 ? r.json() : Promise.reject(r.status)))
+        .then((r) => {
+          if (r.status === 429) return r.json().catch(() => ({ status: "busy" }));
+          return r.ok ? r.json() : Promise.reject(r.status);
+        })
         .then((s) => {
           if (s.archived) {
             showRetired();

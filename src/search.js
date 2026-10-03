@@ -176,7 +176,9 @@
   // Back/forward between the home page and a results URL.
   window.addEventListener("popstate", () => {
     const term = urlTerm();
-    if (term && !q.value) q.value = term;
+    // Always mirror the URL (an empty term clears the field), so Back never leaves
+    // the box showing a query that is not the one on screen.
+    q.value = term;
     showPage(term, false);
   });
 
