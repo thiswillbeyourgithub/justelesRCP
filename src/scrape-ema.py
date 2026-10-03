@@ -54,7 +54,6 @@ import os
 import random
 import re
 import time
-import unicodedata
 import urllib.parse
 from pathlib import Path
 
@@ -62,6 +61,7 @@ import click
 import httpx
 from loguru import logger
 
+import bdpm  # pure-stdlib sibling: fold_ascii (and the EMA link helpers below)
 import svc_http  # sibling loader shared with the services
 
 # data/ hangs off the repo root (this script's dir's parent).
@@ -150,8 +150,8 @@ EMA_EPAR_JSON_URL = (
 
 
 def _fold(s: str) -> str:
-    """Accent-fold + lowercase for brand matching (same idiom as build._sort_key)."""
-    return unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode().lower().strip()
+    """Accent-fold + lowercase for brand matching (same fold as build._sort_key)."""
+    return bdpm.fold_ascii(s).lower().strip()
 
 
 def _parse_ema_documents(text: str) -> list[dict]:

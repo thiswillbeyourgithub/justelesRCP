@@ -315,7 +315,7 @@ class Refresher:
         to fetch); its pages stay stubs until the button harvests a link live.
         Reuses scrape.build_queue's ordering; raises SystemExit (caught by
         _build_crawl_order) if the BDPM inputs are gone."""
-        have = {p.name.split(".")[0] for p in build.EU_OVERLAY_DIR.glob("*.html*")}
+        have = build._overlay_cis(build.EU_OVERLAY_DIR)
         seeded = (set(self._ema_links) | have) & self._eu_cis
         if not seeded:
             return []

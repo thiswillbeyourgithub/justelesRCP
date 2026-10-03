@@ -42,7 +42,6 @@ import shutil
 import struct
 import sys
 import time
-import unicodedata
 import urllib.parse
 from datetime import date, datetime
 from multiprocessing import Pool
@@ -227,7 +226,7 @@ def _load_manifest() -> dict:
 
 def slugify(text: str) -> str:
     """ASCII, lowercase, hyphenated slug suitable for a URL path segment."""
-    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
+    text = bdpm.fold_ascii(text)
     text = re.sub(r"[^a-zA-Z0-9]+", "-", text).strip("-").lower()
     return text[:80] or "rcp"
 
@@ -358,6 +357,22 @@ def _overlay_path(cis: str, overlay_dir: Path | None = None) -> Path | None:
     return max(cands, key=lambda p: p.stat().st_mtime)
 
 
+# Canonical CIS matcher (an 8-digit code): the one Python definition, shared by the
+# overlay iterators and the embed service (which imports build).
+CIS_RE = re.compile(r"^\d{8}$")
+
+
+def _overlay_cis(overlay_dir: Path) -> set[str]:
+    """The CIS that have an overlay file (plain or gzipped, any size) in
+    ``overlay_dir``, read off the filenames: the CIS is the name up to the first dot.
+    Empty when the directory is missing. Resolve one CIS's file with _overlay_path."""
+    if not overlay_dir.is_dir():
+        return set()
+    names = (p.name.split(".", 1)[0]
+             for p in (*overlay_dir.glob("*.html"), *overlay_dir.glob("*.html.gz")))
+    return {cis for cis in names if CIS_RE.match(cis)}
+
+
 def _read_overlay(path: Path) -> str:
     """Decode an overlay file to HTML text, transparently un-gzipping if needed.
 
@@ -459,21 +474,13 @@ def _present_cis() -> set[str]:
     so no link 404s.
     """
     present = _baseline_present_cis()
-    if RCP_OVERLAY_DIR.is_dir():
-        overlay_cis = {
-            p.name.split(".", 1)[0]
-            for p in (
-                *RCP_OVERLAY_DIR.glob("*.html"),
-                *RCP_OVERLAY_DIR.glob("*.html.gz"),
-            )
-        }
-        for cis in overlay_cis:
-            path = _overlay_path(cis)
-            try:
-                if path is not None and path.stat().st_size > 0:
-                    present.add(cis)
-            except OSError:
-                continue
+    for cis in _overlay_cis(RCP_OVERLAY_DIR):
+        path = _overlay_path(cis)
+        try:
+            if path is not None and path.stat().st_size > 0:
+                present.add(cis)
+        except OSError:
+            continue
     return present
 
 
@@ -549,21 +556,16 @@ def iter_rcp_raw(scrape_dates: dict[str, str] | None = None, stats: dict | None 
                 yield cis, raw, asof
     # Overlay-only drugs: scraped CIS that never existed in the 2022 baseline. The
     # CIS is the filename up to the first dot (8 digits, never dotted).
-    if RCP_OVERLAY_DIR.is_dir():
-        overlay_cis = {
-            p.name.split(".", 1)[0]
-            for p in (*RCP_OVERLAY_DIR.glob("*.html"), *RCP_OVERLAY_DIR.glob("*.html.gz"))
-        }
-        for cis in sorted(overlay_cis):
-            if cis in seen:
-                continue
-            raw = _overlay(cis)
-            if raw is None:
-                continue
-            if not raw.strip():
-                _bump_empty()
-                continue
-            yield cis, raw, scrape_dates.get(cis) or _overlay_date(cis)
+    for cis in sorted(_overlay_cis(RCP_OVERLAY_DIR)):
+        if cis in seen:
+            continue
+        raw = _overlay(cis)
+        if raw is None:
+            continue
+        if not raw.strip():
+            _bump_empty()
+            continue
+        yield cis, raw, scrape_dates.get(cis) or _overlay_date(cis)
 
 
 def iter_eu_raw():
@@ -575,13 +577,7 @@ def iter_eu_raw():
     by ema_pdf, so section_chunks segments it exactly like an RCP page. A CIS is
     either an ANSM RCP page OR an /eu/ page (never both), so their per-CIS
     <slug>.vec.json under dist/rcp vs dist/eu never collide across the two lanes."""
-    if not EU_OVERLAY_DIR.is_dir():
-        return
-    eu_cis = {
-        p.name.split(".", 1)[0]
-        for p in (*EU_OVERLAY_DIR.glob("*.html"), *EU_OVERLAY_DIR.glob("*.html.gz"))
-    }
-    for cis in sorted(eu_cis):
+    for cis in sorted(_overlay_cis(EU_OVERLAY_DIR)):
         path = _overlay_path(cis, EU_OVERLAY_DIR)
         if path is None:
             continue
@@ -1398,7 +1394,7 @@ def _is_filler_paragraph(text: str) -> bool:
     t = _norm_ws(text)
     if not t:
         return True
-    folded = unicodedata.normalize("NFKD", t).encode("ascii", "ignore").decode().lower()
+    folded = bdpm.fold_ascii(t).lower()
     if folded.strip(" .;:") == "sans objet":
         return True
     if "completer ulterieurement" in folded:
@@ -1602,7 +1598,7 @@ def _letter_key(label: str) -> str:
 
 def _first_letter(name: str) -> str:
     """Bucket a drug name under A-Z (accent-folded) or '#' for non-alpha."""
-    folded = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
+    folded = bdpm.fold_ascii(name)
     for ch in folded:
         if ch.isalpha():
             return ch.upper()
@@ -1610,7 +1606,7 @@ def _first_letter(name: str) -> str:
 
 
 def _sort_key(name: str) -> str:
-    return unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode().lower()
+    return bdpm.fold_ascii(name).lower()
 
 
 def write_browse(index: list[dict[str, str]]) -> int:
@@ -2333,9 +2329,6 @@ def write_vec_json(dist_path: Path, payload: dict) -> None:
 # The two overlay lanes as (dist subdir, overlay dir). Public: the embed service reuses
 # it (via iter_overlay_paths / _overlay_for) instead of re-declaring its own copy.
 OVERLAY_LANES = (("rcp", RCP_OVERLAY_DIR), ("eu", EU_OVERLAY_DIR))
-# Canonical CIS matcher (an 8-digit code): the one Python definition, shared by the
-# overlay iterators below and the embed service (which imports build).
-CIS_RE = re.compile(r"^\d{8}$")
 
 
 def dist_page_for(cis: str, subdir: str) -> Path | None:
@@ -2452,14 +2445,7 @@ def iter_overlay_paths():
     stale page and re-enqueue it on every pass (its ``.vec.json`` can never appear),
     pinning a phantom "en retard de N pages" backlog on /status forever."""
     for subdir, odir in OVERLAY_LANES:
-        if not odir.is_dir():
-            continue
-        seen: set[str] = set()
-        for ov in sorted((*odir.glob("*.html"), *odir.glob("*.html.gz"))):
-            cis = ov.name.split(".", 1)[0]
-            if cis in seen or not CIS_RE.match(cis):
-                continue
-            seen.add(cis)
+        for cis in sorted(_overlay_cis(odir)):
             path = _overlay_path(cis, odir)
             if path is None:
                 continue
@@ -2967,7 +2953,7 @@ def _is_central_proc(row: list[str]) -> bool:
     purely national (MRP/DCP) generic (e.g. every 'ABACAVIR ARROW ... Procédure
     décentralisée') as centrally-authorized, giving it a spurious /eu/ page."""
     for c in row:
-        folded = unicodedata.normalize("NFKD", c).encode("ascii", "ignore").decode().lower()
+        folded = bdpm.fold_ascii(c).lower()
         if "centralis" in folded and "decentralis" not in folded:
             return True
     return False

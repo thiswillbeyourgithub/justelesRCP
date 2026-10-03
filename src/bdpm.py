@@ -28,6 +28,14 @@ import unicodedata
 import urllib.parse
 
 
+def fold_ascii(text: str) -> str:
+    """Strip accents by NFKD-decomposing and dropping every non-ASCII byte
+    (paracétamol -> paracetamol). Case is kept: callers lower/upper as they need. The
+    one accent fold of the Python side (slugs, browse letters, sort keys, BDPM
+    tokens, brand matching)."""
+    return unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
+
+
 def tokens(text: str) -> set[str]:
     """Normalise a drug name/term to a set of comparable word tokens.
 
@@ -35,8 +43,7 @@ def tokens(text: str) -> set[str]:
     non-alphanumeric run, so a term matches a denomination regardless of case,
     accents, dosage punctuation or word order.
     """
-    folded = unicodedata.normalize("NFKD", text.upper())
-    folded = folded.encode("ascii", "ignore").decode("ascii")
+    folded = fold_ascii(text.upper())
     return {tok for tok in re.split(r"[^A-Z0-9]+", folded) if tok}
 
 
