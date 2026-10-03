@@ -48,6 +48,11 @@ import re
 import fitz  # PyMuPDF
 
 
+# Page ceiling for one product-information PDF. The largest real ones (multi-
+# presentation notices) run to a few hundred pages; anything far beyond that is
+# not an SmPC and is refused before parsing.
+MAX_PAGES = 400
+
 # A source image smaller than this on BOTH sides is chrome (pictogram/icon), not
 # a figure worth showing; dropped. Real SmPC figures (charts, structures) are
 # comfortably larger.
@@ -228,8 +233,17 @@ def convert(pdf_bytes: bytes) -> dict:
     per pack; the notice recurs per presentation). The SmPC group opens by
     default. ``toc`` is two levels: the groups, with the SmPC group's numbered
     sections as children. Figures are de-duplicated by xref (the same chart is
-    embedded once). ``html`` is "" for an empty/broken PDF."""
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    embedded once). ``html`` is "" for an empty/broken PDF. Raises ValueError on a
+    PDF over ``MAX_PAGES`` (the input is untrusted: a huge or crafted PDF must not
+    pin the CPU of the refresh service converting it); the doc is always closed."""
+    with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+        if doc.page_count > MAX_PAGES:
+            raise ValueError(f"PDF has {doc.page_count} pages (max {MAX_PAGES})")
+        return _convert_doc(doc)
+
+
+def _convert_doc(doc) -> dict:
+    """``convert``'s body, on an already-open, page-capped ``fitz`` document."""
     date = capture_date(doc)
     title = (doc.metadata or {}).get("title", "").strip()
     groups: list[dict] = []

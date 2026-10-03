@@ -817,7 +817,9 @@ Key facts that aren't obvious from a single file:
   not required to end in `.pdf`, real links include `..._fr.pdf-0` and `/fr/media/N`)
   gates it everywhere: `extract_ema_pdf`, `_ema_pi_index`, `_load_ema_links`, `_eu_pdf`,
   and `_fetch_pdf`, which follows redirects by hand (`_get_on_hosts`) so EVERY hop is
-  checked; the Wayback path is allowed only on `bdpm.WAYBACK_HOSTS`. **Internet
+  checked; the Wayback path is allowed only on `bdpm.WAYBACK_HOSTS`. Bodies are
+  streamed and abandoned past `EMA_PDF_MAX_BYTES` (60 MB), and `ema_pdf.convert`
+  refuses a PDF over `MAX_PAGES` (400) before parsing (untrusted input). **Internet
   Archive fallback:** when the live EMA PDF fails to download (network error, 404,
   or a 200 that is actually an HTML error page: `_fetch_pdf` requires the `%PDF-`
   signature), `process_one` falls back to the Wayback Machine (`_wayback_pdf`, the

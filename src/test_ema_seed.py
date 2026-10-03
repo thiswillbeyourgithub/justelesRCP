@@ -288,6 +288,43 @@ def test_pdf_fetch_refuses_offhost_redirect():
     print("ok  test_pdf_fetch_refuses_offhost_redirect")
 
 
+def test_pdf_fetch_and_convert_are_size_capped():
+    # An untrusted PDF must not exhaust the refresh container: the download is
+    # streamed and abandoned past the byte cap, and convert() refuses a PDF over the
+    # page cap before parsing it (previously both were unbounded).
+    import httpx
+    import fitz
+    big = b"%PDF-1.7 " + b"x" * 5000
+
+    def handler(req):
+        return httpx.Response(200, content=big)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        try:
+            sema._get_on_hosts(client, "https://www.ema.europa.eu/a.pdf",
+                               sema.scrape.bdpm.EMA_HOSTS, max_bytes=1000)
+            assert False, "oversized body was accepted"
+        except RuntimeError as exc:
+            assert "over 1000 bytes" in str(exc), exc
+        assert sema._fetch_pdf(client, "https://www.ema.europa.eu/a.pdf") == big
+    with fitz.open() as doc:
+        for _ in range(3):
+            doc.new_page()
+        pdf = doc.tobytes()
+    saved = sema.ema.MAX_PAGES
+    sema.ema.MAX_PAGES = 2
+    try:
+        try:
+            sema.ema.convert(pdf)
+            assert False, "over-page-cap PDF was converted"
+        except ValueError as exc:
+            assert "3 pages" in str(exc), exc
+    finally:
+        sema.ema.MAX_PAGES = saved
+    assert sema.ema.convert(pdf)["html"] == ""  # under the cap: converts (empty doc)
+    print("ok  test_pdf_fetch_and_convert_are_size_capped")
+
+
 if __name__ == "__main__":
     test_parse_tolerates_runon_records()
     test_pi_index_prefers_french_and_filters_type()
@@ -299,4 +336,5 @@ if __name__ == "__main__":
     test_refresh_refuses_unknown_cis()
     test_ema_url_host_check_blocks_spoofs()
     test_pdf_fetch_refuses_offhost_redirect()
+    test_pdf_fetch_and_convert_are_size_capped()
     print("\nAll tests passed.")
