@@ -47,16 +47,7 @@
 
   // ---- small DOM helpers ---------------------------------------------------
   function qs(sel, root) { return (root || document).querySelector(sel); }
-  function track(name, data) {
-    try { if (typeof window.trackEvent === "function") window.trackEvent(name, data || {}); }
-    catch (e) { /* analytics must never break the tour */ }
-  }
-  function el(tag, cls, text) {
-    var e = document.createElement(tag);
-    if (cls) e.className = cls;
-    if (text != null) e.textContent = text;
-    return e;
-  }
+  var J = window.jlrcp, track = J.track, el = J.el;
   function fire(node, type) {
     if (node) node.dispatchEvent(new Event(type, { bubbles: true }));
   }
@@ -329,7 +320,7 @@
     targets = [];
   }
 
-  function markSeen() { try { localStorage.setItem(SEEN_KEY, "1"); } catch (e) {} }
+  function markSeen() { J.lsSet(SEEN_KEY, "1"); }
 
   // "A tour is on screen right now". The only other greeter, changelog.js, stands
   // down on this flag instead of guessing from our localStorage key (which it cannot
@@ -730,8 +721,7 @@
     if (document.body && document.body.classList.contains("home")) {
       var back = false;
       try { back = sessionStorage.getItem(RESUME_KEY) === "home"; } catch (e) {}
-      var seen = null;
-      try { seen = localStorage.getItem(SEEN_KEY); } catch (e) {}
+      var seen = J.lsGet(SEEN_KEY);
       // A reader arriving on a shared results URL (/?q=… , search.js's results page)
       // came for that list: never auto-pop the tour over it. An explicit ?tour=1 still runs.
       var shared = params && (params.get("q") || params.get("query"));

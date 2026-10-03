@@ -28,24 +28,8 @@
   var data = null; // the parsed changelog.json, fetched at most once
   var overlay = null; // the open popup, if any
 
-  // private mode / storage disabled: degrade to "never auto-open"
-  function lsGet(key) {
-    try { return localStorage.getItem(key); } catch (e) { return null; }
-  }
-  function lsSet(key, val) {
-    try { localStorage.setItem(key, val); } catch (e) {}
-  }
-  function track(name, extra) {
-    try {
-      if (typeof window.trackEvent === "function") window.trackEvent(name, extra || {});
-    } catch (e) { /* analytics must never break the popup */ }
-  }
-  function el(tag, cls, text) {
-    var e = document.createElement(tag);
-    if (cls) e.className = cls;
-    if (text != null) e.textContent = text;
-    return e;
-  }
+  // Storage degrades to "never auto-open" in private mode (jlrcp.lsGet -> null).
+  var J = window.jlrcp, el = J.el, track = J.track, lsGet = J.lsGet, lsSet = J.lsSet;
 
   // "0.9.0" < "0.10.0": compare numerically, component by component.
   function cmp(a, b) {
@@ -57,22 +41,13 @@
     return 0;
   }
 
-  function frDate(iso) {
-    try {
-      var d = new Date(iso + "T12:00:00");
-      return d.toLocaleDateString("fr-FR", { day: "numeric", month: "long", year: "numeric" });
-    } catch (e) {
-      return iso;
-    }
-  }
-
   // ---- rendering -----------------------------------------------------------
   function renderRelease(rel) {
     var box = el("section", "changelog-release");
     // .changelog-version is a flex row, so the bare version text is already an
     // item next to the date; it needs no wrapper span of its own.
     var h = el("h3", "changelog-version", "Version " + rel.version);
-    h.appendChild(el("span", "changelog-date", frDate(rel.date)));
+    h.appendChild(el("span", "changelog-date", J.frDate(rel.date) || rel.date));
     box.appendChild(h);
     (rel.sections || []).forEach(function (sec) {
       // The French category labels ride in the JSON (build.py CHANGELOG_CATEGORIES),
@@ -109,30 +84,47 @@
     body.appendChild(frag);
   }
 
+  var prevFocus = null; // element focused before the overlay opened, restored on close
+
   function close() {
     if (!overlay) return;
     document.removeEventListener("keydown", onKey, true);
     document.body.classList.remove("changelog-open");
     overlay.remove();
     overlay = null;
+    if (prevFocus && prevFocus.focus) { try { prevFocus.focus(); } catch (e) {} }
+    prevFocus = null;
   }
 
   function onKey(ev) {
     if (ev.key === "Escape") { ev.preventDefault(); close(); }
   }
 
-  // The popup FRAME, independent of what it shows: overlay (click outside closes),
-  // titled card with a close cross, a scrolling body, a footer with a "Fermer" button,
-  // Escape to close, page frozen behind it. Exposed as window.jlrcpModal so another
-  // page script can open its own popup in the same frame (status.js's backlog table)
-  // instead of keeping a second copy of this logic. opts: {title, label, sub, cls};
-  // returns {card, body, foot, ok, close}, the caller fills body (and foot).
-  function frame(opts) {
+  // The bare full-screen LAYER every popup shares: one overlay at a time, a click on
+  // the overlay itself (not on its content) closes it, Escape closes it, the page is
+  // frozen behind it and focus returns to where it was on close. The caller fills
+  // the returned node. lightbox.js uses it directly; frame() below builds on it.
+  function layer(cls) {
     close();
-    overlay = el("div", "changelog-overlay");
+    prevFocus = document.activeElement;
+    overlay = el("div", cls);
     overlay.addEventListener("click", function (ev) {
-      if (ev.target === overlay) close(); // click outside the card dismisses it
+      if (ev.target === overlay) close(); // click outside the content dismisses it
     });
+    document.body.appendChild(overlay);
+    document.body.classList.add("changelog-open"); // freeze the page behind the overlay
+    document.addEventListener("keydown", onKey, true);
+    return overlay;
+  }
+
+  // The popup FRAME, independent of what it shows: a layer() holding a titled card
+  // with a close cross, a scrolling body and a footer with a "Fermer" button. Exposed
+  // as window.jlrcpModal so another page script can open its own popup in the same
+  // frame (status.js's backlog table) instead of keeping a second copy of this logic.
+  // opts: {title, label, sub, cls}; returns {card, body, foot, ok, close}, the caller
+  // fills body (and foot).
+  function frame(opts) {
+    var host = layer("changelog-overlay");
     var card = el("div", "changelog-modal" + (opts.cls ? " " + opts.cls : ""));
     card.setAttribute("role", "dialog");
     card.setAttribute("aria-modal", "true");
@@ -158,14 +150,11 @@
     foot.appendChild(ok);
     card.appendChild(foot);
 
-    overlay.appendChild(card);
-    document.body.appendChild(overlay);
-    document.body.classList.add("changelog-open"); // freeze the page behind the overlay
-    document.addEventListener("keydown", onKey, true);
+    host.appendChild(card);
     ok.focus();
     return { card: card, body: body, foot: foot, ok: ok, close: close };
   }
-  window.jlrcpModal = { open: frame, close: close };
+  window.jlrcpModal = { open: frame, layer: layer, close: close };
 
   function open(since) {
     var m = frame({

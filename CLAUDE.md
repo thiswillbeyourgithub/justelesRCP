@@ -618,7 +618,10 @@ Key facts that aren't obvious from a single file:
   Its modal frame (backdrop, card, scrolling body, footer, close cross, Escape/focus
   handling) is generic and exported as `window.jlrcpModal.open({title, label, sub, cls})`
   -> `{card, body, foot, ok, close}`; the `/status` backlog popup reuses it rather than
-  duplicating a modal, so a change to the frame goes in `frame()` there.
+  duplicating a modal, so a change to the frame goes in `frame()` there. `frame()` is
+  built on the bare `window.jlrcpModal.layer(cls)` (one overlay at a time, backdrop
+  click + Escape close, `body.changelog-open` freezes the page, focus restored on
+  close), which `src/lightbox.js` uses directly for its full-size image overlay.
   Keep the contract in sync across `docs/changelog/*/changelog.md` +
   `docs/changelog/README.md`, `parse_changelog`/`load_changelog`/`write_changelog`/
   `CHANGELOG_DIR`/`CHANGELOG_CATEGORIES`/`COMMIT_URL`/`_version_key` + the `main()`
@@ -1221,6 +1224,16 @@ Key facts that aren't obvious from a single file:
   assets `src/logo.svg` (SVG favicon linked in all four `src/*.html` heads + the
   README header) and `src/og.png` (the `og:image` card, regenerated from the logo)
   are copied to `dist/` by `main()` (`og.png` uncompressed).
+- **Shared client helpers live in `src/util.js`** (`window.jlrcp = {el, track, lsGet,
+  lsSet, lsDel, fold, frDate, ago}`: DOM element factory, guarded analytics forward,
+  storage that degrades in private mode, the accent-fold search and the semantic search
+  share, the UTC French date, the "il y a X" age). It is the FIRST deferred script in all
+  five `src/*.html` (deferred scripts run in document order, so every later one can use
+  it at load time) and is in `static_assets`. Do not re-add local copies of these in a
+  script. `theme.js` is the one exception for its first-paint read: it runs
+  synchronously in `<head>`, before `util.js`. Because the drug-page template and the
+  browse pages carry the `<script>` tag, a change here needs a FULL build, never
+  `deploy.sh --quick` alone (old pages would load the new scripts without `util.js`).
 - **Runtime config is injected, not baked.** Every page loads `/app-config.js`,
   which defines `window.__APP_CONFIG__` (optional umami analytics + a DEV
   banner). `src/app-config.js` is the local-dev fallback (all empty = nothing

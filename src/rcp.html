@@ -12,6 +12,8 @@
 <link rel="stylesheet" href="/style.css">
 <!-- Runtime config (umami metrics + dev banner); rendered by docker/entrypoint.sh. No-op when unset. -->
 <script src="/app-config.js"></script>
+<!-- Shared client helpers (window.jlrcp); first deferred script, the others use it. -->
+<script src="/util.js" defer></script>
 <!-- Build version (window.__APP_VERSION__), injected into [data-app-version] by app-init.js. -->
 <script src="/app-version.js" defer></script>
 <script src="/app-init.js" defer></script>

@@ -3774,6 +3774,7 @@ def write_static_assets(changelog: dict) -> None:
         "style.css",
         "search.js",
         "app-config.js",
+        "util.js",  # shared client helpers (window.jlrcp); first deferred script on every page
         "app-init.js",
         "dev-banner.js",
         "toc.js",

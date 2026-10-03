@@ -20,12 +20,7 @@
   var SEM_URL = "/api/sem/summary";
 
   // ---- tiny DOM + format helpers -----------------------------------------
-  function el(tag, cls, text) {
-    var n = document.createElement(tag);
-    if (cls) n.className = cls;
-    if (text != null) n.textContent = text;
-    return n;
-  }
+  var el = window.jlrcp.el;
 
   function setBody(id, node) {
     var host = document.getElementById(id);

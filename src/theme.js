@@ -26,7 +26,8 @@
   var root = document.documentElement;
 
   // Read the stored choice, defaulting to "auto" (follow the OS) for any missing or
-  // unexpected value.
+  // unexpected value. Kept local rather than window.jlrcp.lsGet: this file runs
+  // synchronously in <head>, before the deferred util.js.
   function read() {
     try {
       var v = localStorage.getItem(KEY);
@@ -71,7 +72,7 @@
 
     btn.addEventListener("click", function () {
       var next = MODES[(MODES.indexOf(read()) + 1) % MODES.length];
-      try { localStorage.setItem(KEY, next); } catch (e) { /* private mode: ignore */ }
+      window.jlrcp.lsSet(KEY, next); // util.js has run by the time anyone can click
       apply(next);
       refresh();
     });

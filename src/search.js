@@ -24,8 +24,7 @@
   let active = -1;
   let pageTerm = ""; // term the results page currently shows ("" = page hidden)
 
-  const normalize = (s) =>
-    s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  const normalize = window.jlrcp.fold;
 
   // Deep link: /?q=term (or ?query=term) shows the full results page, so another
   // page can link straight to a search (e.g. an EU-authorization stub linking to

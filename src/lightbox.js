@@ -9,7 +9,8 @@
  * whole backdrop is a large tap target to dismiss).
  *
  * CSP-safe: same-origin external script, no inline handlers, no eval, styling via
- * classes + CSSOM setters only. Loaded (deferred) by rcp.html; a no-op on pages with no
+ * classes + CSSOM setters only. Loaded (deferred) by rcp.html, after util.js and
+ * changelog.js; a no-op on pages with no
  * drug body or no images. UI strings are French (site convention); code + comments are
  * English. Keep in sync with the .lightbox* rules in style.css and the
  * <script src="/lightbox.js"> tag in src/rcp.html.
@@ -22,54 +23,32 @@
   var imgs = scope.querySelectorAll("img");
   if (!imgs.length) return;
 
-  var overlay = null;      // the current lightbox element, or null when closed
-  var prevFocus = null;    // element to restore focus to on close
-  var onKey = null;        // the active Escape handler (removed on close)
-
-  function close() {
-    if (!overlay) return;
-    document.body.classList.remove("lb-open");
-    if (onKey) document.removeEventListener("keydown", onKey, true);
-    onKey = null;
-    overlay.remove();
-    overlay = null;
-    if (prevFocus && prevFocus.focus) { try { prevFocus.focus(); } catch (e) {} }
-  }
+  // The overlay mechanics (one at a time, backdrop click + Escape close, page frozen,
+  // focus restored on close) are changelog.js's shared layer (window.jlrcpModal),
+  // loaded on every page before this file; only the image-specific bits live here.
+  var modal = window.jlrcpModal;
+  if (!modal) return;
+  var el = window.jlrcp.el;
 
   function open(src, alt) {
-    if (overlay) close();
-    prevFocus = document.activeElement;
-
-    overlay = document.createElement("div");
-    overlay.className = "lightbox";
+    var overlay = modal.layer("lightbox");
     overlay.setAttribute("role", "dialog");
     overlay.setAttribute("aria-modal", "true");
     overlay.setAttribute("aria-label", "Image agrandie");
-    // A backdrop click (anywhere but the image / close button) dismisses.
-    overlay.addEventListener("click", close);
 
-    var closeBtn = document.createElement("button");
+    var closeBtn = el("button", "lightbox-close", "×");
     closeBtn.type = "button";
-    closeBtn.className = "lightbox-close";
     closeBtn.setAttribute("aria-label", "Fermer l'image");
-    closeBtn.textContent = "×";
-    closeBtn.addEventListener("click", close);
+    closeBtn.addEventListener("click", modal.close);
 
-    var big = document.createElement("img");
-    big.className = "lightbox-img";
+    var big = el("img", "lightbox-img");
     big.src = src;
     big.alt = alt || "";
-    // Clicks on the image itself must NOT close (so a reader can pinch-zoom / drag it);
-    // only the backdrop, the close button, or Escape close.
-    big.addEventListener("click", function (ev) { ev.stopPropagation(); });
+    // A click on the image itself must NOT close (so a reader can pinch-zoom / drag
+    // it): the layer only closes on a click that lands on the backdrop itself.
 
     overlay.appendChild(closeBtn);
     overlay.appendChild(big);
-    document.body.appendChild(overlay);
-    document.body.classList.add("lb-open"); // freeze the page scroll behind the overlay
-
-    onKey = function (ev) { if (ev.key === "Escape") { ev.preventDefault(); close(); } };
-    document.addEventListener("keydown", onKey, true);
     try { closeBtn.focus(); } catch (e) {}
   }
 

@@ -8,6 +8,7 @@
 // window.__APP_CONFIG__ exists.
 (function () {
   const cfg = window.__APP_CONFIG__ || {};
+  const J = window.jlrcp;
 
   // Build version. Served at runtime from app-version.js (window.__APP_VERSION__,
   // written by build.py) rather than baked into each page, so page HTML stays
@@ -37,28 +38,6 @@
       if (isNaN(when.getTime())) return NaN;
       return Math.floor((Date.now() - when.getTime()) / 86400000);
     }
-    function humanAge(d) {
-      if (d < 1) return "aujourd'hui";
-      if (d < 31) return "il y a " + d + " jour" + (d > 1 ? "s" : "");
-      if (d < 365) return "il y a " + Math.max(1, Math.round(d / 30)) + " mois";
-      const yr = Math.floor(d / 365);
-      return "il y a " + yr + " an" + (yr > 1 ? "s" : "");
-    }
-    function frDate(iso) {
-      try {
-        // The ISO date is parsed as UTC midnight, so it must be formatted in UTC
-        // too: a reader west of Greenwich would otherwise see the previous day.
-        return new Intl.DateTimeFormat("fr-FR", {
-          day: "numeric",
-          month: "long",
-          year: "numeric",
-          timeZone: "UTC",
-        }).format(new Date(iso + "T00:00:00Z"));
-      } catch (_) {
-        return null; // Intl unavailable: keep build.py's baked absolute date
-      }
-    }
-
     const ansmIso = (el.getAttribute("data-rcp-ansm") || "").trim();
     const asofIso = (el.getAttribute("data-rcp-asof") || "").trim();
 
@@ -67,10 +46,10 @@
     const headDays = ageDays(headIso);
     const primary = el.querySelector(".rcp-primary");
     if (primary && !isNaN(headDays) && headDays >= 0) {
-      const d = frDate(headIso);
+      const d = J.frDate(headIso);
       if (d) {
         primary.textContent =
-          "Informations à jour au " + d + " (" + humanAge(headDays) + ").";
+          "Informations à jour au " + d + " (" + J.ago(headDays) + ").";
       }
     }
 
@@ -78,13 +57,13 @@
     const checked = el.querySelector(".rcp-checked");
     const asofDays = ageDays(asofIso);
     if (checked && !isNaN(asofDays) && asofDays >= 0) {
-      const d = frDate(asofIso);
+      const d = J.frDate(asofIso);
       if (d) {
         checked.textContent =
           "Version vérifiée par justelesRCP le " +
           d +
           " (" +
-          humanAge(asofDays) +
+          J.ago(asofDays) +
           ").";
       }
     }
@@ -208,17 +187,7 @@
     // retiré de la base): we keep showing our last captured copy and say so, instead
     // of reload-looping on a date that can never match (see the .archived handling).
     const copyLabel = bakedAsof
-      ? (function () {
-          try {
-            return new Date(bakedAsof + "T00:00:00Z").toLocaleDateString("fr-FR", {
-              month: "long",
-              year: "numeric",
-              timeZone: "UTC",
-            });
-          } catch (_) {
-            return "";
-          }
-        })()
+      ? J.frDate(bakedAsof, { month: "long", year: "numeric" }) || ""
       : "";
     const retiredNote =
       "L'ANSM ne publie plus de RCP pour ce médicament (retiré de la base). " +
@@ -233,16 +202,14 @@
     const STORE_KEY = "jlrcp_maj_" + cis;
     const STORE_TTL = 3 * 86400000; // keep an outcome visible for ~3 days, then forget
     function remember(outcome) {
-      try {
-        localStorage.setItem(STORE_KEY, JSON.stringify({ t: Date.now(), o: outcome }));
-      } catch (_) {}
+      J.lsSet(STORE_KEY, JSON.stringify({ t: Date.now(), o: outcome }));
     }
     function recall() {
       try {
-        const rec = JSON.parse(localStorage.getItem(STORE_KEY) || "null");
+        const rec = JSON.parse(J.lsGet(STORE_KEY) || "null");
         if (!rec || !rec.o) return null;
         if (Date.now() - (rec.t || 0) > STORE_TTL) {
-          localStorage.removeItem(STORE_KEY);
+          forget();
           return null;
         }
         return rec;
@@ -251,9 +218,7 @@
       }
     }
     function forget() {
-      try {
-        localStorage.removeItem(STORE_KEY);
-      } catch (_) {}
+      J.lsDel(STORE_KEY);
     }
 
     // The ANSM has no RCP for this drug: honest terminal state, never a reload.

@@ -193,9 +193,7 @@
 
   // Privacy-safe analytics: forward to app-init's guarded tracker (a no-op when
   // metrics are off / Do-Not-Track / umami absent). NEVER pass the query text here.
-  function track(name, data) {
-    if (typeof window.trackEvent === "function") window.trackEvent(name, data);
-  }
+  const track = window.jlrcp.track;
 
   // base64 -> Float32Array, decoding whichever quantisation the payload declares.
   // Mirrors build.py's quantize_int8 / quantize_binary; the two must never drift.
@@ -262,10 +260,8 @@
 
   // Accent-fold + lowercase a string and split it into word tokens >= MIN_TERM_LEN.
   function foldTokens(s) {
-    return (s || "")
-      .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, "")
-      .toLowerCase()
+    return window.jlrcp
+      .fold(s)
       .split(/[^a-z0-9]+/)
       .filter((w) => w.length >= MIN_TERM_LEN);
   }

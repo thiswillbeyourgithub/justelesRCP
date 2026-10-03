@@ -753,9 +753,9 @@ a:hover { text-decoration: underline; }
 /* Full-screen overlay showing a figure at full size, opened by clicking any image in
    the drug body. The backdrop (cursor: zoom-out) dismisses on click; the image itself
    does not (so pinch-zoom / drag work on mobile). */
-/* Freeze the page behind any full-screen overlay (the lightbox, the changelog popup).
-   One rule for both, so a third overlay only has to add its class here. */
-body.lb-open, body.changelog-open { overflow: hidden; }
+/* Freeze the page behind any full-screen overlay (the lightbox, the changelog popup,
+   the /status backlog table): all of them open through changelog.js's layer(). */
+body.changelog-open { overflow: hidden; }
 .lightbox {
   position: fixed; inset: 0; z-index: 2147483000;
   display: flex; align-items: center; justify-content: center;

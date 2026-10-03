@@ -49,15 +49,8 @@
   // WIP notice keeps showing until a real deployment lands.
   const DISMISS_KEY = "justelesRCP.devBannerDismissed";
   const deployToken = hasStart ? String(startedAt) : "";
-  function isDismissed() {
-    if (!deployToken) return false;
-    try {
-      return window.localStorage.getItem(DISMISS_KEY) === deployToken;
-    } catch (_) {
-      return false; // storage blocked/unavailable: fall back to always showing
-    }
-  }
-  if (isDismissed()) return;
+  // Storage blocked/unavailable reads as null: the banner just keeps showing.
+  if (deployToken && window.jlrcp.lsGet(DISMISS_KEY) === deployToken) return;
 
   // Human "il y a X minutes/heures/jours" from a count of elapsed seconds.
   function humanAgo(seconds) {
@@ -138,12 +131,7 @@
     if (e.target.closest("a")) return; // let the source link navigate
     banner.remove();
     if (timer) clearInterval(timer);
-    if (deployToken) {
-      try {
-        window.localStorage.setItem(DISMISS_KEY, deployToken);
-      } catch (_) {
-        // storage blocked (private mode, quota): dismissal just won't persist
-      }
-    }
+    // Storage blocked (private mode, quota): the dismissal just won't persist.
+    if (deployToken) window.jlrcp.lsSet(DISMISS_KEY, deployToken);
   });
 })();
