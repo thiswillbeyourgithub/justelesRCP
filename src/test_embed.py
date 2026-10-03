@@ -1339,6 +1339,26 @@ def test_present_cis_matches_iter_rcp_raw():
     assert present == rendered == {"11111111", "22222222", "55555555"}, (present, rendered)
 
 
+def test_load_names_tolerates_stray_directory_and_parses_like_the_catalog():
+    # A bad single-file bind mount leaves a DIRECTORY at CIS_bdpm.txt; load_names
+    # used an exists() check and crashed with IsADirectoryError. It must return {}
+    # and otherwise parse exactly as bdpm.read_catalog does (minus nameless rows).
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        saved = build.BDPM_PATH
+        try:
+            build.BDPM_PATH = d / "CIS_bdpm.txt"
+            build.BDPM_PATH.mkdir()
+            assert build.load_names() == {}
+            build.BDPM_PATH = d / "real.txt"
+            build.BDPM_PATH.write_bytes(
+                b"60000001\tDOLIPRANE 500 mg, comprim\xe9\tcomprim\xe9\n60000002\t\tx\n\n"
+            )
+            assert build.load_names() == {"60000001": "DOLIPRANE 500 mg, comprim\u00e9"}
+        finally:
+            build.BDPM_PATH = saved
+
+
 def test_record_hash_changes_when_archived():
     # A drug that gets delisted keeps serving the SAME baseline raw at the SAME
     # BASELINE_DATE asof, so ONLY the archived flag changes. The record hash must
@@ -1757,6 +1777,7 @@ if __name__ == "__main__":
     test_rcp_archived_detects_zero_byte_overlay()
     test_iter_rcp_raw_serves_delisted_baseline()
     test_present_cis_matches_iter_rcp_raw()
+    test_load_names_tolerates_stray_directory_and_parses_like_the_catalog()
     test_record_hash_changes_when_archived()
     test_eu_figures_become_shared_files_and_orphans_are_pruned()
     test_br_only_pages_are_listed_pruned_and_served_plain()

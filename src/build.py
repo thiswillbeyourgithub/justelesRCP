@@ -234,17 +234,15 @@ def slugify(text: str) -> str:
 def load_names() -> dict[str, str]:
     """CIS code -> official drug name, from CIS_bdpm.txt (tab-separated, latin-1).
 
-    Column layout per BDPM spec: 0=Code_CIS, 1=Denomination. Returns {} if the
-    file is absent so the build can still run (falls back to HTML denomination).
+    Parsed by the shared bdpm.read_catalog (the same reader the backlink index
+    and the scrape queue use); a CIS with no name is left out so the caller falls
+    back to the HTML denomination. {} if the file is absent, or is a stray
+    directory left by a bad single-file bind mount (the refresh container).
     """
-    if not BDPM_PATH.exists():
+    if not BDPM_PATH.is_file():
         print(f"  ! {BDPM_PATH.name} missing; falling back to HTML denomination")
         return {}
-    names: dict[str, str] = {}
-    with BDPM_PATH.open(encoding="latin-1") as fh:
-        for row in csv.reader(fh, delimiter="\t"):
-            if len(row) >= 2 and row[0].strip():
-                names[row[0].strip()] = row[1].strip()
+    names = {cis: name for cis, name in bdpm.read_catalog(BDPM_PATH) if name}
     print(f"  loaded {len(names)} names from {BDPM_PATH.name}")
     return names
 
