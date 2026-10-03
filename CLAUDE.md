@@ -993,7 +993,8 @@ Key facts that aren't obvious from a single file:
   bounds concurrent encodes so a query flood can't pin every core, shedding past it with
   503; query CONTENT never logged) and (re-)embeds each
   **crawled** page in the background (`POST /api/sem/page/<cis>` embeds now, front of
-  queue; `GET /api/sem/page/<cis>` -> `{embedded, pending}`; `/api/sem/health` never
+  queue; a reader/crawler request for a page MID-embed is re-run once that embed ends
+  (`_rerun`), never dropped as a duplicate; `GET /api/sem/page/<cis>` -> `{embedded, pending}`; `/api/sem/health` never
   logged; `/api/sem/stats`). **Crawled-only + content-hash staleness**: it embeds ONLY
   overlay pages (`build.iter_overlay_raw`, `data/rcp` + `data/eu`, NEVER the frozen
   2022 baseline CSV) via the SINGLE `build.embed_page_to_vec` core (segment -> encode

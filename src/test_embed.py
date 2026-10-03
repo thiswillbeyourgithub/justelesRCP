@@ -1646,6 +1646,45 @@ def test_embed_popup_routes_are_bounded_and_cached():
     print("ok  test_embed_popup_routes_are_bounded_and_cached")
 
 
+def test_embed_request_during_embed_is_rerun_not_dropped():
+    """A page asked for again WHILE it is being embedded must embed again after.
+
+    The running embed may have read the overlay just before the refresh service
+    wrote a new one; ``_enqueue`` used to answer "dup" and drop the request, so the
+    page kept vectors of the old text until the next reconcile sweep."""
+    import threading
+    es = _load_embed_service()
+    e = es.Embedder(None, "m", backlog=False, backlog_rate=0.0, reconcile_seconds=60,
+                    queue_max=10, refresh_url="", timeout=1.0, min_chars=1, max_chars=10)
+    calls = []
+
+    class _Stop(BaseException):
+        pass
+
+    def fake_embed(cis, info=None):
+        calls.append(cis)
+        if len(calls) == 1:  # a fresh overlay lands mid-embed: refresh pings us
+            assert e._enqueue(cis, "crawl", front=True) == "queued"
+            assert e._enqueue(cis, "sweep", front=False) == "dup"  # sweep: backstop only
+            return "fresh"
+        raise _Stop
+
+    e._embed_page = fake_embed
+    e._enqueue("60000001", "crawl", front=True)
+
+    def run():
+        try:
+            e._worker()
+        except _Stop:
+            pass
+
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    t.join(10)
+    assert calls == ["60000001", "60000001"], calls
+    print("ok  test_embed_request_during_embed_is_rerun_not_dropped")
+
+
 if __name__ == "__main__":
     test_load_cap_meta_excludes_decentralised()
     test_clean_substance_strips_salt_hydrate()
@@ -1697,4 +1736,5 @@ if __name__ == "__main__":
     test_failed_render_is_reported_and_previous_page_kept()
     test_stub_workers_receive_the_substance_map()
     test_embed_popup_routes_are_bounded_and_cached()
+    test_embed_request_during_embed_is_rerun_not_dropped()
     print("\nAll tests passed.")

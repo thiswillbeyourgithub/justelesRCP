@@ -203,6 +203,10 @@ class Embedder:
         self._queue: deque[str] = deque()
         self._pending: "OrderedDict[str, str]" = OrderedDict()  # cis -> source
         self._running: str | None = None
+        # CIS asked for again WHILE being embedded (-> source): the running embed may
+        # have read the overlay before the new one landed, so it is re-run at the
+        # front once it finishes instead of being dropped as a duplicate.
+        self._rerun: dict[str, str] = {}
         self._wake = threading.Event()
         self._stats = {"embedded": 0, "skipped": 0, "errors": 0,
                        "queries": 0, "queries_shed": 0, "crawl_triggered": 0,
@@ -300,9 +304,13 @@ class Embedder:
 
     # -- queue -------------------------------------------------------------
     def _enqueue(self, cis: str, source: str, front: bool) -> str:
-        """'queued' (newly added), 'dup' (already pending/running), or 'busy' (queue
-        full; only 'user' may exceed the cap)."""
+        """'queued' (newly added, or, for a reader/crawler request, re-run once the
+        in-flight embed of it ends), 'dup' (already waiting or running), or 'busy'
+        (queue full; only 'user' may exceed the cap)."""
         with self._lock:
+            if cis == self._running and source != "sweep":  # sweep: just a backstop
+                self._rerun.setdefault(cis, source)
+                return "queued"
             if cis == self._running or cis in self._pending:
                 return "dup"
             if len(self._queue) >= self.queue_max and source != "user":
@@ -382,6 +390,10 @@ class Embedder:
             with self._lock:
                 self._running = None
                 self._pending.pop(cis, None)
+                rerun = self._rerun.pop(cis, None)
+                if rerun is not None:  # asked again mid-embed: go again, first
+                    self._pending[cis] = rerun
+                    self._queue.appendleft(cis)
                 self._recent.append({"cis": cis, "lane": info.get("lane"),
                                      "result": result, "source": source,
                                      "at": time.time(), "seconds": round(dt, 2),
