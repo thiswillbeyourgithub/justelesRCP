@@ -6,7 +6,7 @@
 #   "lxml>=5.0",
 #   "brotli>=1.1",
 #   "numpy",
-#   "onnxruntime-gpu",
+#   "onnxruntime-gpu==1.30.0",  # match the embed service's onnxruntime (embed.Dockerfile)
 #   "tokenizers",
 #   "tqdm",
 # ]

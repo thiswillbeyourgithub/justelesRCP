@@ -1433,8 +1433,10 @@ Restart is not needed (Caddy reads the mounted dir live), but a
   the refresh service's global hourly scrape ceiling (`REFRESH_DEMAND_HOURLY_MAX`,
   which caps the aggregate) and its per-CIS min-interval floor; keep all three.
   The `order rate_limit before reverse_proxy` global option is required (the plugin
-  directive is non-standard). `web.Dockerfile` leaves the plugin version UNPINNED
-  (a TODO): pin it for reproducible builds. **The `web` image is ONLY that binary**:
+  directive is non-standard). `web.Dockerfile` pins both the Caddy release
+  (`CADDY_VERSION`, 2.11.6) and the plugin (`caddy-ratelimit@v0.1.0`), so a rebuild is
+  reproducible; bump them together on purpose. The refresh/embed images pin their
+  Python base (`python:3.12.15-slim`) and their direct pip deps the same way. **The `web` image is ONLY that binary**:
   the Caddyfile, `entrypoint.sh` and `../dist` are all bind mounts, so a Caddyfile
   change needs a `restart`/`up --force-recreate`, NOT a rebuild. Rebuild it (`up
   --build web`, or `deploy.sh --rebuild-web`) only after a `web.Dockerfile` change or
@@ -1547,7 +1549,10 @@ Restart is not needed (Caddy reads the mounted dir live), but a
   you did not bake). Both are gitignored deploy.sh modes; either way, do NOT re-add
   `*.vec.json` to the rsync mirror. The Dockerfile bakes `src/build.py` / `src/bdpm.py` /
   `src/onnx_embed.py` / `src/embed-service.py` / `src/svc_http.py` / `src/rcp.html` (COPYd into `/app/src/`)
-  and pip-installs `onnxruntime` + `tokenizers`
+  and pip-installs `onnxruntime` + `tokenizers` (pinned: onnxruntime 1.30.0; the
+  PEP 723 headers of `embed-service.py`/`onnx_embed.py` pin the same version, and
+  `embed-rcp.py`'s `onnxruntime-gpu` MUST match it, so pre-baked and served vectors
+  come from the same runtime: bump all of them together)
   (NOT torch, so ~300 Mo not ~2 Go). It is fully optional: `up web refresh` omits it
   and the search box degrades to "indisponible". PRIVACY: it embeds the reader's query
   same-origin but logs NO query content (counts/latency only) and drops it right after

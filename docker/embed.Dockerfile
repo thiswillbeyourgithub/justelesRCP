@@ -8,16 +8,21 @@
 # SEPARATE container from the read-only web server, like the refresh service, and
 # given only narrow writable mounts (dist/rcp, dist/eu). Build context is the repo
 # root (see compose), so the root .dockerignore keeps data/dist/models out of it.
-FROM python:3.12-slim
+FROM python:3.12.15-slim
 
 # These mirror the PEP 723 dependency header of embed-service.py, which is the source
-# of truth. If you change the deps there, change them here too. onnxruntime +
-# tokenizers run the int8 e5-small encoder WITHOUT torch (a ~300 MB image, not ~2 GB);
+# of truth for WHICH packages; if you change the deps there, change them here too.
+# The versions are pinned here (what uv resolved for Python 3.12 when pinned) so a
+# rebuild is reproducible. onnxruntime is pinned in the PEP 723 headers too
+# (embed-service.py, onnx_embed.py, and embed-rcp.py's onnxruntime-gpu): the offline
+# pre-bake and this service must run the same runtime so their vectors agree. onnxruntime +
+# tokenizers run the int8 jina-embeddings-v5 encoder WITHOUT torch (a ~300 MB image, not ~2 GB);
 # lxml + brotli are pulled in via build.py (section_chunks parses HTML, compress()
 # writes the .br sibling). The model itself is NOT baked: it is mounted read-only from
 # the host ./models at runtime (scripts/download-model.sh fetches it), so it stays out of the
 # image and out of the .dockerignore-excluded build context.
-RUN pip install --no-cache-dir onnxruntime tokenizers numpy "lxml>=5.0" "brotli>=1.1" loguru click
+RUN pip install --no-cache-dir onnxruntime==1.30.0 tokenizers==0.23.2 numpy==2.5.3 \
+    lxml==6.1.3 brotli==1.2.0 loguru==0.7.3 click==8.5.0
 
 WORKDIR /app
 # The service imports build.py (section_chunks / quantize / overlay readers /

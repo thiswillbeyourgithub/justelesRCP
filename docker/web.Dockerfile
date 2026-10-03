@@ -23,17 +23,15 @@
 # the host network: `docker compose build --no-cache web` after adding
 # `network: host` under the web service's `build:`) or build the image on a machine
 # with working egress and ship it (`docker save justelesrcp-web | ssh VPS 'sudo
-# docker load'`). Rebuilding on a laptop and shipping is also the reproducible option
-# given the unpinned plugin below.
-ARG CADDY_VERSION=2
+# docker load'`).
+# Both the Caddy release and the plugin are pinned, so a rebuild is reproducible and
+# never picks up a new upstream builder image on its own; bump them together on
+# purpose (the plugin tag list: https://proxy.golang.org/github.com/mholt/caddy-ratelimit/@v/list).
+ARG CADDY_VERSION=2.11.6
 
 FROM caddy:${CADDY_VERSION}-builder-alpine AS builder
-# TODO: pin caddy-ratelimit to a released tag (e.g. "...@v0.1.0") for a
-# reproducible build. Unpinned resolves to the latest compatible version at build
-# time, which is not reproducible. Left unpinned for now so the build does not
-# depend on a tag guessed offline; pick a tag and append "@<tag>" here.
 RUN xcaddy build \
-	--with github.com/mholt/caddy-ratelimit
+	--with github.com/mholt/caddy-ratelimit@v0.1.0
 
 FROM caddy:${CADDY_VERSION}-alpine
 # Replace the stock binary with the plugin-enabled one; same path, so the base
