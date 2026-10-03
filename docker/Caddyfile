@@ -147,6 +147,18 @@
 		file {path}.br {path}.html.br
 	}
 	handle @br_fallback {
+		# Each request here costs the refresh service a brotli decompression of a
+		# whole page, and the /rcp/ + /eu/ catalog is trivially enumerable (sitemap),
+		# so it gets its own per-IP limit like the /api/* routes it ends up on. A
+		# browser never takes this route. Tune via PLAIN_RATE_EVENTS /
+		# PLAIN_RATE_WINDOW in docker/.env.
+		rate_limit {
+			zone plain {
+				key {http.request.client_ip}
+				events {$PLAIN_RATE_EVENTS:60}
+				window {$PLAIN_RATE_WINDOW:1m}
+			}
+		}
 		rewrite * /api/plain{file_match.relative}
 		reverse_proxy refresh:8460
 	}

@@ -1378,7 +1378,7 @@ Restart is not needed (Caddy reads the mounted dir live), but a
   is what lets `{http.request.client_ip}` (the rate-limit key) resolve to the real
   visitor instead of the proxy IP; set `TRUSTED_PROXIES` if your proxy is on a
   public IP. The limits are tunable via `API_RATE_EVENTS`/`API_RATE_WINDOW` and
-  `SEM_RATE_EVENTS`/`SEM_RATE_WINDOW` (env, read by Caddy). Both API handles also
+  `SEM_RATE_EVENTS`/`SEM_RATE_WINDOW` (env, read by Caddy). The `@br_fallback` route (a non-brotli client asking for a br-only `/rcp/`/`/eu/` page, which the refresh service decompresses) has its own per-IP zone too, `PLAIN_RATE_EVENTS`/`PLAIN_RATE_WINDOW` (default 60/1m), since the catalog is enumerable via the sitemap. Both API handles also
   `request_body { max_size 16KB }` (reject oversized POSTs at the edge) and the two
   **detailed** stats endpoints (`/api/stats`, `/api/sem/stats`, which expose raw queue
   internals + host RAM) are **blocked** (`respond 404`, exact-path `handle` before the
