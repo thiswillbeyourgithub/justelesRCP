@@ -46,10 +46,13 @@
     }
     function frDate(iso) {
       try {
+        // The ISO date is parsed as UTC midnight, so it must be formatted in UTC
+        // too: a reader west of Greenwich would otherwise see the previous day.
         return new Intl.DateTimeFormat("fr-FR", {
           day: "numeric",
           month: "long",
           year: "numeric",
+          timeZone: "UTC",
         }).format(new Date(iso + "T00:00:00Z"));
       } catch (_) {
         return null; // Intl unavailable: keep build.py's baked absolute date
@@ -210,6 +213,7 @@
             return new Date(bakedAsof + "T00:00:00Z").toLocaleDateString("fr-FR", {
               month: "long",
               year: "numeric",
+              timeZone: "UTC",
             });
           } catch (_) {
             return "";
