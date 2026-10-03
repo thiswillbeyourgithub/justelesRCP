@@ -64,6 +64,23 @@ if [ -n "${ANALYTICS_URL:-}" ]; then
   echo "entrypoint: CSP will allow ANALYTICS_ORIGIN=$ANALYTICS_ORIGIN"
 fi
 
+# Every value below is pasted between single quotes in a JavaScript file, so a
+# quote, a backslash or a newline would break out of the string (a broken config,
+# or script injection from a mistyped .env). Refuse to start rather than escape:
+# none of these settings has a legitimate reason to contain one.
+nl='
+'
+for var in ANALYTICS_URL ANALYTICS_WEBSITE_ID ANALYTICS_SRI ANALYTICS_DNT DEV STARTED_AT SOURCE_URL; do
+  eval "val=\${$var:-}"
+  case "$val" in
+    *"'"*|*\\*|*"$nl"*)
+      echo "entrypoint: FATAL $var contains a quote, backslash or newline;" >&2
+      echo "entrypoint: those would break /app-config.js. Fix it in docker/.env." >&2
+      exit 1
+      ;;
+  esac
+done
+
 # Render the app config from the environment into the /gen tmpfs. An unset var
 # becomes an empty string (features stay off); the consumers (src/app-init.js,
 # src/dev-banner.js) treat empty values as "disabled". Keep these keys in sync

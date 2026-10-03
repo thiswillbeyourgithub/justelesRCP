@@ -95,17 +95,22 @@
     const when = hasStart
       ? `Dernier redémarrage il y a ${humanAgo(elapsed)}.`
       : "Déploiement en cours.";
-    const source = validSource
-      ? ` <a href="${validSource}" target="_blank" rel="noopener noreferrer">Code source</a>.`
-      : "";
-    banner.innerHTML =
-      `<strong>Prototype en développement.</strong> ${when}${source}`;
-    // Style the link via the CSSOM (a style="" attribute would trip the strict
-    // style-src CSP; programmatic styles are allowed).
-    const link = banner.querySelector("a");
-    if (link) {
+    // Built node by node (no innerHTML), so the configured URL can never inject
+    // markup whatever it contains.
+    const strong = document.createElement("strong");
+    strong.textContent = "Prototype en développement.";
+    banner.replaceChildren(strong, " " + when);
+    if (validSource) {
+      const link = document.createElement("a");
+      link.href = validSource;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.textContent = "Code source";
+      // Style the link via the CSSOM (a style="" attribute would trip the strict
+      // style-src CSP; programmatic styles are allowed).
       link.style.color = "#fff";
       link.style.textDecoration = "underline";
+      banner.append(" ", link, ".");
     }
   }
 
