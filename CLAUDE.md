@@ -1400,8 +1400,8 @@ Restart is not needed (Caddy reads the mounted dir live), but a
   is what lets `{http.request.client_ip}` (the rate-limit key) resolve to the real
   visitor instead of the proxy IP; set `TRUSTED_PROXIES` if your proxy is on a
   public IP. The limits are tunable via `API_RATE_EVENTS`/`API_RATE_WINDOW` and
-  `SEM_RATE_EVENTS`/`SEM_RATE_WINDOW` (env, read by Caddy). The `@br_fallback` route (a non-brotli client asking for a br-only `/rcp/`/`/eu/` page, which the refresh service decompresses) has its own per-IP zone too, `PLAIN_RATE_EVENTS`/`PLAIN_RATE_WINDOW` (default 60/1m), since the catalog is enumerable via the sitemap. Both API handles also
-  `request_body { max_size 16KB }` (reject oversized POSTs at the edge) and the two
+  `SEM_RATE_EVENTS`/`SEM_RATE_WINDOW` (env, read by Caddy). The `@br_fallback` route (a non-brotli client asking for a br-only `/rcp/`/`/eu/` page, which the refresh service decompresses) has its own per-IP zone too, `PLAIN_RATE_EVENTS`/`PLAIN_RATE_WINDOW` (default 60/1m), since the catalog is enumerable via the sitemap. All three routes share one Caddyfile snippet, `(api_limits)` (`import api_limits <zone> <events> <window>`), which applies the per-IP `rate_limit` zone plus a
+  `request_body { max_size 16KB }` (reject oversized POSTs at the edge); add a new service route through it rather than copying the blocks. The two
   **detailed** stats endpoints (`/api/stats`, `/api/sem/stats`, which expose raw queue
   internals + host RAM) are **blocked** (`respond 404`, exact-path `handle` before the
   wildcards) so they are reachable only from inside the docker network, not publicly.
@@ -1426,10 +1426,10 @@ Restart is not needed (Caddy reads the mounted dir live), but a
   `web.Dockerfile`'s header documents the two escape hatches (`network: host` on the
   build, or build elsewhere and `docker save | ssh … docker load`). Keep the contract
   in sync across
-  `docker/web.Dockerfile`, the global block + the `/api/*` and `/api/sem/*`
+  `docker/web.Dockerfile`, the global block + the `(api_limits)` snippet + the `/api/*`, `/api/sem/*` and `@br_fallback`
   `handle`s in `docker/Caddyfile`, the `web` `build:` in `docker/docker-compose.yml`,
   and the rate-limit knobs in `docker/env.example`.
-- The container runs `read_only: true`, `cap_drop: ALL`,
+- The container posture shared by all three services (`restart`, `env_file`, `read_only`, `cap_drop`, `security_opt`, `logging`) lives once in the `x-hardened` YAML anchor of `docker/docker-compose.yml`, merged into each with `<<: *hardened` (healthcheck cadence likewise via `x-healthcheck-timing`); a new service should merge it too. The container runs `read_only: true`, `cap_drop: ALL`,
   `no-new-privileges`, with tmpfs for Caddy's scratch dirs (`/tmp`, `/config`,
   `/data`, and `/gen` for the rendered `app-config.js`). Keep it that way; if
   Caddy needs a new writable path, add a tmpfs mount rather than dropping

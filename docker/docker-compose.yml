@@ -22,8 +22,41 @@
 # is per-network and unaffected).
 name: justelesrcp
 
+# Settings every service shares, merged into each one with `<<: *hardened` (a key
+# a service sets itself wins over the merged one). The posture is the same for
+# all three: read-only rootfs, every capability dropped (web adds back the one
+# its binary needs), no privilege escalation, bounded json logs.
+x-hardened: &hardened
+  restart: unless-stopped
+  # Analytics + dev-banner config and the services' tuning knobs, injected
+  # straight into each container from docker/.env (gitignored; copy
+  # docker/env.example). Unset keys fall back to safe defaults in the entrypoint /
+  # scripts / client code (DNT=true, DEV off, no analytics). We deliberately do
+  # NOT add an `environment:` block: it would take precedence over env_file and,
+  # since compose interpolates ${VAR} from the CWD rather than docker/, shadow
+  # these with empty values.
+  env_file:
+    - .env
+  read_only: true
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+# Healthcheck cadence shared by the three services; each sets its own `test`.
+x-healthcheck-timing: &healthcheck-timing
+  interval: 30s
+  timeout: 3s
+  retries: 3
+
 services:
   web:
+    <<: *hardened
     # Custom Caddy image (docker/web.Dockerfile): the stock caddy:2-alpine has no
     # rate-limit module, so caddy-ratelimit is baked in via xcaddy to per-IP
     # throttle the exposed /api/* scraping endpoints (see docker/Caddyfile). The
@@ -36,7 +69,6 @@ services:
     # Stable name so deploy.sh can `docker inspect justelesrcp` for health checks
     # (without it the container would be the project-derived `docker-web-1`).
     container_name: justelesrcp
-    restart: unless-stopped
     # Memory: a hard ceiling per container (memswap = mem, so it never swaps), and the
     # kernel's kill order under host-wide pressure (oom_score_adj, -1000..1000, higher
     # dies first; it is global to the host, not relative to this file). A container
@@ -61,19 +93,10 @@ services:
       # host:container - front this with your existing TLS reverse proxy, which
       # is already pointed at 8459.
       - "${PORT:-8459}:8459"
-    # Analytics + dev-banner config, injected straight into the container from
-    # docker/.env (gitignored; copy docker/env.example). Unset keys fall back to
-    # safe defaults in the entrypoint / client code (DNT=true, DEV off, no
-    # analytics). We deliberately do NOT add an `environment:` block: it would
-    # take precedence over env_file and, since compose interpolates ${VAR} from
-    # the CWD rather than docker/, shadow these with empty values.
-    env_file:
-      - .env
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ./entrypoint.sh:/usr/local/bin/entrypoint.sh:ro
       - ../dist:/srv:ro
-    read_only: true
     tmpfs:
       # Caddy needs a writable data/config dir even without TLS; /gen holds the
       # per-startup rendered app-config.js (see entrypoint.sh + Caddyfile).
@@ -81,8 +104,6 @@ services:
       - /config
       - /data
       - /gen
-    cap_drop:
-      - ALL
     cap_add:
       # The caddy:2-alpine binary ships with `setcap cap_net_bind_service=+ep`.
       # The effective (+e) bit means execve() fails with EPERM ("Operation not
@@ -91,18 +112,9 @@ services:
       # binary's file cap must still be satisfiable at exec time, so add it back.
       # Everything else stays dropped; this is the one cap Caddy's binary needs.
       - NET_BIND_SERVICE
-    security_opt:
-      - no-new-privileges:true
     healthcheck:
+      <<: *healthcheck-timing
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8459/index.html"]
-      interval: 30s
-      timeout: 3s
-      retries: 3
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
 
   # Companion refresh service (refresh-service.py): the ONE runtime piece, behind
   # the "Rafraichir maintenant" button and the >1-year auto-refresh. Caddy above
@@ -110,6 +122,7 @@ services:
   # host directly (no ports:). Kept separate from `web` so the web server stays
   # fully read-only; this container gets only the narrow writable mounts it needs.
   refresh:
+    <<: *hardened
     build:
       context: ..
       dockerfile: docker/refresh.Dockerfile
@@ -124,7 +137,6 @@ services:
         # deliberately stays out of env_file / env.example.
         GIT_SHA: ${GIT_SHA:-unknown}
     container_name: justelesrcp-refresh
-    restart: unless-stopped
     # Memory: a hard ceiling per container (memswap = mem, so it never swaps), and the
     # kernel's kill order under host-wide pressure (oom_score_adj, -1000..1000, higher
     # dies first; it is global to the host, not relative to this file). A container
@@ -146,15 +158,13 @@ services:
     # cleanly. Defaults to 1000:1000 (the usual first Linux user); override with
     # REFRESH_UID/REFRESH_GID in docker/.env if your host uid differs (e.g. VPS).
     user: "${REFRESH_UID:-1000}:${REFRESH_GID:-1000}"
-    # Same env file as web. Tuning knobs (all optional, sane defaults in the
+    # env_file (docker/.env) comes from x-hardened, like web. Tuning knobs (all optional, sane defaults in the
     # script): REFRESH_RATE_SECONDS (ANSM crawler lane, default 120),
     # REFRESH_DEMAND_RATE_SECONDS (on-demand button/auto lane, default 5),
     # REFRESH_MIN_INTERVAL_SECONDS, REFRESH_QUEUE_MAX, REFRESH_CRAWL (ANSM
     # crawler on/off) + REFRESH_CRAWL_TTL_DAYS; the EMA /eu/ crawler lane
     # REFRESH_EMA_CRAWL (on/off) + REFRESH_EMA_RATE_SECONDS (default 300, gentle)
     # + REFRESH_EMA_CRAWL_TTL_DAYS (default 180); RCP_OVERLAY_GZIP. See docker/env.example.
-    env_file:
-      - .env
     volumes:
       # Read-only: the CIS -> name map (for page titles) and the RCP template are
       # baked into the image, but names must be current, so mount the map RO.
@@ -187,24 +197,12 @@ services:
       - ../data/eu:/app/data/eu
       - ../data/.scrape-ema-manifest.json:/app/data/.scrape-ema-manifest.json
       - ../dist/eu:/app/dist/eu
-    read_only: true
     tmpfs:
       - /tmp
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
     healthcheck:
+      <<: *healthcheck-timing
       test: ["CMD", "python", "-c",
              "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8460/api/health').status==200 else 1)"]
-      interval: 30s
-      timeout: 3s
-      retries: 3
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
 
   # Warm server-side embedder (embed-service.py): keeps ONE ONNX sentence encoder
   # resident and (1) embeds the reader's per-drug semantic-search query on request
@@ -216,6 +214,7 @@ services:
   # dist/eu). Entirely optional: leave it out (docker compose ... up web refresh) and
   # the search box degrades to "indisponible", the site staying 100% static.
   embed:
+    <<: *hardened
     build:
       context: ..
       dockerfile: docker/embed.Dockerfile
@@ -226,7 +225,6 @@ services:
         # Build-time only, so it stays out of env_file / env.example.
         GIT_SHA: ${GIT_SHA:-unknown}
     container_name: justelesrcp-embed
-    restart: unless-stopped
     # Memory: a hard ceiling per container (memswap = mem, so it never swaps), and the
     # kernel's kill order under host-wide pressure (oom_score_adj, -1000..1000, higher
     # dies first; it is global to the host, not relative to this file). A container
@@ -267,7 +265,7 @@ services:
     # 1000:1000; override with EMBED_UID/EMBED_GID in docker/.env if your host uid
     # differs (e.g. VPS).
     user: "${EMBED_UID:-1000}:${EMBED_GID:-1000}"
-    # Same env file as the others. Tuning knobs (all optional, sane defaults in the
+    # env_file (docker/.env) comes from x-hardened. Tuning knobs (all optional, sane defaults in the
     # script): EMBED_ENABLE (background reconcile sweep on/off), EMBED_INTRA_THREADS,
     # EMBED_BACKLOG_RATE_SECONDS, EMBED_RECONCILE_SECONDS, EMBED_QUEUE_MAX,
     # EMBED_MIN_QUERY_CHARS (5) / EMBED_MAX_QUERY_CHARS (400), EMBED_QUERY_CACHE,
@@ -277,8 +275,6 @@ services:
     # EMBED_SEM_FLOOR (client relevance floor, default 0.0),
     # REFRESH_TRIGGER_URL (embed -> refresh, for baseline auto-crawl),
     # EMBED_LOG_LEVEL. See docker/env.example.
-    env_file:
-      - .env
     volumes:
       # Read-only: the warm encoder model + tokenizer (scripts/download-model.sh fetches it
       # into ./models). Mounted, not baked, so it stays out of the image / build
@@ -296,24 +292,12 @@ services:
       # manifest mount: staleness is content-hash baked into each .vec.json.
       - ../dist/rcp:/app/dist/rcp
       - ../dist/eu:/app/dist/eu
-    read_only: true
     tmpfs:
       - /tmp
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
     healthcheck:
+      <<: *healthcheck-timing
       test: ["CMD", "python", "-c",
              "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8461/api/sem/health').status==200 else 1)"]
-      interval: 30s
-      timeout: 3s
-      retries: 3
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
 
 networks:
   # PINNED SUBNETS, and they are not decoration.
