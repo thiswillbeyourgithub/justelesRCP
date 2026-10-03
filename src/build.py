@@ -2830,6 +2830,32 @@ def _check_render_failures(failures: list[dict], total: int, label: str) -> None
         )
 
 
+def _fill_page(tpl: str, *, title: str, description: str, head_extra: str,
+               breadcrumb: str, cis: str, toc: str, asof: str, content: str,
+               xref: str, more_bottom: str) -> str:
+    """Fill every slot of the shared drug-page template (``src/rcp.html``).
+
+    The ONE place the /rcp/ page (render_record), the full /eu/ page
+    (render_eu_page) and the /eu/ stub (render_eu_stub) are assembled, so a slot
+    added to the template is a required keyword here and none of the three can
+    forget it. ``title``, ``description`` and ``cis`` are plain text (escaped
+    here); every other value is ready-made HTML. Slots are replaced in a fixed
+    order, one ``str.replace`` each (all occurrences: ``{{TITLE}}`` and ``{{CIS}}``
+    appear twice in the template)."""
+    return (
+        tpl.replace("{{TITLE}}", _esc(title))
+        .replace("{{DESCRIPTION}}", _esc(description))
+        .replace("{{HEADEXTRA}}", head_extra)
+        .replace("{{BREADCRUMB}}", breadcrumb)
+        .replace("{{CIS}}", _esc(cis))
+        .replace("{{TOC}}", toc)
+        .replace("{{ASOF}}", asof)
+        .replace("{{CONTENT}}", content)
+        .replace("{{XREF}}", xref)
+        .replace("{{MORE_BOTTOM}}", more_bottom)
+    )
+
+
 def render_record(item: tuple[str, str, str]) -> dict[str, str]:
     """Clean one RCP, write its page (stored as .br), return its index row, or
     ``{"cis", "error"}`` when the render raised (see ``_render_guarded``)."""
@@ -2864,26 +2890,19 @@ def _render_record(item: tuple[str, str, str]) -> dict[str, str]:
     # keep serving the 2022 baseline text but headline it with a retired banner.
     archived = rcp_archived(cis)
     retired = _retired_banner_html(cis) if archived else ""
-    page = (
-        _TPL.replace("{{TITLE}}", _esc(name))
-        .replace("{{DESCRIPTION}}", _esc(description))
-        .replace("{{HEADEXTRA}}", head_extra)
-        .replace("{{BREADCRUMB}}", crumb_nav)
-        .replace("{{CIS}}", _esc(cis))
-        .replace("{{TOC}}", _toc_html(toc))
-        .replace(
-            "{{ASOF}}",
+    page = _fill_page(
+        _TPL, title=name, description=description, head_extra=head_extra,
+        breadcrumb=crumb_nav, cis=cis, toc=_toc_html(toc),
+        asof=(
             retired
             + _asof_html(ansm, asof)
             + _official_source_html(_source_button(
                 ANSM_PAGE_URL.format(cis=cis),
                 "Ouvrir la source officielle",
             ))
-            + refs,
-        )
-        .replace("{{CONTENT}}", cleaned)
-        .replace("{{XREF}}", _xref_html(xref_links))
-        .replace("{{MORE_BOTTOM}}", refs)
+            + refs
+        ),
+        content=cleaned, xref=_xref_html(xref_links), more_bottom=refs,
     )
     write_served(DIST / "rcp" / f"{slug}.html", page.encode("utf-8"))
     # ``asof`` rides back only for the manifest (sitemap <lastmod>); main() strips it
@@ -3311,22 +3330,43 @@ def render_eu_page(cis: str, overlay_html: str, meta: tuple[str, str, str] | Non
         + _jsonld(crumb_ld)
     )
     body, toc = _eu_prepare(overlay_html)
-    page = (
-        page_tpl.replace("{{TITLE}}", _esc(name))
-        .replace("{{DESCRIPTION}}", _esc(description))
-        .replace("{{HEADEXTRA}}", head_extra)
-        .replace("{{BREADCRUMB}}", crumb_nav)
-        .replace("{{CIS}}", _esc(cis))
-        .replace("{{TOC}}", _toc_html(toc))
-        .replace("{{ASOF}}", asof)
-        .replace("{{CONTENT}}", _eu_full_content(name, eu, holder, body))
-        .replace("{{XREF}}", "")
-        .replace("{{MORE_BOTTOM}}", refs)
+    page = _fill_page(
+        page_tpl, title=name, description=description, head_extra=head_extra,
+        breadcrumb=crumb_nav, cis=cis, toc=_toc_html(toc), asof=asof,
+        content=_eu_full_content(name, eu, holder, body), xref="", more_bottom=refs,
     )
     out = DIST / "eu" / f"{slug}.html"
     out.parent.mkdir(parents=True, exist_ok=True)
     write_served(out, _externalize_images(page).encode("utf-8"))
     return {"cis": cis, "name": name, "slug": slug, "eu": 1}
+
+
+def render_eu_stub(cis: str, name: str, content: str, page_tpl: str) -> None:
+    """Render ONE lightweight /eu/ stub (the drug has no converted EMA text yet, so
+    the page only points out): the stub counterpart of render_eu_page. ``content``
+    is the stub body from ``_stub_content``. Writes dist/eu/<slug>.html (as .br)."""
+    slug = f"{cis}-{slugify(name)}"
+    page = _fill_page(
+        page_tpl, title=name, description=_eu_description(name, full=False),
+        # A bare stub is thin (just a pointer out), so it stays noindex; it still
+        # carries a self-canonical (so any inbound link resolves to one URL) +
+        # social tags (so a shared stub link still unfurls).
+        head_extra=(
+            _canonical_link(f"/eu/{slug}")
+            + _social_meta(
+                f"{name} - RCP", _eu_description(name, full=False), f"/eu/{slug}",
+            )
+            + '<meta name="robots" content="noindex">'
+        ),
+        # Visible fil d'Ariane for consistency with RCP/full-eu pages; no
+        # BreadcrumbList JSON-LD (the stub is noindex, so structured data on it
+        # would go unused).
+        breadcrumb=_breadcrumb([("Accueil", "/"), (name, f"/eu/{slug}")])[0],
+        cis=cis, toc="", asof=_ref_links_html(cis, name, include_ema=False),
+        content=content, xref="",
+        more_bottom="",  # stub is thin; no bottom duplicate
+    )
+    write_served(DIST / "eu" / f"{slug}.html", page.encode("utf-8"))
 
 
 # --- /eu/ page rendering pool ------------------------------------------------
@@ -3409,35 +3449,7 @@ def _render_stub_unguarded(cis: str) -> dict:
     if not reused and full:
         render_eu_page(cis, overlay, (name, eu, holder), _EU_TPL, link)
     elif not reused:
-        page = (
-            _EU_TPL.replace("{{TITLE}}", _esc(name))
-            .replace("{{DESCRIPTION}}", _esc(_eu_description(name, full=False)))
-            # A bare stub is thin (just a pointer out), so it stays noindex; it still
-            # carries a self-canonical (so any inbound link resolves to one URL) +
-            # social tags (so a shared stub link still unfurls).
-            .replace(
-                "{{HEADEXTRA}}",
-                _canonical_link(f"/eu/{slug}")
-                + _social_meta(
-                    f"{name} - RCP", _eu_description(name, full=False), f"/eu/{slug}",
-                )
-                + '<meta name="robots" content="noindex">',
-            )
-            # Visible fil d'Ariane for consistency with RCP/full-eu pages; no
-            # BreadcrumbList JSON-LD (the stub is noindex, so structured data on it
-            # would go unused).
-            .replace(
-                "{{BREADCRUMB}}",
-                _breadcrumb([("Accueil", "/"), (name, f"/eu/{slug}")])[0],
-            )
-            .replace("{{CIS}}", _esc(cis))
-            .replace("{{TOC}}", "")
-            .replace("{{ASOF}}", _ref_links_html(cis, name, include_ema=False))
-            .replace("{{CONTENT}}", content)
-            .replace("{{XREF}}", "")
-            .replace("{{MORE_BOTTOM}}", "")  # stub is thin; no bottom duplicate
-        )
-        write_served(out, page.encode("utf-8"))
+        render_eu_stub(cis, name, content, _EU_TPL)
     return {
         "cis": cis, "name": name, "slug": slug, "full": full, "reused": reused, "h": h,
         "asof": (_eu_fetched(overlay) or _eu_date(overlay)) if full else "",

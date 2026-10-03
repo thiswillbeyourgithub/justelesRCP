@@ -1644,6 +1644,45 @@ def test_stub_workers_receive_the_substance_map():
     print("ok  test_stub_workers_receive_the_substance_map")
 
 
+def test_every_drug_page_path_fills_every_template_slot():
+    """The /rcp/ page, the full /eu/ page and the /eu/ stub each used to chain their
+    own ten ``.replace`` calls over rcp.html, so a slot added to the template could be
+    filled in one path and forgotten in another. All three now go through
+    ``_fill_page``, whose keywords must cover exactly the template's slots, and none
+    of the three leaves a slot behind."""
+    import inspect
+    import re
+    tpl = (Path(__file__).parent / "rcp.html").read_text()
+    slot_re = re.compile(r"\{\{([A-Z_]+)\}\}")
+    params = {p.upper().replace("HEAD_EXTRA", "HEADEXTRA")
+              for p in inspect.signature(build._fill_page).parameters if p != "tpl"}
+    assert set(slot_re.findall(tpl)) == params, (set(slot_re.findall(tpl)), params)
+    overlay = ('<!DOCTYPE html>\n<html>\n<body><div id="textDocument" '
+               'data-ema-date="2025-01-02" data-ema-fetched="2026-01-02" '
+               'data-ema-pdf="https://www.ema.europa.eu/x_fr.pdf">'
+               '<p class="AmmAnnexeTitre1" id="sec-1">1. DENOMINATION DU MEDICAMENT</p>'
+               '<p>ZZDRUG 5 mg, comprime pellicule.</p></div></body>\n</html>')
+    meta = ("ZZDRUG 5 mg, comprime", "EU/1/00/000/001", "ZZ Pharma")
+    with tempfile.TemporaryDirectory() as d:
+        _row, rcp_html = _render_one_rcp(d)
+        saved = build.DIST, build.EU_IMG_DIR
+        build.DIST, build.EU_IMG_DIR = Path(d), Path(d) / "eu" / "img"
+        try:
+            row = build.render_eu_page("12345678", overlay, meta, tpl)
+            full_html = build.read_served(Path(d) / "eu" / f"{row['slug']}.html").decode()
+            build.render_eu_stub("87654321", meta[0], "<p>stub</p>", tpl)
+            stub_html = build.read_served(
+                Path(d) / "eu" / f"87654321-{build.slugify(meta[0])}.html").decode()
+        finally:
+            build.DIST, build.EU_IMG_DIR = saved
+    for kind, html in (("rcp", rcp_html), ("eu full", full_html), ("eu stub", stub_html)):
+        assert not slot_re.search(html), (kind, slot_re.findall(html))
+    assert "ZZDRUG 5 mg, comprime pellicule." in full_html
+    assert '<meta name="robots" content="noindex">' in stub_html
+    assert '<meta name="robots" content="noindex">' not in full_html
+    print("ok  test_every_drug_page_path_fills_every_template_slot")
+
+
 def _load_embed_service():
     """Import embed-service.py by path (its '-' name is not importable)."""
     import importlib.util
@@ -1804,6 +1843,7 @@ if __name__ == "__main__":
     test_query_cache_survives_concurrent_purge_and_inserts()
     test_failed_render_is_reported_and_previous_page_kept()
     test_stub_workers_receive_the_substance_map()
+    test_every_drug_page_path_fills_every_template_slot()
     test_embed_popup_routes_are_bounded_and_cached()
     test_embed_request_during_embed_is_rerun_not_dropped()
     print("\nAll tests passed.")

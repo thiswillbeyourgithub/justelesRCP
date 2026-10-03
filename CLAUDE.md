@@ -262,7 +262,7 @@ Key facts that aren't obvious from a single file:
   `.toc` in `style.css`.
 - **Every page has an `<h1>` drug/presentation-name header** at the top, emitted
   from the shared template's `{{TITLE}}` slot (filled with the drug name by
-  `render_record`, `render_eu_page` and the stub branch alike, `.rcp-title` in
+  `render_record`, `render_eu_page` and `render_eu_stub` alike, `.rcp-title` in
   `style.css`). So `_stub_content`/`_eu_full_content` must NOT emit their own `<h1>`
   (it would duplicate the heading); the ANSM body's `AmmDenomination` is separate.
 - **The build is incremental** (`main()` in `build.py`). It no longer wipes
@@ -765,7 +765,8 @@ Key facts that aren't obvious from a single file:
   sibling, or harvested live off the ANSM page) and converts it, and the button's
   poll reloads into the now-full page. Keep the stub contract in sync across
   `build_stubs` (which now fans its per-CIS body out over a `Pool`: that body is
-  `_render_stub`, primed per worker by `_init_stub_worker`, so a change to how a
+  `_render_stub`, primed per worker by `_init_stub_worker`, which picks the full page
+  (`render_eu_page`) or the stub (`render_eu_stub`), so a change to how a
   stub or full page renders goes there, not in an inline loop)/`load_cap_meta`/
   `_stub_content`/`_load_ema_links`/`resolve_eu`/
   `auth_groups` (build.py) and `extract_ema_pdf` + the manifest `ema_pdf` field
@@ -1201,7 +1202,11 @@ Key facts that aren't obvious from a single file:
   (`_rcp_description`/`_eu_description`: substance + intent keywords, not one
   boilerplate on 12k pages). Injection points: the shared `src/rcp.html` fills
   `{{HEADEXTRA}}` (canonical/OG/JSON-LD/noindex), `{{DESCRIPTION}}` and
-  `{{BREADCRUMB}}` in all three render paths; the hand-written `src/index.html`,
+  `{{BREADCRUMB}}` in all three render paths, which all fill the template through ONE
+  `_fill_page(tpl, title=, description=, head_extra=, breadcrumb=, cis=, toc=, asof=,
+  content=, xref=, more_bottom=)` (a new `src/rcp.html` slot is a new REQUIRED keyword
+  there, and `test_every_drug_page_path_fills_every_template_slot` checks the two match);
+  the hand-written `src/index.html`,
   `src/a-propos.html` and `src/browse.html` carry a `{{HEAD}}` slot filled by
   `_static_page_head`/`write_browse`. All of this is baked, so the strict CSP is
   untouched and the site stays 100% static; the refresh service (single-page
