@@ -1537,7 +1537,7 @@ Restart is not needed (Caddy reads the mounted dir live), but a
   `REFRESH_UID`). Why: the VPS has no swap, and when RAM ran out it did not OOM-kill
   anything, it thrashed (the kernel evicts executable pages, sshd included) until nothing
   answered. A container now dies inside its own cgroup and `restart:` brings it back.
-  `oom_score_adj` is host-global, not relative to this compose file. The embed service
+  `oom_score_adj` is host-global, not relative to this compose file. Each also has a `pids_limit` (threads count: web 128, refresh 256, embed 256, sized for onnxruntime's per-core threads plus one thread per in-flight request) so a runaway cannot exhaust the host PID table. The embed service
   is the one that grows: onnxruntime's CPU arena kept every batch's peak forever (3.8 GB
   resident at batch 32 measured locally), so the service now runs with the arena OFF
   (`Encoder(cpu_arena=False)`, `EMBED_CPU_ARENA`, ~630 MB between pages) and a batch of 8

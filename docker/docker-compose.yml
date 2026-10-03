@@ -48,6 +48,10 @@ services:
     mem_limit: ${WEB_MEM_LIMIT:-256m}
     memswap_limit: ${WEB_MEM_LIMIT:-256m}
     oom_score_adj: -500
+    # Process/thread ceiling (pids_limit counts threads too), so a runaway or a
+    # fork bomb in one container cannot exhaust the host's PID table. Caddy is a
+    # Go binary that runs on a few dozen OS threads; 128 leaves ample headroom.
+    pids_limit: 128
     # Startup wrapper (docker/entrypoint.sh): stamps STARTED_AT, validates
     # ANALYTICS_URL (crashes if set but unreachable / not JavaScript), derives
     # ANALYTICS_ORIGIN for the CSP, renders /gen/app-config.js from the env, then
@@ -133,6 +137,10 @@ services:
     mem_limit: ${REFRESH_MEM_LIMIT:-1536m}
     memswap_limit: ${REFRESH_MEM_LIMIT:-1536m}
     oom_score_adj: 500
+    # Process/thread ceiling (see web). Three worker threads plus one thread per
+    # in-flight HTTP request (ThreadingHTTPServer, bounded by the Caddy rate limit)
+    # and pymupdf/httpx helpers: normally a few dozen. 256 is generous headroom.
+    pids_limit: 256
     # Match the host user that owns ../data and ../dist so files the service
     # writes (overlays, rebuilt pages, the manifest) stay owned by you and sync
     # cleanly. Defaults to 1000:1000 (the usual first Linux user); override with
@@ -232,6 +240,11 @@ services:
     mem_limit: ${EMBED_MEM_LIMIT:-2g}
     memswap_limit: ${EMBED_MEM_LIMIT:-2g}
     oom_score_adj: 800
+    # Process/thread ceiling (see web). onnxruntime spawns about one intra-op
+    # thread per core (EMBED_INTRA_THREADS) per session, plus one thread per
+    # in-flight HTTP request and the worker: a few dozen on a small VPS, under a
+    # hundred on a big host. 256 keeps headroom without letting it run away.
+    pids_limit: 256
     networks:
       # This project's own network, which every service joins by default. Listing
       # it explicitly is required: naming any network here replaces the default
