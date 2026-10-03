@@ -651,7 +651,10 @@ Key facts that aren't obvious from a single file:
   they fall through to the `/api/*` + `/api/sem/*` proxies and are rate-limited like any
   API call; the query POST is same-origin so `connect-src 'self'` covers the page's
   fetches. It is CSP-safe (same-origin script, no inline handlers/eval; bar widths set
-  via CSSOM), auto-refreshes every 15 s only while the tab is visible, and degrades to a
+  via CSSOM), auto-refreshes every 15 s only while the tab is visible
+  (a tick is skipped while the previous one is still out, every fetch times out, and the
+  popup's async loads carry a generation token so a stale answer never paints over a
+  newer view), and degrades to a
   per-card "indisponible" if a service is down (the static site is unaffected). It is
   `noindex` (thin, ever-changing: `_static_page_head` prepends the robots meta for
   `status.html`) and deliberately kept OUT of the sitemap; it is discoverable via the

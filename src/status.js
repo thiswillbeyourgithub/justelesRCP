@@ -177,14 +177,25 @@
     return box;
   }
 
+  // The popup body is shared by the backlog list and a chunk preview, and each
+  // fills it asynchronously: a slow answer to an earlier view must not paint over
+  // the view the reader has since switched to. Each load takes a new generation;
+  // the returned check says whether it is still the current one.
+  function claim(m) {
+    var gen = m.gen = (m.gen || 0) + 1;
+    return function () { return m.gen === gen; };
+  }
+
   function showChunks(m, cis) {
+    var current = claim(m);
     m.body.textContent = "";
     var back = el("button", "changelog-all", "← Retour à la file");
     back.type = "button";
     back.addEventListener("click", function () { loadBacklog(m); });
     m.body.appendChild(back);
     m.body.appendChild(el("p", "status-loading", "Découpage de la page " + cis + "…"));
-    getJSON(CHUNKS_URL + cis).then(function (d) {
+    getJSON(CHUNKS_URL + cis, DETAIL_TIMEOUT_MS).then(function (d) {
+      if (!current()) return;
       m.body.removeChild(m.body.lastChild);
       if (d.error) { m.body.appendChild(note(d.error, "warn")); return; }
       m.body.appendChild(note("CIS " + cis + " (" + d.lane + ") : " + num(d.chunks.length) +
@@ -199,6 +210,7 @@
       });
       m.body.scrollTop = 0;
     }).catch(function (e) {
+      if (!current()) return;
       m.body.removeChild(m.body.lastChild);
       m.body.appendChild(note("Aperçu indisponible (" + e.message + ").", "off"));
     });
@@ -246,9 +258,13 @@
   }
 
   function loadBacklog(m) {
+    var current = claim(m);
     m.body.textContent = "";
     m.body.appendChild(el("p", "status-loading", "Chargement de la file…"));
-    getJSON(BACKLOG_URL).then(function (d) { renderBacklog(m, d); }).catch(function (e) {
+    getJSON(BACKLOG_URL, DETAIL_TIMEOUT_MS).then(function (d) {
+      if (current()) renderBacklog(m, d);
+    }).catch(function (e) {
+      if (!current()) return;
       m.body.textContent = "";
       m.body.appendChild(note("Service d'indexation indisponible (" + e.message + ").", "off"));
     });
@@ -431,12 +447,23 @@
   }
 
   // ---- data fetch + tick --------------------------------------------------
-  function getJSON(url) {
-    return fetch(url, { headers: { "Accept": "application/json" }, cache: "no-store" })
+  // A hung request must not stall the page forever (nor, for a tick, every later
+  // tick: see `ticking`). The popup routes segment whole pages server-side, so
+  // they get a longer budget than the summaries.
+  var SUMMARY_TIMEOUT_MS = 10000;
+  var DETAIL_TIMEOUT_MS = 60000;
+  function getJSON(url, timeoutMs) {
+    var opts = { headers: { "Accept": "application/json" }, cache: "no-store" };
+    if (window.AbortSignal && AbortSignal.timeout)
+      opts.signal = AbortSignal.timeout(timeoutMs || SUMMARY_TIMEOUT_MS);
+    return fetch(url, opts)
       .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); });
   }
 
+  var ticking = false;  // the previous tick's requests are still out: skip this one
   function tick() {
+    if (ticking) return;
+    ticking = true;
     var uptimes = [];
     var crawlS = null, embedS = null;
     var pRefresh = getJSON(SUMMARY_URL).then(function (s) {
@@ -463,7 +490,7 @@
       var up = uptimes.length ? "  ·  en service depuis " + dur(Math.max.apply(null, uptimes)) : "";
       updated.textContent = "Mis à jour à " + t + up + "  ·  actualisation automatique toutes les " +
         Math.round(REFRESH_MS / 1000) + " s";
-    });
+    }).finally(function () { ticking = false; });
   }
 
   var timer = null;
