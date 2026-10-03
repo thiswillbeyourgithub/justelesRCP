@@ -3034,13 +3034,9 @@ def _stub_content(
         "des caractéristiques du produit (RCP) n'est pas publié par l'ANSM, mais "
         "par l'Agence européenne des médicaments (EMA).</p>",
     ]
-    bits = []
-    if eu:
-        bits.append(f"N° d'AMM européenne : <strong>{_esc(eu)}</strong>")
-    if holder:
-        bits.append(f"Titulaire : {_esc(holder)}")
-    if bits:
-        out.append('<p class="stub-meta">' + "<br>".join(bits) + "</p>")
+    meta = _eu_meta_html(eu, holder)
+    if meta:
+        out.append(meta)
     if ema_pdf:
         href, label = ema_pdf, "Consulter le RCP officiel (PDF) sur le site de l'EMA →"
     else:
@@ -3085,6 +3081,24 @@ def _eu_fetched(overlay_html: str) -> str:
     caller then falls back to the ModDate)."""
     m = _EU_FETCHED_RE.search(overlay_html)
     return m.group(1) if m else ""
+
+
+def _eu_asof(overlay_html: str) -> str:
+    """The overlay's capture date, falling back to the ModDate for an overlay seeded
+    before _eu_fetched existed: the date a full /eu/ page's freshness is keyed on
+    (data-rcp-asof, the manifest's asof, the freshest-sibling pick)."""
+    return _eu_fetched(overlay_html) or _eu_date(overlay_html)
+
+
+def _eu_meta_html(eu: str, holder: str) -> str:
+    """The EU authorization number + holder lines shared by the /eu/ stub and the
+    full converted page, or "" when neither is known."""
+    bits = []
+    if eu:
+        bits.append(f"N° d'AMM européenne : <strong>{_esc(eu)}</strong>")
+    if holder:
+        bits.append(f"Titulaire : {_esc(holder)}")
+    return ('<p class="stub-meta">' + "<br>".join(bits) + "</p>") if bits else ""
 
 
 def _eu_pdf(overlay_html: str) -> str:
@@ -3144,7 +3158,7 @@ def resolve_eu(cis: str, cap: dict[str, tuple[str, str, str]],
             link = links.get(sib, "")
         html = _eu_overlay_cached(sib, memo)
         if html.strip():
-            rank = (_eu_fetched(html) or _eu_date(html), sib)  # freshest, then CIS
+            rank = (_eu_asof(html), sib)  # freshest, then CIS
             if best_rank is None or rank > best_rank:
                 best_html, best_rank = html, rank
     if best_html:
@@ -3191,12 +3205,7 @@ def _eu_full_content(name: str, eu: str, holder: str, overlay_html: str) -> str:
     the page template ({{TITLE}}), shared with RCP + stub pages, so it is not
     repeated here. The EMA source buttons + freshness banner are placed in the
     {{ASOF}} slot by build_stubs (same as RCP pages)."""
-    bits = []
-    if eu:
-        bits.append(f"N° d'AMM européenne : <strong>{_esc(eu)}</strong>")
-    if holder:
-        bits.append(f"Titulaire : {_esc(holder)}")
-    meta = ('<p class="stub-meta">' + "<br>".join(bits) + "</p>") if bits else ""
+    meta = _eu_meta_html(eu, holder)
     lead = (
         '<p class="stub-lead">Ce médicament bénéficie d\'une autorisation de mise '
         "sur le marché <strong>européenne centralisée</strong>. Le texte ci-dessous "
@@ -3301,7 +3310,7 @@ def render_eu_page(cis: str, overlay_html: str, meta: tuple[str, str, str] | Non
     # "Rafraîchir maintenant" button (same pairing as /rcp/ pages), instead of sitting
     # in its own .rcp-source row.
     refs = _ref_links_html(cis, name, include_ema=True)  # top ({{ASOF}}) + bottom ({{MORE_BOTTOM}})
-    asof = _asof_html(_eu_date(overlay_html), _eu_fetched(overlay_html) or _eu_date(overlay_html)) \
+    asof = _asof_html(_eu_date(overlay_html), _eu_asof(overlay_html)) \
         + _official_source_html(
             # Same label as an /rcp/ page: an EMA page IS an RCP, just sourced at the
             # EMA, so its source button reads identically (the target is the direct PDF).
@@ -3446,7 +3455,7 @@ def _render_stub_unguarded(cis: str) -> dict:
         render_eu_stub(cis, name, content, _EU_TPL)
     return {
         "cis": cis, "name": name, "slug": slug, "full": full, "reused": reused, "h": h,
-        "asof": (_eu_fetched(overlay) or _eu_date(overlay)) if full else "",
+        "asof": _eu_asof(overlay) if full else "",
     }
 
 
