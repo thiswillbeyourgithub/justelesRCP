@@ -1297,6 +1297,16 @@ def _letter_windows(word: str, limit: int) -> list[str]:
     return [word[i : i + limit] for i in range(0, len(word), limit)] or [word]
 
 
+def _hard_windows(text: str, limit: int) -> list[str]:
+    """Split ``text`` into word windows (_char_windows), cutting any single word still
+    longer than ``limit`` between letters (_letter_windows), so every piece is <=
+    ``limit`` chars. The fallback for an oversized sentence and for a table row."""
+    out: list[str] = []
+    for piece in _char_windows(text, limit):
+        out.extend(_letter_windows(piece, limit) if len(piece) > limit else [piece])
+    return out
+
+
 # Sentence boundary: whitespace right after sentence-ending punctuation. On text already
 # collapsed by _norm_ws (single spaces), this splits "... prolongée. Un effet ..." after
 # the period. Abbreviations ("env. 20") over-split, but that is harmless: the pieces are
@@ -1325,11 +1335,7 @@ def _sentence_chunks(text: str, limit: int) -> list[str]:
             if cur:  # flush what we have, then split the oversized sentence itself
                 chunks.append(cur)
                 cur = ""
-            for piece in _char_windows(sent, limit):
-                if len(piece) > limit:  # a single word longer than limit
-                    chunks.extend(_letter_windows(piece, limit))
-                else:
-                    chunks.append(piece)
+            chunks.extend(_hard_windows(sent, limit))
             continue
         if cur and len(cur) + 1 + len(sent) > limit:
             chunks.append(cur)
@@ -1522,11 +1528,9 @@ def section_chunks(raw: str, cis: str = "") -> list[tuple[str, str, str]]:
             if not _add(sec_id, context, body):
                 return False
         for row in table_rows:
-            for piece in _char_windows(row, _SEC_CHUNK_CHARS) or [row]:
-                for part in ([piece] if len(piece) <= _SEC_CHUNK_CHARS
-                             else _letter_windows(piece, _SEC_CHUNK_CHARS)):
-                    if not _add(sec_id, context, part):
-                        return False
+            for part in _hard_windows(row, _SEC_CHUNK_CHARS) or [row]:
+                if not _add(sec_id, context, part):
+                    return False
         return True
 
     for h_el in inner.xpath(".//*[contains(@class, 'AmmAnnexeTitre1')]"):
