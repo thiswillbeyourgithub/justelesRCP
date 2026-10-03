@@ -355,7 +355,7 @@ Key facts that aren't obvious from a single file:
   wraps `_process` with the shared error/pending bookkeeping). Endpoints: `GET /api/health`, `GET /api/plain/<rcp|eu>/<file>.br`
   (decompressed br-only page for a client without brotli, see the precompression bullet), `GET /api/status/<cis>`
   (`{asof, pending, archived}`), `GET /api/stats` (crawl counters + `crawl` gauge), `POST
-  /api/refresh/<cis>[?src=user|auto]` (returns `{status: fresh|queued|busy, asof, archived}`). It is
+  /api/refresh/<cis>[?src=user|auto]` (returns `{status: fresh|queued|busy, asof, archived}`; a CIS with no `/rcp/` or `/eu/` page gets `{status: unknown}` + HTTP 404 on both this and `/api/status/<cis>`, checked by `_known` before any budget accounting, so the API cannot be driven to fetch arbitrary CIS). It is
   same-origin, so the strict `connect-src 'self'` CSP covers the button's fetches.
   **Honest feedback for a delisted drug (`archived`/retiré).** A drug WITHDRAWN from
   BDPM (e.g. its ANSM `/medicament/<cis>/extrait` now says "Le médicament demandé

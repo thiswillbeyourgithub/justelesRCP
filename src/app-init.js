@@ -304,7 +304,9 @@
       setMsg(askedMsg);
       remember("pending");
       refresh(cis, "user")
-        .then((r) => r.json())
+        // 429 still carries a JSON {status: "busy"}; any other error (e.g. 404
+        // {status: "unknown"}) must not start a poll, so it lands in the catch.
+        .then((r) => (r.ok || r.status === 429 ? r.json() : Promise.reject(r.status)))
         .then((s) => {
           if (s.archived) {
             showRetired();

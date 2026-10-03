@@ -416,11 +416,25 @@ class Refresher:
             return False
         return build.rcp_archived(cis)
 
+    def _known(self, cis: str) -> bool:
+        """True if ``cis`` has a page this service may refresh: an /rcp/ page found at
+        startup, a centrally-authorized /eu/ CIS (stub or full page), or, for a page
+        a full build rendered after startup, a served /rcp/ or /eu/ file on disk (one
+        directory scan, reached only for a CIS outside both sets). Anything else
+        (any other 8-digit number) is refused, so the API cannot be driven to fetch
+        arbitrary CIS from the ANSM."""
+        if cis in self._page_cis or cis in self._eu_cis:
+            return True
+        return any(build.dist_page_for(cis, sub) for sub in ("rcp", "eu"))
+
     def status_of(self, cis: str) -> dict:
         """The button's poll payload: capture date, whether a fetch is queued, and
         whether the ANSM has no RCP for this drug (archived/retiré). ``archived``
         lets the client show an honest terminal message instead of reload-looping on
-        a manifest-vs-page date that can never converge for a delisted drug."""
+        a manifest-vs-page date that can never converge for a delisted drug.
+        ``{"status": "unknown"}`` (HTTP 404) for a CIS with no page."""
+        if not self._known(cis):
+            return {"status": "unknown"}
         return {"asof": self.asof_of(cis),
                 "pending": self.is_pending(cis),
                 "archived": self._rcp_archived(cis)}
@@ -685,10 +699,13 @@ class Refresher:
         ``queued`` - accepted (either just now or already in flight).
         ``busy``   - the on-demand lane is full OR the hourly on-demand ceiling was
                      hit (see ``demand_hourly_max``); the caller should retry later.
+        ``unknown`` - no page for this CIS (``_known``); served as HTTP 404.
         """
         # "crawl" is an internal source the caller may not set; anything else
         # unrecognised collapses to "auto". _SOURCES stays the canonical set.
         source = source if source in _SOURCES and source != "crawl" else "auto"
+        if not self._known(cis):  # before any budget/queue accounting
+            return {"status": "unknown"}
         if self._recently_fetched(cis):
             with self._lock:
                 self._stats["fresh"] += 1
@@ -1153,7 +1170,8 @@ class _Handler(BaseHTTPRequestHandler):
             return
         m = re.fullmatch(r"/api/status/(\d{8})", self.path)
         if m:
-            self._send(200, REFRESHER.status_of(m.group(1)))
+            result = REFRESHER.status_of(m.group(1))
+            self._send(404 if result.get("status") == "unknown" else 200, result)
             return
         self._send(404, {"error": "not found"})
 
@@ -1166,7 +1184,7 @@ class _Handler(BaseHTTPRequestHandler):
             return
         src = parse_qs(parts.query).get("src", ["auto"])[0]
         result = REFRESHER.request(m.group(1), src)
-        code = 429 if result.get("status") == "busy" else 200
+        code = {"busy": 429, "unknown": 404}.get(result.get("status"), 200)
         self._send(code, result)
 
 

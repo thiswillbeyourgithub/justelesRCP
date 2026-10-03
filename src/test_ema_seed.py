@@ -200,6 +200,32 @@ def test_error_entry_keeps_last_success_and_backs_off():
     assert manifest["1"] == {"last_fetch": "2026-01-01T00:00:00+00:00", "status": "ok"}
 
 
+def test_refresh_refuses_unknown_cis():
+    """Any 8-digit number used to be accepted, queued and fetched from the ANSM
+    (counting against the hourly budget). A CIS with no page now answers
+    ``unknown`` before any queue/budget accounting; a page rendered after startup
+    is still recognised from disk."""
+    import tempfile
+    spec = importlib.util.spec_from_file_location(
+        "refresh_service", Path(__file__).parent / "refresh-service.py")
+    rs = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(rs)
+    r = rs.Refresher.__new__(rs.Refresher)  # no I/O: only the sets _known reads
+    r._page_cis, r._eu_cis = {"11111111"}, frozenset({"22222222"})
+    saved = rs.build.DIST
+    with tempfile.TemporaryDirectory() as d:
+        rs.build.DIST = Path(d)
+        try:
+            assert r.request("99999999", "user") == {"status": "unknown"}
+            assert r.status_of("99999999") == {"status": "unknown"}
+            assert r._known("11111111") and r._known("22222222")
+            (Path(d) / "rcp").mkdir()
+            rs.build.write_served(Path(d) / "rcp" / "33333333-new.html", b"<html/>")
+            assert r._known("33333333")
+        finally:
+            rs.build.DIST = saved
+
+
 if __name__ == "__main__":
     test_parse_tolerates_runon_records()
     test_pi_index_prefers_french_and_filters_type()
@@ -208,4 +234,5 @@ if __name__ == "__main__":
     test_convert_splits_paragraphs_bullets_and_drops_page_numbers()
     test_table_merged_title_row_spans_columns()
     test_error_entry_keeps_last_success_and_backs_off()
+    test_refresh_refuses_unknown_cis()
     print("\nAll tests passed.")
