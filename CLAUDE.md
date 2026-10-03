@@ -44,9 +44,12 @@ version-only bump does not invalidate the incremental-build cache (below).
 frontend templates/assets it renders), NOT the repo root: `src/build.py`,
 `src/bdpm.py`, `src/ema_pdf.py`, `src/onnx_embed.py`, `src/scrape-rcp.py`,
 `src/scrape-ema.py`, `src/refresh-service.py`, `src/embed-service.py`,
-`src/embed-rcp.py`, plus the tests `src/test_embed.py` / `src/test_ema_seed.py`.
-They stay siblings so `import bdpm` and the importlib-by-path service imports keep
-resolving; each anchors the repo root as `Path(__file__).resolve().parent.parent`
+`src/embed-rcp.py`, `src/svc_http.py` (the shared HTTP layer of the two services:
+`JSONHandler`, `QuietHTTPServer`, `setup_logging`, plus `load_sibling`, the by-path
+importer of the hyphenated scripts, which caches each sibling in `sys.modules` so two
+importers share one instance), plus the tests `src/test_embed.py` / `src/test_ema_seed.py`.
+They stay siblings so `import bdpm` / `import svc_http` and the by-path service imports
+keep resolving; each anchors the repo root as `Path(__file__).resolve().parent.parent`
 (so `data/`, `src/`, `dist/`, `models/` hang off it). Invoke them as `uv run
 src/<script>.py`. The refresh/embed Docker images COPY these into `/app/src/` so the
 container mirrors the repo (same `parent.parent` anchoring; data/dist mounted at
@@ -1497,7 +1500,7 @@ Restart is not needed (Caddy reads the mounted dir live), but a
   COPYd); without it every `up --build` ships ~1GB+ to the daemon and can fail the
   build on a small VPS ("no space left on device"), leaving no containers. The refresh
   Dockerfile bakes `src/build.py` / `src/scrape-rcp.py` / `src/scrape-ema.py` /
-  `src/ema_pdf.py` / `src/refresh-service.py` / `src/bdpm.py` / `src/rcp.html` (COPYd
+  `src/ema_pdf.py` / `src/refresh-service.py` / `src/bdpm.py` / `src/svc_http.py` / `src/rcp.html` (COPYd
   into `/app/src/`), and pip-installs `pymupdf` (fitz)
   alongside the other deps because `ema_pdf.py` needs it for the EMA PDF conversion.
 - **The embed service is a THIRD, separately-hardened container** (compose `embed`,
@@ -1522,7 +1525,7 @@ Restart is not needed (Caddy reads the mounted dir live), but a
   the VPS via a dedicated additive rsync (the model-gated reconcile self-heals any page
   you did not bake). Both are gitignored deploy.sh modes; either way, do NOT re-add
   `*.vec.json` to the rsync mirror. The Dockerfile bakes `src/build.py` / `src/bdpm.py` /
-  `src/onnx_embed.py` / `src/embed-service.py` / `src/rcp.html` (COPYd into `/app/src/`)
+  `src/onnx_embed.py` / `src/embed-service.py` / `src/svc_http.py` / `src/rcp.html` (COPYd into `/app/src/`)
   and pip-installs `onnxruntime` + `tokenizers`
   (NOT torch, so ~300 Mo not ~2 Go). It is fully optional: `up web refresh` omits it
   and the search box degrades to "indisponible". PRIVACY: it embeds the reader's query

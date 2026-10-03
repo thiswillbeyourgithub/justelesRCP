@@ -27,7 +27,7 @@ WORKDIR /app
 # image. These sources live in src/ in the repo; we COPY them into ./src/ so the
 # container mirrors the repo layout (build.py's ROOT = parent's parent = /app, with
 # data/dist/models mounted at /app/...). Everything else is bind-mounted by compose.
-COPY src/build.py src/bdpm.py src/onnx_embed.py src/embed-service.py ./src/
+COPY src/build.py src/bdpm.py src/onnx_embed.py src/embed-service.py src/svc_http.py ./src/
 COPY src/rcp.html ./src/rcp.html
 
 # Read-only rootfs at runtime: don't try to write .pyc; log unbuffered so lines reach

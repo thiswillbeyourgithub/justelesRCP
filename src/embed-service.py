@@ -49,7 +49,6 @@ logged that contains a query's text.
 from __future__ import annotations
 
 import base64
-import importlib.util
 import json
 import re
 import signal
@@ -59,27 +58,16 @@ import threading
 import time
 import urllib.request
 from collections import Counter, OrderedDict, deque
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs
 
 import click
 from loguru import logger
 
-HERE = Path(__file__).resolve().parent
+import svc_http  # shared JSON handler / server / logging / sibling loader
 
-
-def _load_module(filename: str, name: str):
-    """Import a sibling script by path (matches refresh-service.py). build.py is
-    import-safe (``__main__``-guarded)."""
-    spec = importlib.util.spec_from_file_location(name, HERE / filename)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-build = _load_module("build.py", "build")          # segmentation + shared vec writer
-onnx_embed = _load_module("onnx_embed.py", "onnx_embed")  # warm ONNX encoder
+build = svc_http.load_sibling("build.py", "build")          # segmentation + shared vec writer
+onnx_embed = svc_http.load_sibling("onnx_embed.py", "onnx_embed")  # warm ONNX encoder
 
 # Overlay lanes (build.OVERLAY_LANES) and the CIS matcher (build.CIS_RE) are defined
 # once in build.py; reuse them here rather than re-declaring. The reconcile sweep also
@@ -811,7 +799,7 @@ class Embedder:
         return summary
 
 
-class _Handler(BaseHTTPRequestHandler):
+class _Handler(svc_http.JSONHandler):
     """JSON API under /api/sem/*:
 
     ``POST /api/sem/embed`` {q, dim?}        -> {q: base64-int8 vec, dim, query_prefix}
@@ -826,9 +814,7 @@ class _Handler(BaseHTTPRequestHandler):
     """
 
     server_version = "justelesRCP-embed"
-    # Bound a stalled read so a slow client cannot pin a server thread. Applied as
-    # the socket timeout by StreamRequestHandler; defence-in-depth behind Caddy.
-    timeout = 60
+    health_path = "/api/sem/health"
 
     def _send_detail(self, fn, *args) -> None:
         """Answer a CPU-heavy public popup route, or 503 at once when _DETAIL_SLOTS
@@ -840,31 +826,6 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(200, fn(*args))
         finally:
             EMBEDDER.detail_slots.release()
-
-    def _send(self, code: int, payload: dict) -> None:
-        body = json.dumps(payload).encode("utf-8")
-        try:
-            self.send_response(code)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            self.wfile.write(body)
-        except (BrokenPipeError, ConnectionResetError):
-            # The client hung up before we finished writing: it navigated away, or the
-            # frontend's AbortController cancelled a superseded /embed request (common,
-            # since editing the query cancels the in-flight encode). There is nobody to
-            # send to, so this is routine, not a fault: drop the connection instead of
-            # letting it bubble up to socketserver as a per-request traceback.
-            self.close_connection = True
-
-    def log_message(self, fmt: str, *args) -> None:
-        # Healthcheck fires every 30s forever; never log it. Everything else is DEBUG,
-        # so it stays quiet at INFO. The query TEXT is in the POST body, never in the
-        # request line logged here, so it is never written to the logs.
-        if self.path == "/api/sem/health":
-            return
-        logger.debug("http {} - {}", self.address_string(), fmt % args)
 
     def do_GET(self) -> None:
         if self.path == "/api/sem/health":
@@ -890,7 +851,7 @@ class _Handler(BaseHTTPRequestHandler):
         self._send(404, {"error": "not found"})
 
     def do_POST(self) -> None:
-        parts = urlsplit(self.path)
+        parts = self._path_parts()
         if parts.path == "/api/sem/embed":
             self._handle_query()  # reads its own body
             return
@@ -906,35 +867,6 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(code, result)
             return
         self._send(404, {"error": "not found"})
-
-    def _drain_body(self) -> None:
-        """Read and discard a request body so keep-alive stays in sync. A small body is
-        drained; a large or malformed one just closes the connection (our frontend sends
-        none, so this is purely defensive)."""
-        length = self._content_length()
-        if not length:  # 0 (none) or None (malformed)
-            if length is None:
-                self.close_connection = True
-            return
-        if length > 65536:
-            self.close_connection = True
-            return
-        try:
-            self.rfile.read(length)
-        except Exception:
-            self.close_connection = True
-
-    def _content_length(self) -> int | None:
-        """Parsed Content-Length: 0 when absent, a clamped non-negative int when valid,
-        or None when the header is present but not a number (a malformed header should be
-        a clean 400, not an unhandled ValueError -> 500 traceback)."""
-        raw = self.headers.get("Content-Length")
-        if not raw:
-            return 0
-        try:
-            return max(0, int(raw))
-        except ValueError:
-            return None
 
     def _handle_query(self) -> None:
         length = self._content_length()
@@ -984,23 +916,6 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 EMBEDDER: Embedder | None = None  # set in main(), read by _Handler
-
-
-class _QuietHTTPServer(ThreadingHTTPServer):
-    """ThreadingHTTPServer that treats a client hangup as routine, not an error.
-
-    A reader who navigates away, or whose superseded /embed request the frontend's
-    AbortController cancels, drops the connection mid-exchange. The default
-    handle_error then dumps a BrokenPipeError/ConnectionResetError traceback per
-    hangup (noise, not a fault). _send already swallows the write side; this also
-    covers a reset while READING the request body. Log it at DEBUG and move on."""
-
-    def handle_error(self, request, client_address) -> None:
-        exc = sys.exc_info()[1]
-        if isinstance(exc, (BrokenPipeError, ConnectionResetError)):
-            logger.debug("client {} hung up mid-request", client_address)
-            return
-        super().handle_error(request, client_address)
 
 
 @click.command(context_settings={"help_option_names": ["-h", "--help"]})
@@ -1118,8 +1033,7 @@ def main(host, port, model_dir, out_dim, vec_quant, sem_floor, intra_threads,
          log_level) -> None:
     """Run the semantic-search embedder (see module docstring)."""
     global EMBEDDER
-    logger.remove()
-    logger.add(sys.stderr, level=log_level.upper())
+    svc_http.setup_logging(log_level)
 
     logger.info("loading model from {} (kept warm)", model_dir)
     baseline_rss = _rss_mb()  # process RSS before the weights load (Python + onnxruntime lib)
@@ -1166,7 +1080,7 @@ def main(host, port, model_dir, out_dim, vec_quant, sem_floor, intra_threads,
                 onnx_embed.RUNTIME_MODEL, encoder.dim, EMBEDDER.quant,
                 "on" if backlog else "off", reconcile_seconds,
                 min_query_chars, max_query_chars, EMBEDDER.sem_floor)
-    _QuietHTTPServer((host, port), _Handler).serve_forever()
+    svc_http.QuietHTTPServer((host, port), _Handler).serve_forever()
 
 
 if __name__ == "__main__":

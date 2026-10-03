@@ -21,7 +21,7 @@ WORKDIR /app
 # in src/ in the repo; we COPY them into ./src/ so the container mirrors the repo
 # layout (build.py's ROOT = its parent's parent = /app, with data/ + dist/ mounted at
 # /app/data + /app/dist). Everything else (data, dist) is bind-mounted by compose.
-COPY src/build.py src/scrape-rcp.py src/scrape-ema.py src/ema_pdf.py src/refresh-service.py src/bdpm.py ./src/
+COPY src/build.py src/scrape-rcp.py src/scrape-ema.py src/ema_pdf.py src/refresh-service.py src/bdpm.py src/svc_http.py ./src/
 COPY src/rcp.html ./src/rcp.html
 
 # Read-only rootfs at runtime: don't try to write .pyc; log unbuffered so lines

@@ -49,7 +49,6 @@ from __future__ import annotations
 import gzip
 import hashlib
 import html
-import importlib.util
 import json
 import os
 import random
@@ -63,10 +62,10 @@ import click
 import httpx
 from loguru import logger
 
-# HERE = this script's dir (``src/``), used to import sibling scripts by path below.
-# data/ hangs off the repo root (HERE's parent).
-HERE = Path(__file__).resolve().parent
-ROOT = HERE.parent
+import svc_http  # sibling loader shared with the services
+
+# data/ hangs off the repo root (this script's dir's parent).
+ROOT = Path(__file__).resolve().parent.parent
 DATA = ROOT / "data"
 EU_OVERLAY_DIR = DATA / "eu"
 EMA_MANIFEST_PATH = DATA / ".scrape-ema-manifest.json"
@@ -81,17 +80,8 @@ ANSM_MANIFEST_PATH = DATA / ".scrape-manifest.json"  # source of the ema_pdf lin
 WAYBACK_API = "https://archive.org/wayback/available?url="
 
 
-def _load_module(filename: str, name: str):
-    """Import a sibling ``foo-bar.py`` script by path (its ``-`` name isn't a
-    valid import). Both are import-safe (``__main__``-guarded)."""
-    spec = importlib.util.spec_from_file_location(name, HERE / filename)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-scrape = _load_module("scrape-rcp.py", "scrape_rcp")  # manifest/queue/overlay helpers
-ema = _load_module("ema_pdf.py", "ema_pdf")           # the PDF -> HTML converter
+scrape = svc_http.load_sibling("scrape-rcp.py", "scrape_rcp")  # manifest/queue/overlay helpers
+ema = svc_http.load_sibling("ema_pdf.py", "ema_pdf")           # the PDF -> HTML converter
 
 # EMA is strict about automated access, so default to a slow trickle and a long
 # re-fetch window (an SmPC PDF changes rarely). Both overridable via env / flags.
@@ -235,7 +225,7 @@ def seed_ema_links(ansm: dict, *, ema_json_path: str | None = None,
     is no id join; we match build._brand_root against the EMA medicine_name. Seeds
     one representative CIS (lowest of the group) per auth-group that has no link on
     any member yet. Returns the number of groups matched (== seeded when not dry)."""
-    build = _load_module("build.py", "build")  # lazy: only the seeding path needs it
+    build = svc_http.load_sibling("build.py", "build")  # lazy: only the seeding path needs it
     cap = build.load_cap_meta()
     if not cap:
         logger.warning("no centrally-authorized CIS found "

@@ -52,7 +52,6 @@ Keep import-safe (``__main__`` guard) in case anything imports it later.
 
 from __future__ import annotations
 
-import importlib.util
 import random
 from pathlib import Path
 
@@ -61,20 +60,10 @@ import onnxruntime as ort
 from loguru import logger
 from tqdm import tqdm
 
-HERE = Path(__file__).resolve().parent
+import svc_http  # sibling loader shared with the services
 
-
-def _load_module(filename: str, name: str):
-    """Import a sibling ``foo-bar.py`` script by path (its ``-`` name isn't a valid
-    import). All targets are import-safe (``__main__``-guarded)."""
-    spec = importlib.util.spec_from_file_location(name, HERE / filename)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-build = _load_module("build.py", "build")            # overlay iter + segment + write
-onnx_embed = _load_module("onnx_embed.py", "onnx_embed")  # warm ONNX encoder (no torch)
+build = svc_http.load_sibling("build.py", "build")            # overlay iter + segment + write
+onnx_embed = svc_http.load_sibling("onnx_embed.py", "onnx_embed")  # warm ONNX encoder (no torch)
 
 
 @click.command(context_settings={"help_option_names": ["-h", "--help"]})

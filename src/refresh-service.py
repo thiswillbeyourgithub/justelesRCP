@@ -61,46 +61,27 @@ site, so the strict `connect-src 'self'` CSP keeps holding.
 
 from __future__ import annotations
 
-import importlib.util
-import json
 import queue
 import re
 import signal
-import sys
 import threading
 import time
 import urllib.request
 from collections import deque
 from datetime import datetime, timezone
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs
 
 import click
 from loguru import logger
 
-ROOT = Path(__file__).parent
+import svc_http  # shared JSON handler / server / logging / sibling loader
 
-
-def _load_module(filename: str, name: str):
-    """Import a sibling PEP 723 script by path (handles the hyphenated name).
-
-    Both scripts guard their CLI/build behind ``if __name__ == '__main__'`` so
-    importing them only defines functions and constants; nothing runs. This keeps
-    the scrape and render logic single-sourced instead of copied in here.
-    """
-    spec = importlib.util.spec_from_file_location(name, ROOT / filename)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-scrape = _load_module("scrape-rcp.py", "scrape_rcp")
-build = _load_module("build.py", "build_mod")
+scrape = svc_http.load_sibling("scrape-rcp.py", "scrape_rcp")
+build = svc_http.load_sibling("build.py", "build")
 # EMA lane: fetch + convert an EMA product-information PDF into a /eu/ overlay.
 # scrape-ema.py transitively imports scrape-rcp.py and ema_pdf.py (which needs
 # pymupdf, hence the dep above); all import-safe (__main__-guarded).
-ema_scrape = _load_module("scrape-ema.py", "scrape_ema")
+ema_scrape = svc_http.load_sibling("scrape-ema.py", "scrape_ema")
 
 CIS_RE = re.compile(r"\d{8}")
 # Trigger sources tracked for the crawl stats: a manual button click ("user"),
@@ -1088,7 +1069,7 @@ class Refresher:
         threading.Thread(target=_fire, name=f"embed-notify-{cis}", daemon=True).start()
 
 
-class _Handler(BaseHTTPRequestHandler):
+class _Handler(svc_http.JSONHandler):
     """Minimal JSON API. Routes:
 
     ``POST /api/refresh/<cis>[?src=user|auto]`` - enqueue a refresh; -> {status, asof?}.
@@ -1101,68 +1082,7 @@ class _Handler(BaseHTTPRequestHandler):
     """
 
     server_version = "justelesRCP-refresh"
-    # Bound a stalled read (a client that opens a connection and sends bytes
-    # slowly) so it cannot pin a worker thread indefinitely. StreamRequestHandler
-    # applies this as the socket timeout. Caddy fronts us and manages its own
-    # upstream pool, so this is defence-in-depth against a slowloris that somehow
-    # reaches the service directly.
-    timeout = 60
-
-    def _send(self, code: int, payload: dict) -> None:
-        body = json.dumps(payload).encode("utf-8")
-        try:
-            self.send_response(code)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            self.wfile.write(body)
-        except (BrokenPipeError, ConnectionResetError):
-            # The client hung up before we finished writing (navigated away, or a
-            # status poll was aborted). Nobody to send to: routine, not a fault. Drop
-            # the connection instead of letting it bubble up as a per-request traceback.
-            self.close_connection = True
-
-    def log_message(self, fmt: str, *args) -> None:  # route through loguru
-        # The container healthcheck hits /api/health every 30s forever; logging
-        # it would bury the meaningful lines, so drop it entirely (even at DEBUG).
-        # Everything else is DEBUG, so it stays quiet at the default INFO level
-        # but is available when REFRESH_LOG_LEVEL=DEBUG for troubleshooting.
-        if self.path == "/api/health":
-            return
-        logger.debug("http {} - {}", self.address_string(), fmt % args)
-
-    def _content_length(self) -> int | None:
-        """Parsed Content-Length: 0 when absent, a clamped non-negative int when
-        valid, None when present but not a number (a malformed header should get a
-        clean 400, not an unhandled ValueError -> 500 traceback)."""
-        raw = self.headers.get("Content-Length")
-        if not raw:
-            return 0
-        try:
-            return max(0, int(raw))
-        except ValueError:
-            return None
-
-    def _drain_body(self) -> None:
-        """Read and discard any request body so a leftover body cannot desync the
-        keep-alive connection Caddy holds to us. No endpoint here consumes a body
-        (the frontend POSTs are empty), so we drain unconditionally and cap the
-        read: an over-long or malformed body just closes the connection instead of
-        tying up the socket. Caddy also caps the body upstream (request_body), so
-        this is the belt to that suspenders."""
-        length = self._content_length()
-        if not length:
-            if length is None:  # malformed header: don't trust the framing, close
-                self.close_connection = True
-            return
-        if length > 65536:
-            self.close_connection = True
-            return
-        try:
-            self.rfile.read(length)
-        except Exception:
-            self.close_connection = True
+    health_path = "/api/health"
 
     def _send_plain(self, head: bool) -> None:
         """A br-only page or .vec.json, decompressed, for a client that does not accept
@@ -1211,7 +1131,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         self._drain_body()  # no POST here consumes a body; drain+cap any stray one
-        parts = urlsplit(self.path)  # strip any ?src=... query before matching
+        parts = self._path_parts()  # strip any ?src=... query before matching
         m = re.fullmatch(r"/api/refresh/(\d{8})", parts.path)
         if not m:
             self._send(404, {"error": "not found"})
@@ -1223,23 +1143,6 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 REFRESHER: Refresher | None = None  # set in main(), read by _Handler
-
-
-class _QuietHTTPServer(ThreadingHTTPServer):
-    """ThreadingHTTPServer that treats a client hangup as routine, not an error.
-
-    A reader who navigates away, or whose status poll is aborted, drops the
-    connection mid-exchange. The default handle_error then dumps a BrokenPipeError/
-    ConnectionResetError traceback per hangup (noise, not a fault). _send already
-    swallows the write side; this also covers a reset while READING the request
-    body. Log it at DEBUG and move on."""
-
-    def handle_error(self, request, client_address) -> None:
-        exc = sys.exc_info()[1]
-        if isinstance(exc, (BrokenPipeError, ConnectionResetError)):
-            logger.debug("client {} hung up mid-request", client_address)
-            return
-        super().handle_error(request, client_address)
 
 
 @click.command(context_settings={"help_option_names": ["-h", "--help"]})
@@ -1330,11 +1233,7 @@ def main(host: str, port: int, rate: float, demand_rate: float, min_interval: fl
          log_level: str) -> None:
     """Run the RCP refresh service (see module docstring)."""
     global REFRESHER
-    # Replace loguru's default DEBUG sink with one at the chosen level, so the
-    # noisy per-request lines (and the every-30s healthcheck) stay out of the
-    # container logs unless someone raises the level for troubleshooting.
-    logger.remove()
-    logger.add(sys.stderr, level=log_level.upper())
+    svc_http.setup_logging(log_level)
     ua = user_agent or ("justelesRCP-refresh/1.0 (RCP freshness bot; "
                         "contact hedv10g9@mailer.me)")
     # The on-demand and crawler workers each build/serve on their own thread; the
@@ -1367,7 +1266,7 @@ def main(host: str, port: int, rate: float, demand_rate: float, min_interval: fl
                 f"on ttl={crawl_ttl_days}d" if crawl else "off",
                 f"on rate={eu_rate}s ttl={eu_crawl_ttl_days}d" if eu_crawl else "off",
                 embed_notify_url or "off")
-    _QuietHTTPServer((host, port), _Handler).serve_forever()
+    svc_http.QuietHTTPServer((host, port), _Handler).serve_forever()
 
 
 if __name__ == "__main__":
