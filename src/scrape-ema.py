@@ -404,8 +404,9 @@ def process_one(client: httpx.Client, cis: str, url: str, gzip_overlay: bool) ->
             logger.info("{} recovered from Internet Archive (stamped for later retry)", cis)
         return entry
     except Exception as exc:  # both live + archive failed: record and move on
-        return {"last_fetch": scrape._now_iso(), "status": "error",
-                "error": str(exc)[:200], "ema_pdf": url}
+        # No last_fetch: callers merge it via scrape.store_entry, which keeps
+        # the last SUCCESSFUL fetch date instead of faking a fresh one.
+        return {"status": "error", "error": str(exc)[:200], "ema_pdf": url}
 
 
 def build_order(ttl_days: int, *, force: bool, frequency: Path | None,
@@ -529,7 +530,7 @@ def main(limit, fetch_all, only, local_file, local_cis, local_src, local_via_arc
     with httpx.Client(follow_redirects=True, timeout=60.0, headers={"User-Agent": USER_AGENT}) as client:
         for i, cis in enumerate(targets, 1):
             entry = process_one(client, cis, url_of[cis], gzip_overlay)
-            ema_manifest[cis] = entry
+            scrape.store_entry(ema_manifest, cis, entry)
             status = entry["status"]
             if status == "ok":
                 n_ok += 1

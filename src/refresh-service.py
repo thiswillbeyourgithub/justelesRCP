@@ -71,7 +71,7 @@ import threading
 import time
 import urllib.request
 from collections import deque
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -382,16 +382,22 @@ class Refresher:
             return ""
 
     def _recently_fetched(self, cis: str) -> bool:
-        """True if this CIS was fetched within min_interval (anti-hammer floor)."""
-        entry = self._entry(cis)
-        last = (entry or {}).get("last_fetch")
-        if not last:
-            return False
-        try:
-            age = (datetime.now(timezone.utc) - datetime.fromisoformat(last)).total_seconds()
-        except ValueError:
-            return False
-        return age < self.min_interval
+        """True if this CIS was fetched within min_interval (anti-hammer floor).
+
+        A recent FAILED attempt (``last_error``) counts too, so repeat clicks on a
+        page whose source keeps failing do not each trigger a new fetch."""
+        entry = self._entry(cis) or {}
+        now = datetime.now(timezone.utc)
+        for key in ("last_fetch", "last_error"):
+            stamp = entry.get(key)
+            if not stamp:
+                continue
+            try:
+                if (now - datetime.fromisoformat(stamp)).total_seconds() < self.min_interval:
+                    return True
+            except ValueError:
+                continue
+        return False
 
     def _rcp_archived(self, cis: str) -> bool:
         """True if this ANSM CIS was scraped and the ANSM published NO RCP: a
@@ -600,25 +606,21 @@ class Refresher:
     def _idle_wait_seconds(self, lane: _CrawlLane) -> float:
         """Seconds until the lane's oldest fresh page next crosses its TTL (capped).
 
-        Called only after a full rotation found nothing due, so every page has a
-        recent last_fetch: wake at the soonest one's expiry so the crawler resumes
-        exactly when a page ages past the TTL, but re-poll at least hourly so a
-        manifest or clock change is noticed. A page with no/invalid timestamp is
-        due now (return ~immediately).
+        Called only after a full rotation found nothing due: wake at the soonest
+        ``scrape.due_at`` (a page aging past the TTL, or a failed one reaching its
+        retry window) so the crawler resumes exactly then, but re-poll at least
+        hourly so a manifest or clock change is noticed. A page due now (no/invalid
+        timestamp) returns ~immediately.
         """
         cap = 3600.0
         now = datetime.now(timezone.utc)
-        ttl = timedelta(days=lane.ttl_days)
         soonest: float | None = None
         with self._lock:
             for cis in lane.order:
-                last = (lane.manifest.get(cis) or {}).get("last_fetch")
-                if not last:
+                at = scrape.due_at(lane.manifest.get(cis), lane.ttl_days)
+                if at is None:
                     return 1.0
-                try:
-                    secs = (datetime.fromisoformat(last) + ttl - now).total_seconds()
-                except ValueError:
-                    return 1.0
+                secs = (at - now).total_seconds()
                 if soonest is None or secs < soonest:
                     soonest = secs
         if soonest is None:
@@ -758,9 +760,9 @@ class Refresher:
             # Record the error in the lane's own manifest (the EMA path normally
             # handles its errors internally; this covers an unexpected raise).
             eu = self._is_eu(cis)
-            entry = {"last_fetch": scrape._now_iso(), "status": "error", "error": str(exc)[:200]}
             with self._lock:
-                (self._ema_manifest if eu else self._manifest)[cis] = entry
+                scrape.record_error(self._ema_manifest if eu else self._manifest,
+                                    cis, str(exc))
             if eu:
                 self._persist(self._ema_manifest, ema_scrape.EMA_MANIFEST_PATH)
             else:
@@ -991,7 +993,7 @@ class Refresher:
         # status='error' (it does not raise), so a dead EMA link degrades cleanly.
         entry = ema_scrape.process_one(client, cis, url, self.gzip_overlay)
         with self._lock:
-            self._ema_manifest[cis] = entry
+            scrape.store_entry(self._ema_manifest, cis, entry)
         status = entry.get("status")
         if status == "ok":
             # Re-read the overlay process_one just wrote, then render the /eu/ page

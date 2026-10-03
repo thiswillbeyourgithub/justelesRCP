@@ -165,6 +165,41 @@ def test_table_merged_title_row_spans_columns():
     ), got
 
 
+def test_error_entry_keeps_last_success_and_backs_off():
+    """A failed fetch must not pass for a fresh capture, nor be retried at once.
+
+    It used to overwrite the entry with ``{last_fetch: <now>, status: error}``:
+    the page's "vérifiée le" date and the anti-hammer floor then read the FAILED
+    attempt as a successful fetch, and ``is_due`` re-queued it on every rotation.
+    """
+    from datetime import datetime, timedelta, timezone
+    scrape = sema.scrape
+    old = (datetime.now(timezone.utc) - timedelta(days=400)).isoformat()
+    manifest = {"1": {"last_fetch": old, "hash": "h", "status": "ok",
+                      "ema_pdf": "https://www.ema.europa.eu/x_fr.pdf"}}
+    scrape.record_error(manifest, "1", "HTTP 503")
+    e = manifest["1"]
+    assert e["last_fetch"] == old and e["hash"] == "h", e
+    assert e["ema_pdf"].endswith("x_fr.pdf") and e["status"] == "error", e
+    assert "last_error" in e
+    # Fresh failure: not due until the retry window passes, whatever the TTL.
+    assert not scrape.is_due(e, 365)
+    e["last_error"] = (datetime.now(timezone.utc)
+                       - timedelta(seconds=scrape.ERROR_RETRY_SECONDS + 1)).isoformat()
+    assert scrape.is_due(e, 365)
+    # A never-succeeded CIS gets no fake last_fetch.
+    scrape.store_entry(manifest, "2", {"status": "error", "error": "boom"})
+    assert "last_fetch" not in manifest["2"] and not scrape.is_due(manifest["2"], 1)
+    # Old-format error entry: its last_fetch was the failure time, so it is dropped.
+    manifest["3"] = {"last_fetch": old, "status": "error", "error": "x"}
+    assert scrape.is_due(manifest["3"], 365)
+    scrape.record_error(manifest, "3", "y")
+    assert "last_fetch" not in manifest["3"]
+    # A success replaces the error entry wholesale.
+    scrape.store_entry(manifest, "1", {"last_fetch": "2026-01-01T00:00:00+00:00", "status": "ok"})
+    assert manifest["1"] == {"last_fetch": "2026-01-01T00:00:00+00:00", "status": "ok"}
+
+
 if __name__ == "__main__":
     test_parse_tolerates_runon_records()
     test_pi_index_prefers_french_and_filters_type()
@@ -172,4 +207,5 @@ if __name__ == "__main__":
     test_overlay_pdf_url_reads_baked_link()
     test_convert_splits_paragraphs_bullets_and_drops_page_numbers()
     test_table_merged_title_row_spans_columns()
+    test_error_entry_keeps_last_success_and_backs_off()
     print("\nAll tests passed.")

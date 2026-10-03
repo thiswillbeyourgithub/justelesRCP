@@ -64,7 +64,7 @@ import json
 import os
 import random
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import click
@@ -248,22 +248,64 @@ def save_manifest(manifest: dict, path: Path | None = None) -> None:
         dest.write_text(payload, encoding="utf-8")
 
 
-def is_due(entry: dict | None, ttl_days: int) -> bool:
-    """Return True if a CIS should be (re)fetched given its manifest entry.
+# A CIS whose last fetch FAILED is retried this long after the failure: soon
+# enough that a transient outage heals, late enough that the crawler does not
+# hammer a page that keeps failing (it used to be due again on every rotation).
+ERROR_RETRY_SECONDS = 6 * 3600
 
-    Due when never fetched, previously errored, or last fetched longer ago than
-    ``ttl_days``. A malformed/absent timestamp is treated as due.
+
+def due_at(entry: dict | None, ttl_days: int) -> datetime | None:
+    """When a CIS next becomes due per its manifest entry, or None if due now.
+
+    Never fetched or a malformed timestamp: due now. A failed fetch is due
+    ``ERROR_RETRY_SECONDS`` after ``last_error`` (an old-format error entry has
+    none: due now). Otherwise ``ttl_days`` after the last SUCCESSFUL
+    ``last_fetch``. Shared by ``is_due`` and the refresh crawler's idle wait so
+    the two never disagree.
     """
-    if not entry or entry.get("status") == "error":
-        return True
-    last = entry.get("last_fetch")
-    if not last:
-        return True
+    if not entry:
+        return None
     try:
-        age = datetime.now(timezone.utc) - datetime.fromisoformat(last)
+        if entry.get("status") == "error":
+            err = entry.get("last_error")
+            return (datetime.fromisoformat(err) + timedelta(seconds=ERROR_RETRY_SECONDS)
+                    if err else None)
+        last = entry.get("last_fetch")
+        return datetime.fromisoformat(last) + timedelta(days=ttl_days) if last else None
     except ValueError:
-        return True
-    return age.days >= ttl_days
+        return None
+
+
+def is_due(entry: dict | None, ttl_days: int) -> bool:
+    """Return True if a CIS should be (re)fetched given its manifest entry."""
+    at = due_at(entry, ttl_days)
+    return at is None or datetime.now(timezone.utc) >= at
+
+
+def store_entry(manifest: dict, cis: str, entry: dict) -> None:
+    """Record a fetch outcome for ``cis`` in ``manifest`` (in place).
+
+    A success replaces the entry. A failure (``status == "error"``) is MERGED
+    into the previous entry and stamped ``last_error``, so it keeps the last
+    successful ``last_fetch``/``hash``/``ema_pdf``: an error must not pass for a
+    fresh capture (that date feeds the page's "vérifiée le" and the refresh
+    service's anti-hammer floor). An old-format error entry's ``last_fetch`` was
+    the error time, not a success, so it is dropped.
+    """
+    if entry.get("status") != "error":
+        manifest[cis] = entry
+        return
+    prev = dict(manifest.get(cis) or {})
+    if prev.get("status") == "error" and "last_error" not in prev:
+        prev.pop("last_fetch", None)
+    prev.update(entry)
+    prev["last_error"] = _now_iso()
+    manifest[cis] = prev
+
+
+def record_error(manifest: dict, cis: str, msg: str) -> None:
+    """Record a failed fetch of ``cis`` (see ``store_entry``)."""
+    store_entry(manifest, cis, {"status": "error", "error": msg[:200]})
 
 
 def write_overlay(cis: str, rcp_html: str, gzip_overlay: bool,
@@ -491,7 +533,7 @@ def main(limit: int, fetch_all: bool, only: tuple[str, ...], ttl_days: int,
                 logger.info("{} | {} {} -> {}", _progress(i, total, start), source, cis, result)
             except Exception as exc:  # network / parse error: record and move on
                 n_err += 1
-                manifest[cis] = {"last_fetch": _now_iso(), "status": "error", "error": str(exc)[:200]}
+                record_error(manifest, cis, str(exc))
                 logger.error("{} | {} {} -> ERROR {}", _progress(i, total, start), source, cis, exc)
             # Persist periodically so a long run survives interruption.
             if i % 25 == 0:

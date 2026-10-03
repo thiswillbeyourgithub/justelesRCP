@@ -310,7 +310,7 @@ Key facts that aren't obvious from a single file:
   25th-percentile score. Combined with a `--ttl-days` (default 30) skip window, the static
   architecture is preserved:
   nothing dynamic runs at serve time. `data/.scrape-manifest.json` holds per-CIS
-  `last_fetch`/hash for the TTL. Keep the extraction envelope in sync with
+  `last_fetch`/hash for the TTL. `last_fetch` is the last SUCCESSFUL fetch: a failure goes through `scrape.store_entry`/`record_error`, which merges `{status: error, error, last_error}` into the previous entry (keeping its `last_fetch`/`hash`/`ema_pdf`) and is retried `ERROR_RETRY_SECONDS` (6h) after `last_error` (`due_at`, shared by `is_due` and the refresh crawler's idle wait), so an error neither fakes freshness nor gets re-fetched on every rotation. Keep the extraction envelope in sync with
   `clean_rcp`'s `div#textDocument` lookup if either changes.
 - **The on-demand refresh service is one of two runtime components** (the other is
   the embed service, further below) (`refresh-service.py`,

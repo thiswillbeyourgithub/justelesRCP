@@ -300,7 +300,12 @@ def _load_scrape_dates() -> dict[str, str]:
         return {}
     dates: dict[str, str] = {}
     for cis, entry in raw.items():
-        stamp = (entry or {}).get("last_fetch")
+        entry = entry or {}
+        # An old-format error entry stamped last_fetch with the FAILED attempt's
+        # time; it is not a capture date (new error entries keep the last success).
+        if entry.get("status") == "error" and "last_error" not in entry:
+            continue
+        stamp = entry.get("last_fetch")
         if not stamp:
             continue
         try:
