@@ -170,6 +170,7 @@ class _CrawlLane:
         self.force = False                    # armed by SIGHUP; consumed in _claim_next_crawl
         self.force_pending: set[str] = set()  # CIS still to re-crawl in the forced pass
         self.wake = threading.Event()         # set by SIGHUP to break an idle sleep
+        self.stale = False  # order must be rebuilt: rotation wrapped, or a new EMA link
 
 
 class Refresher:
@@ -550,22 +551,37 @@ class Refresher:
 
         Reuses the lane's ``order_fn`` (scrape.build_queue's frequency ordering, the
         SAME the batch scrapers use), restricted to CIS that actually render a page.
-        Runs once in the worker thread so the HTTP server can start serving
+        Runs in the worker thread so the HTTP server can start serving
         immediately; per-page due-ness is checked live in _claim_next_crawl, not
         frozen here. Degrades to no crawler (empty order) if the BDPM inputs are
         missing rather than crashing the service.
+
+        Also REBUILT whenever ``lane.stale`` is set (once per completed rotation, and
+        after _harvest_ema_url seeds a new EMA group), so an order is never frozen at
+        startup: a /eu/ group seeded later, or a page that appeared since, joins the
+        rotation. A rebuild that fails keeps the previous order.
         """
         if not lane.enabled:
             return
+        lane.stale = False  # cleared BEFORE building, so a link harvested meanwhile re-marks it
         try:
             order = lane.order_fn()
         except SystemExit as exc:  # e.g. missing CIS_bdpm; degrade, don't crash
+            if lane.order:
+                logger.warning("{} crawler: order rebuild failed, keeping the previous "
+                               "one: {}", lane.name, exc)
+                return
             logger.warning("{} crawler disabled: {}", lane.name, exc)
             lane.enabled = False
             return
-        lane.order = order
-        logger.info("{} crawler armed: {} pages in frequency order, ttl {}d, rate {}s",
-                    lane.name, len(order), lane.ttl_days, lane.rate)
+        previous = len(lane.order)
+        with self._lock:
+            lane.order = order
+            if lane.idx >= len(order):
+                lane.idx = 0
+        if len(order) != previous:
+            logger.info("{} crawler armed: {} pages in frequency order, ttl {}d, rate {}s",
+                        lane.name, len(order), lane.ttl_days, lane.rate)
 
     def _claim_next_crawl(self, lane: _CrawlLane) -> str | None:
         """Claim the lane's next page to crawl, or None if there is nothing to do.
@@ -612,6 +628,8 @@ class Refresher:
             for _ in range(n):
                 cis = lane.order[lane.idx]
                 lane.idx = (lane.idx + 1) % n
+                if lane.idx == 0:  # a rotation completed: refresh the order
+                    lane.stale = True
                 if cis in self._pending:
                     continue  # already queued/in flight (on-demand or other lane)
                 if scrape.is_due(lane.manifest.get(cis), lane.ttl_days):
@@ -818,13 +836,20 @@ class Refresher:
         is. ``_handle`` routes each CIS to the ANSM or EMA fetch path via ``_is_eu``.
         """
         self._build_crawl_order(lane)
-        if not lane.enabled or not lane.order:
-            logger.info("{} crawler: nothing to crawl (disabled or empty order)", lane.name)
-            return
         with self._client() as client:
             while True:
+                if lane.stale:
+                    self._build_crawl_order(lane)
+                if not lane.enabled:
+                    logger.info("{} crawler: nothing to crawl (disabled)", lane.name)
+                    return
                 cis = self._claim_next_crawl(lane)
                 if cis is None:  # nothing due: idle until the oldest page ages out
+                    # An EMPTY order (e.g. no /eu/ group seeded yet) is not final: the
+                    # idle wait ends on the hourly re-poll or on the wake a live harvest
+                    # sets, and the order is then rebuilt.
+                    if not lane.order:
+                        lane.stale = True
                     wait = self._idle_wait_seconds(lane)
                     if not lane.idle_logged:
                         logger.info("{} crawler idle: all {} pages within {}d; next due in {}",
@@ -992,6 +1017,10 @@ class Refresher:
             entry["ema_pdf"] = url
             self._manifest[cis] = entry
             self._ema_links[cis] = url  # so this + sibling lookups resolve it now
+        # The EMA crawl order only covers groups that had a link when it was built:
+        # have the crawler rebuild it so this group's siblings join the rotation.
+        self._eu_lane.stale = True
+        self._eu_lane.wake.set()
         self._persist_manifest()
         logger.info("harvested EMA PDF link for {} live from ANSM", cis)
         return url

@@ -357,6 +357,50 @@ def test_persist_snapshots_inside_write_lock():
     print("ok  test_persist_snapshots_inside_write_lock")
 
 
+def test_crawl_order_is_rebuilt_after_a_rotation_and_a_live_harvest():
+    """A lane's crawl order used to be built ONCE at startup, so a /eu/ group whose
+    EMA link was harvested later (or a page added since) never joined the rotation.
+    It is now rebuilt when the cursor wraps, and _harvest_ema_url marks the EMA
+    lane stale (and wakes it) after caching a new link."""
+    import threading
+    spec = importlib.util.spec_from_file_location(
+        "refresh_service", Path(__file__).parent / "refresh-service.py")
+    rs = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(rs)
+    r = rs.Refresher.__new__(rs.Refresher)  # no I/O: just the crawl state
+    r._lock, r._pending = threading.Lock(), {}
+    catalog = ["11111111", "22222222"]
+    lane = rs._CrawlLane("eu", True, 180, 0, {}, lambda: list(catalog))
+    r._build_crawl_order(lane)
+    claimed = []
+    for _ in range(2):
+        claimed.append(r._claim_next_crawl(lane))
+        r._pending.clear()
+    assert claimed == catalog and lane.stale, (claimed, lane.stale)
+    catalog.append("33333333")  # e.g. a newly seeded group's presentation
+    r._build_crawl_order(lane)  # what _crawl_run does when lane.stale
+    assert not lane.stale and lane.order == catalog
+    seen = set()
+    for _ in range(3):
+        seen.add(r._claim_next_crawl(lane))
+        r._pending.clear()
+    assert "33333333" in seen, seen
+
+    # A live harvest marks the EMA lane stale and wakes its worker.
+    r._eu_lane, r._manifest, r._ema_links = lane, {}, {}
+    r._persist_manifest = lambda: None
+    lane.wake.clear()
+    saved = rs.scrape.fetch_one, rs.scrape.extract_ema_pdf
+    rs.scrape.fetch_one = lambda client, cis: ("<html/>", 200)
+    rs.scrape.extract_ema_pdf = lambda page: "https://www.ema.europa.eu/x_fr.pdf"
+    try:
+        assert r._harvest_ema_url(None, "44444444")
+    finally:
+        rs.scrape.fetch_one, rs.scrape.extract_ema_pdf = saved
+    assert lane.stale and lane.wake.is_set()
+    print("ok  test_crawl_order_is_rebuilt_after_a_rotation_and_a_live_harvest")
+
+
 if __name__ == "__main__":
     test_parse_tolerates_runon_records()
     test_pi_index_prefers_french_and_filters_type()
@@ -370,4 +414,5 @@ if __name__ == "__main__":
     test_pdf_fetch_refuses_offhost_redirect()
     test_pdf_fetch_and_convert_are_size_capped()
     test_persist_snapshots_inside_write_lock()
+    test_crawl_order_is_rebuilt_after_a_rotation_and_a_live_harvest()
     print("\nAll tests passed.")

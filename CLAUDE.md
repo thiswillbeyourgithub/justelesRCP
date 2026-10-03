@@ -403,7 +403,7 @@ Key facts that aren't obvious from a single file:
   guard `__main__`, so importing them must stay import-safe (no side effects at
   module load); the refresh service depends on that.
   **The perpetual crawler.** With `REFRESH_CRAWL` on (default), the worker builds
-  a frequency-ordered list of every page once (`_build_crawl_order()` reuses
+  a frequency-ordered list of every page (`_build_crawl_order()` reuses
   `scrape.build_queue(force=True, restrict=page_cis)`, the SAME ordering the batch
   scraper CLI uses, restricted to CIS that actually render a page) and then rotates
   a cursor through it (`_claim_next_crawl()`): it picks the next page that is due
@@ -411,11 +411,14 @@ Key facts that aren't obvious from a single file:
   not already queued on-demand, marks it pending as `crawl`, and refreshes it. When
   a full rotation finds nothing due, it flips to idle and `_idle_wait_seconds()`
   sleeps until the oldest fresh page next crosses the TTL (capped so it re-polls at
-  least hourly), then resumes. So the crawler keeps the whole catalog no staler
+  least hourly), then resumes. The order is REBUILT (`lane.stale`) each time the
+  cursor wraps and after `_harvest_ema_url` caches a new EMA link (which also wakes
+  the EMA worker), so it is never frozen at startup. So the crawler keeps the whole catalog no staler
   than the TTL, sweeping (~15k pages / one-per-`rate`) then idling, and needs no
   cron. It runs on its OWN worker/rate limit, separate from the on-demand lane (a
-  click never waits behind it). Missing BDPM inputs degrade it to off (empty order,
-  the `_crawl_run` worker just exits) rather than crashing; `REFRESH_CRAWL=0`
+  click never waits behind it). Missing BDPM inputs degrade it to off (the
+  `_crawl_run` worker just exits) rather than crashing; an empty order just idles
+  and is rebuilt on the next hourly poll; `REFRESH_CRAWL=0`
   disables it (crawl worker not started), leaving only button/auto refreshes.
   **Forced re-crawl on SIGHUP (`deploy.sh --rebuild`).** To re-sweep the WHOLE
   catalog on demand (e.g. after a render change) without deleting overlays (which
@@ -467,8 +470,8 @@ Key facts that aren't obvious from a single file:
   the ANSM manifest first, so a reader never waits for the batch scraper.
   `render_eu_page` needs no live EMA read at build (the overlay is self-describing),
   and everything stays import-safe (`scrape-ema.py`/`ema_pdf.py` guard `__main__`).
-  Missing inputs (no cap-meta, no PDF links, no overlays) degrade the lane to off
-  (empty order, worker exits); `REFRESH_EMA_CRAWL=0` disables it entirely.
+  Missing inputs (no cap-meta) degrade the lane to off (worker exits); no PDF links
+  or overlays yet just leave it idle on an empty order until a harvest seeds one; `REFRESH_EMA_CRAWL=0` disables it entirely.
   **Crawl statistics + logging.** Each refresh is tagged with its trigger
   *source* (`user` = button, `auto` = the >1yr page-load refresh, `crawl` = the
   perpetual crawler, set internally and NOT acceptable from a caller); `app-init.js`
