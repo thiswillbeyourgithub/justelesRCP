@@ -935,9 +935,10 @@ class Refresher:
             self._record(cis, source, "empty", "délisté de BDPM (aucun RCP; page à marquer retirée)")
         else:
             row = build.render_record((cis, rcp, asof))
-            if row is None:
-                logger.warning("render produced nothing for {}", cis)
-                self._record(cis, source, "empty", "render produced nothing")
+            if "error" in row:
+                # The overlay is written but the page kept its previous render.
+                logger.warning("render failed for {}: {}", cis, row["error"])
+                self._record(cis, source, "error", f"render failed: {row['error'][:120]}")
             else:
                 self._record(cis, source, "ok", f"{row['slug']} ({len(rcp)} bytes)")
                 self._notify_embed(cis)  # re-embed this page for semantic search

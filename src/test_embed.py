@@ -1517,6 +1517,40 @@ def test_query_cache_survives_concurrent_purge_and_inserts():
     assert len(onnx_embed._QueryCache(max_items=0, ttl=10)) == 0
 
 
+def test_failed_render_is_reported_and_previous_page_kept():
+    """A render that raises must not silently drop the page.
+
+    render_record used to swallow the exception and return None; main() then left the
+    CIS out of the index and _prune_pages deleted its last good page (a 404)."""
+    saved = build.clean_rcp
+
+    def boom(*_a, **_k):
+        raise ValueError("malformed markup")
+
+    build.clean_rcp = boom
+    try:
+        row = build.render_record(("12345678", "<html/>", "2022-05-02"))
+    finally:
+        build.clean_rcp = saved
+    assert row["cis"] == "12345678" and "malformed markup" in row["error"], row
+    with tempfile.TemporaryDirectory() as d:
+        served = Path(d)
+        prev = {"12345678": {"h": "abc", "name": "X", "slug": "12345678-x", "asof": "2025-01-01"}}
+        assert build._keep_failed("12345678", prev, served) is None  # page gone: nothing to keep
+        build.write_served(served / "12345678-x.html", b"<html>ok</html>")
+        kept = build._keep_failed("12345678", prev, served)
+        assert kept == {**prev["12345678"], "h": ""}, kept  # blank h => retried next build
+        assert build._keep_failed("99999999", prev, served) is None
+    fails = [{"cis": str(i), "error": "x"} for i in range(11)]
+    build._check_render_failures(fails[:10], 100, "RCP")  # under the floor: report only
+    try:
+        build._check_render_failures(fails, 100, "RCP")
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError("too many render failures must abort the build")
+
+
 if __name__ == "__main__":
     test_load_cap_meta_excludes_decentralised()
     test_clean_substance_strips_salt_hydrate()
@@ -1565,4 +1599,5 @@ if __name__ == "__main__":
     test_changelog_rejects_malformed_notes()
     test_changelog_requires_notes_for_the_current_version()
     test_query_cache_survives_concurrent_purge_and_inserts()
+    test_failed_render_is_reported_and_previous_page_kept()
     print("\nAll tests passed.")

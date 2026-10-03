@@ -266,7 +266,7 @@ Key facts that aren't obvious from a single file:
   `dist/`; instead `dist/.build-manifest.json` maps each CIS to a hash of its
   inputs (raw HTML + mapped name). A record whose hash is unchanged and whose
   output files still exist is reused (no parse, no compress); stale pages
-  (renamed slugs, dropped CIS) are pruned by slug set. A `_global_key` (hash of
+  (renamed slugs, dropped CIS) are pruned by slug set. A page whose render RAISES (`render_record`/`_render_stub` return `{cis, error}` via `_render_guarded`) is reported and keeps its previous output + manifest record with a blank hash (`_keep_failed`, retried next build) instead of falling out of the slug set and being pruned to a 404; past 1% failures (`_check_render_failures`) the build aborts before pruning or writing the manifest. A `_global_key` (hash of
   `build.py`'s source MINUS the `__version__` line, plus the RCP template) busts
   the whole cache when build logic or the template changes, so any real code
   edit forces a full rebuild while a version-only bump does not. Both render

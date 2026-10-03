@@ -2787,13 +2787,56 @@ def _ref_links_html(
     )
 
 
-def render_record(item: tuple[str, str, str]) -> dict[str, str] | None:
-    """Clean one RCP, write its page + precompressed siblings, return index row."""
-    cis, raw, asof = item
+# A page whose render RAISES is reported and its previous output kept, never just
+# dropped: a dropped row used to fall out of the index, so the prune step deleted the
+# last good page (one malformed overlay = a 404). Past this share of failures the
+# build aborts before pruning anything, since that smells like a code bug, not data.
+_RENDER_FAIL_MAX_RATIO = 0.01
+_RENDER_FAIL_MIN = 10
+
+
+def _render_guarded(fn, cis: str, *args) -> dict:
+    """``fn(*args)``, or ``{"cis", "error"}`` if it raises (pool workers must not
+    abort the whole build on one bad page)."""
     try:
-        denom, cleaned, toc, xref_links = clean_rcp(raw, cis, _XREF)
-    except Exception:  # a few dumps have malformed markup
+        return fn(*args)
+    except Exception as exc:  # malformed markup, a converter edge case, ...
+        return {"cis": cis, "error": repr(exc)[:200]}
+
+
+def _keep_failed(cis: str, prev_all: dict, served_dir: Path) -> dict | None:
+    """The previous manifest record of a CIS whose render failed, if its page is
+    still served, with ``h`` blanked so the next build retries it. None when there
+    is nothing to keep (never rendered, or the page is gone)."""
+    rec = prev_all.get(cis)
+    if not rec or not br_path(served_dir / f"{rec['slug']}.html").exists():
         return None
+    return {**rec, "h": ""}
+
+
+def _check_render_failures(failures: list[dict], total: int, label: str) -> None:
+    """Report failed renders (first 5); abort when they exceed the tolerated share."""
+    if not failures:
+        return
+    print(f"  {len(failures)} {label} page(s) failed to render (previous page kept):")
+    for f in failures[:5]:
+        print(f"    {f['cis']}: {f['error']}")
+    if len(failures) > max(_RENDER_FAIL_MIN, total * _RENDER_FAIL_MAX_RATIO):
+        raise SystemExit(
+            f"aborting: {len(failures)}/{total} {label} renders failed, likely a code "
+            "bug; nothing pruned and the build manifest left unchanged"
+        )
+
+
+def render_record(item: tuple[str, str, str]) -> dict[str, str]:
+    """Clean one RCP, write its page (stored as .br), return its index row, or
+    ``{"cis", "error"}`` when the render raised (see ``_render_guarded``)."""
+    return _render_guarded(_render_record, item[0], item)
+
+
+def _render_record(item: tuple[str, str, str]) -> dict[str, str]:
+    cis, raw, asof = item
+    denom, cleaned, toc, xref_links = clean_rcp(raw, cis, _XREF)
     name = _NAMES.get(cis) or denom or f"RCP {cis}"
     slug = f"{cis}-{slugify(name)}"
     path = f"/rcp/{slug}"
@@ -3293,9 +3336,11 @@ def _init_stub_worker(cap, ema_links, groups, page_tokens, compo, tpl, prev_reco
 def _render_stub(cis: str) -> dict:
     """Worker: (re)render one /eu/ page (full converted SmPC or lightweight stub),
     or reuse its cached output, returning the manifest/index facts for the main
-    process to collect. Kept byte-for-byte identical to the body build_stubs used
-    to run inline, so the incremental cache and page output are unchanged: only the
-    parallelism is new."""
+    process to collect, or ``{"cis", "error"}`` when the render raised."""
+    return _render_guarded(_render_stub_unguarded, cis, cis)
+
+
+def _render_stub_unguarded(cis: str) -> dict:
     name, eu, holder = _EU_CAP[cis]
     slug = f"{cis}-{slugify(name)}"
     out = DIST / "eu" / f"{slug}.html"
@@ -3375,7 +3420,8 @@ def _render_stub(cis: str) -> dict:
 
 
 def build_stubs(
-    real_index: list[dict[str, str]], page_tpl: str, prev_records: dict
+    real_index: list[dict[str, str]], page_tpl: str, prev_records: dict,
+    prev_all: dict,
 ) -> tuple[list[dict], dict, int, int]:
     """Render /eu/ landing pages for centrally-authorized, page-less drugs.
 
@@ -3385,7 +3431,8 @@ def build_stubs(
     collide with RCP CIS: one has an empty RCP, the other does not). Reuses a
     cached output when its content hash is unchanged, exactly like render_record.
     The content hash omits the template/code, which the global key already
-    guards."""
+    guards. ``prev_all`` is the previous manifest regardless of the global key, so
+    a page whose render fails keeps its previous output (``_keep_failed``)."""
     cap = load_cap_meta()
     # Direct EMA PDF links harvested by the scraper (CIS -> url); a presentation
     # whose CIS (or a sibling's, see below) is present links straight at the doc,
@@ -3421,6 +3468,7 @@ def build_stubs(
     eu_dir.mkdir(parents=True, exist_ok=True)
     stub_index: list[dict] = []
     stub_records: dict = {}
+    failures: list[dict] = []
     reused = 0
     # Parallel render, mirroring the RCP stage (render_record): the /eu/ set is
     # ~2.3k pages and a full converted SmPC page is brotli-heavy, so a serial loop
@@ -3438,6 +3486,15 @@ def build_stubs(
                  initargs=(cap, ema_links, groups, page_tokens, compo, page_tpl,
                            prev_records)) as pool:
         for r in pool.imap_unordered(_render_stub, stub_cis, chunksize=8):
+            pbar.update(1)
+            if "error" in r:
+                failures.append(r)
+                kept = _keep_failed(r["cis"], prev_all, eu_dir)
+                if kept:
+                    stub_index.append({"cis": r["cis"], "name": kept["name"],
+                                       "slug": kept["slug"], "eu": 1})
+                    stub_records[r["cis"]] = kept
+                continue
             stub_index.append({"cis": r["cis"], "name": r["name"], "slug": r["slug"], "eu": 1})
             # ``full`` (indexable full /eu/ page vs noindex stub) + ``asof`` (the EMA
             # capture date) live only in the manifest, for write_sitemap: a full page
@@ -3449,8 +3506,8 @@ def build_stubs(
             }
             if r["reused"]:
                 reused += 1
-            pbar.update(1)
 
+    _check_render_failures(failures, len(stub_cis), "/eu/")
     _prune({e["slug"] for e in stub_index})
     return stub_index, stub_records, reused, len(stub_cis) - reused
 
@@ -3497,12 +3554,14 @@ def main() -> None:
     # global key and forces a full rebuild; a version-only bump does not.
     global_key = _global_key(page_tpl, xref, _SUBSTANCES)
     prev = _load_manifest()
-    prev_records = prev.get("records", {}) if prev.get("global") == global_key else {}
+    prev_all = prev.get("records", {})  # kept outputs of failed renders (_keep_failed)
+    prev_records = prev_all if prev.get("global") == global_key else {}
 
     index: list[dict[str, str]] = []
     new_records: dict[str, dict[str, str]] = {}
     miss_hashes: dict[str, str] = {}  # cis -> record hash for pages we (re)render
     archived_cis: set[str] = set()  # delisted drugs (zero-byte overlay) -> [RETIRÉ] tag
+    failures: list[dict] = []  # renders that raised (see _check_render_failures)
     skipped_empty = 0
     reused = 0
 
@@ -3567,18 +3626,25 @@ def main() -> None:
             Pool(workers, initializer=_init_worker,
                  initargs=(names, page_tpl, xref, _SUBSTANCES)) as pool:
         for entry in pool.imap_unordered(render_record, misses(pbar), chunksize=8):
-            if entry is not None:
-                cis = entry["cis"]
-                # Keep the index (-> search-index.json, downloaded by every visitor)
-                # lean; asof goes only into the manifest for the sitemap <lastmod>.
-                index.append({"cis": cis, "name": entry["name"], "slug": entry["slug"]})
-                new_records[cis] = {
-                    "h": miss_hashes[cis],
-                    "name": entry["name"],
-                    "slug": entry["slug"],
-                    "asof": entry["asof"],
-                }
-            pbar.update(1)  # miss rendered (entry is None only on a worker error)
+            pbar.update(1)  # a miss rendered (or failed)
+            cis = entry["cis"]
+            if "error" in entry:
+                failures.append(entry)
+                kept = _keep_failed(cis, prev_all, DIST / "rcp")
+                if kept:
+                    index.append({"cis": cis, "name": kept["name"], "slug": kept["slug"]})
+                    new_records[cis] = kept
+                continue
+            # Keep the index (-> search-index.json, downloaded by every visitor)
+            # lean; asof goes only into the manifest for the sitemap <lastmod>.
+            index.append({"cis": cis, "name": entry["name"], "slug": entry["slug"]})
+            new_records[cis] = {
+                "h": miss_hashes[cis],
+                "name": entry["name"],
+                "slug": entry["slug"],
+                "asof": entry["asof"],
+            }
+    _check_render_failures(failures, len(present), "RCP")
 
     # EU-authorization stubs: findable landing pages for centrally-authorized
     # drugs whose RCP lives at the EMA (empty ANSM cell -> no normal RCP page).
@@ -3586,7 +3652,7 @@ def main() -> None:
     # records share the same manifest; their pages live under dist/eu (own URL
     # space, so they stay out of the RCP cross-link graph). See build_stubs.
     stub_index, stub_records, stub_reused, stub_rendered = build_stubs(
-        index, page_tpl, prev_records
+        index, page_tpl, prev_records, prev_all
     )
     new_records.update(stub_records)
 
