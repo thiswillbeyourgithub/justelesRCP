@@ -449,11 +449,15 @@ def _baseline_present_cis() -> set[str]:
 def _present_cis() -> set[str]:
     """Set of CIS that will actually render a page this build.
 
-    The cached baseline presence set, adjusted by overlays exactly as records()
-    resolves them: a non-empty overlay adds/keeps a CIS (including an overlay-only
-    drug absent from the baseline), and an EMPTY overlay is the "scraped, no RCP"
-    sentinel that removes it (the overlay wins over a non-empty baseline cell).
-    build_xref_index restricts every link target to this set so no link 404s.
+    The cached baseline presence set, adjusted by overlays exactly as
+    iter_rcp_raw resolves them: a non-empty overlay adds/keeps a CIS (including
+    an overlay-only drug absent from the baseline), while an EMPTY overlay (the
+    "scraped, no RCP" delisting sentinel) changes nothing: a delisted drug whose
+    2022 baseline cell has text still renders as an ARCHIVED page (see
+    rcp_archived), and one with an empty baseline was never present anyway.
+    Emptiness is read off ``st_size`` (as rcp_archived does), so no overlay is
+    decompressed here. build_xref_index restricts every link target to this set
+    so no link 404s.
     """
     present = _baseline_present_cis()
     if RCP_OVERLAY_DIR.is_dir():
@@ -466,12 +470,11 @@ def _present_cis() -> set[str]:
         }
         for cis in overlay_cis:
             path = _overlay_path(cis)
-            if path is None:
+            try:
+                if path is not None and path.stat().st_size > 0:
+                    present.add(cis)
+            except OSError:
                 continue
-            if _read_overlay(path).strip():
-                present.add(cis)
-            else:
-                present.discard(cis)  # empty overlay: scraped, confirmed no RCP
     return present
 
 

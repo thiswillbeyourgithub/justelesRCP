@@ -1309,6 +1309,36 @@ def test_iter_rcp_raw_serves_delisted_baseline():
     print("ok  test_iter_rcp_raw_serves_delisted_baseline")
 
 
+def test_present_cis_matches_iter_rcp_raw():
+    # _present_cis (the backlink target set) must agree with what iter_rcp_raw
+    # actually renders. It used to DROP a delisted drug (zero-byte overlay) even
+    # when its 2022 baseline still renders as an archived page, so no backlink
+    # could reach that page.
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        rcp = d / "rcp"; rcp.mkdir()
+        csv_path = d / "CIS_RCP.csv"
+        rows = [
+            "Code_CIS\tRCP_html",
+            "11111111\t<div id=\"textDocument\">baseline one</div>",
+            "22222222\t<div id=\"textDocument\">baseline two</div>",  # delisted, archived
+            "33333333\t",  # empty baseline + delisted: no page
+        ]
+        csv_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+        (rcp / "22222222.html").write_text("")
+        (rcp / "33333333.html.gz").write_bytes(b"")
+        (rcp / "55555555.html").write_text("<div id=\"textDocument\">new</div>")  # overlay-only
+        saved = build.CSV_PATH, build.RCP_OVERLAY_DIR, build.PRESENT_CACHE_PATH
+        build.CSV_PATH, build.RCP_OVERLAY_DIR = csv_path, rcp
+        build.PRESENT_CACHE_PATH = d / ".rcp-present.json"
+        try:
+            present = build._present_cis()
+            rendered = {cis for cis, _raw, _asof in build.iter_rcp_raw(scrape_dates={})}
+        finally:
+            build.CSV_PATH, build.RCP_OVERLAY_DIR, build.PRESENT_CACHE_PATH = saved
+    assert present == rendered == {"11111111", "22222222", "55555555"}, (present, rendered)
+
+
 def test_record_hash_changes_when_archived():
     # A drug that gets delisted keeps serving the SAME baseline raw at the SAME
     # BASELINE_DATE asof, so ONLY the archived flag changes. The record hash must
@@ -1726,6 +1756,7 @@ if __name__ == "__main__":
     test_embed_page_to_vec_re_embeds_on_a_quantisation_change()
     test_rcp_archived_detects_zero_byte_overlay()
     test_iter_rcp_raw_serves_delisted_baseline()
+    test_present_cis_matches_iter_rcp_raw()
     test_record_hash_changes_when_archived()
     test_eu_figures_become_shared_files_and_orphans_are_pruned()
     test_br_only_pages_are_listed_pruned_and_served_plain()
