@@ -1439,7 +1439,7 @@ Restart is not needed (Caddy reads the mounted dir live), but a
   entrypoint.sh) if the cap is absent from the bounding set that `cap_drop: ALL`
   empties. We don't bind a privileged port (we listen on 8459), but the binary's
   file cap still has to be satisfiable at exec time. Do not remove it.
-- A strict CSP (`default-src 'self'`) is set in the Caddyfile. The site uses no
+- A strict CSP (`default-src 'self'`, plus `form-action 'self'; object-src 'none'`, which do not inherit from it) and a `Permissions-Policy` denying every device API (camera, microphone, geolocation, ...: no page uses one) are set in the Caddyfile. The site uses no
   external fonts, scripts, or CDNs by design. The ONLY escape hatch is the umami
   origin: `entrypoint.sh` derives `ANALYTICS_ORIGIN` from `ANALYTICS_URL` and the
   Caddyfile adds it to `script-src`/`connect-src` (empty when analytics is off).

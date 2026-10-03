@@ -192,7 +192,13 @@
 		# browser no longer instantiates any WebAssembly: the previous
 		# 'wasm-unsafe-eval' relaxation is gone and the query POST to /api/sem/embed
 		# is same-origin, covered by connect-src 'self'. Everything stays self-only.
-		Content-Security-Policy "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self' {$ANALYTICS_ORIGIN:}; connect-src 'self' {$ANALYTICS_ORIGIN:}; base-uri 'none'; frame-ancestors 'none'"
+		# form-action and object-src do not fall back to default-src, so they are
+		# spelled out: the site has no <form> (search is a plain input driven by
+		# search.js) and no plugin content.
+		Content-Security-Policy "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self' {$ANALYTICS_ORIGIN:}; connect-src 'self' {$ANALYTICS_ORIGIN:}; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; object-src 'none'"
+		# No page uses any of these device APIs; denying them means an injected or
+		# third-party script (the optional umami tracker included) cannot either.
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), hid=(), bluetooth=(), midi=(), accelerometer=(), gyroscope=(), magnetometer=(), display-capture=(), browsing-topics=()"
 		-Server
 	}
 	# Always revalidate so a redeploy is picked up immediately. This is an early
