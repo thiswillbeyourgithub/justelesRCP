@@ -671,7 +671,10 @@ Key facts that aren't obvious from a single file:
   exact passages the encoder sees, heading prefix included, each with its token count).
   It also lists the last `_RECENT_MAX` worker results. Both routes are public (page text
   stats and errors only, never query data) and rate-limited like any `/api/sem/*` call;
-  a deep row costs ~1 s of CPU on a long page, once per content hash. Keep the contract
+  a deep row costs ~1 s of CPU on a long page, once per content hash. Both are CPU-bound, so at most
+  `_DETAIL_SLOTS` (2) run at once (`_send_detail`, a non-blocking acquire: 503 past it),
+  a backlog answer is reused for `_BACKLOG_TTL` (10 s) and a chunk preview is cached per
+  content hash (`_chunks_cache`, via the same `_lru` helper as `_chunk_stats`). Keep the contract
   in sync across
   `public_summary`/`_started` + the `/api/summary` route (refresh-service.py),
   `public_summary`/`_started`/`_last_scan` (set in `_scan_and_enqueue`) +

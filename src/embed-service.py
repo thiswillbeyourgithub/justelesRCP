@@ -107,6 +107,12 @@ BATCH_DEFAULT = 8
 # costs ~1 s on a long /eu/ page), how many recent results and failures it remembers.
 _BACKLOG_LIST_MAX = 300
 _BACKLOG_DEEP = 20
+# Both popup routes are public and CPU-bound (segmenting + tokenising whole pages),
+# so at most this many run at once (past it: 503), a backlog answer is reused for
+# _BACKLOG_TTL seconds, and a chunk preview is cached per content hash.
+_DETAIL_SLOTS = 2
+_BACKLOG_TTL = 10.0
+_CHUNKS_CACHE_MAX = 8
 _RECENT_MAX = 50
 _FAILURES_MAX = 200
 
@@ -215,6 +221,11 @@ class Embedder:
         self._recent: deque[dict] = deque(maxlen=_RECENT_MAX)
         # (cis, src_hash) -> chunk/token counts, so polling the popup re-segments nothing.
         self._chunk_stats_cache: "OrderedDict[tuple[str, str], dict]" = OrderedDict()
+        # (cis, src_hash) -> chunks_detail answer, and (monotonic time, answer) of the
+        # last backlog_detail: both popup routes are public, see _DETAIL_SLOTS.
+        self._chunks_cache: "OrderedDict[tuple[str, str], dict]" = OrderedDict()
+        self._backlog_cache: tuple[float, dict] | None = None
+        self.detail_slots = threading.BoundedSemaphore(_DETAIL_SLOTS)
 
     # -- lifecycle ---------------------------------------------------------
     def start(self) -> None:
@@ -592,22 +603,29 @@ class Embedder:
         """Chunk + token counts of a page as the worker would embed it, cached per
         content hash so a polling popup re-segments nothing. ``truncated`` counts the
         passages longer than onnx_embed.PASSAGE_MAX_TOKENS, whose tail the encoder drops."""
-        key = (cis, src_hash)
+        def compute() -> dict:
+            chunks = build.section_chunks(raw, cis)
+            tokens = self._token_counts([text for _sec, _snip, text in chunks])
+            ceiling = onnx_embed.PASSAGE_MAX_TOKENS
+            return {"chunks": len(chunks), "tokens": sum(tokens),
+                    "max_chunk_tokens": max(tokens, default=0),
+                    "truncated": sum(1 for t in tokens if t > ceiling)}
+        return self._lru(self._chunk_stats_cache, (cis, src_hash), compute,
+                         _BACKLOG_DEEP * 4)
+
+    def _lru(self, cache: OrderedDict, key, compute, max_items: int):
+        """``cache[key]``, else ``compute()`` stored there (oldest evicted past
+        ``max_items``). The compute runs OUTSIDE ``_lock``: it is the slow part."""
         with self._lock:
-            hit = self._chunk_stats_cache.get(key)
+            hit = cache.get(key)
         if hit is not None:
             return hit
-        chunks = build.section_chunks(raw, cis)
-        tokens = self._token_counts([text for _sec, _snip, text in chunks])
-        ceiling = onnx_embed.PASSAGE_MAX_TOKENS
-        stats = {"chunks": len(chunks), "tokens": sum(tokens),
-                 "max_chunk_tokens": max(tokens, default=0),
-                 "truncated": sum(1 for t in tokens if t > ceiling)}
+        value = compute()
         with self._lock:
-            self._chunk_stats_cache[key] = stats
-            while len(self._chunk_stats_cache) > _BACKLOG_DEEP * 4:
-                self._chunk_stats_cache.popitem(last=False)
-        return stats
+            cache[key] = value
+            while len(cache) > max_items:
+                cache.popitem(last=False)
+        return value
 
     def _describe(self, cis: str, pages: dict, deep: bool) -> dict:
         """One backlog row: where the page and its overlay are, and (``deep``) WHY it
@@ -661,7 +679,16 @@ class Embedder:
         not embedded (in flight, failed, queued, or flagged stale by the last scan),
         with its state and last error, and for the first _BACKLOG_DEEP why it is stale
         and how many chunks/tokens it would embed; plus the last worker results. Only
-        page paths, page text stats and errors, all public; never any query data."""
+        page paths, page text stats and errors, all public; never any query data.
+        Reused for _BACKLOG_TTL seconds (it scans both dist dirs on every call)."""
+        cached = self._backlog_cache
+        if cached is not None and time.monotonic() - cached[0] < _BACKLOG_TTL:
+            return cached[1]
+        detail = self._backlog_detail_uncached()
+        self._backlog_cache = (time.monotonic(), detail)
+        return detail
+
+    def _backlog_detail_uncached(self) -> dict:
         with self._lock:
             running = self._running
             pending = dict(self._pending)
@@ -705,6 +732,10 @@ class Embedder:
         if ov is None:
             return {"cis": cis, "error": "aucun texte exploré pour ce CIS"}
         raw, subdir = ov
+        return self._lru(self._chunks_cache, (cis, build.raw_hash(raw)),
+                         lambda: self._chunks_payload(cis, raw, subdir), _CHUNKS_CACHE_MAX)
+
+    def _chunks_payload(self, cis: str, raw: str, subdir: str) -> dict:
         chunks = build.section_chunks(raw, cis)
         tokens = self._token_counts([text for _sec, _snip, text in chunks])
         return {"cis": cis, "lane": subdir, "token_ceiling": onnx_embed.PASSAGE_MAX_TOKENS,
@@ -787,6 +818,17 @@ class _Handler(BaseHTTPRequestHandler):
     # the socket timeout by StreamRequestHandler; defence-in-depth behind Caddy.
     timeout = 60
 
+    def _send_detail(self, fn, *args) -> None:
+        """Answer a CPU-heavy public popup route, or 503 at once when _DETAIL_SLOTS
+        are all taken (never queue: a flood must not pin every core)."""
+        if not EMBEDDER.detail_slots.acquire(blocking=False):
+            self._send(503, {"error": "busy"})
+            return
+        try:
+            self._send(200, fn(*args))
+        finally:
+            EMBEDDER.detail_slots.release()
+
     def _send(self, code: int, payload: dict) -> None:
         body = json.dumps(payload).encode("utf-8")
         try:
@@ -823,11 +865,11 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(200, EMBEDDER.public_summary())
             return
         if self.path == "/api/sem/backlog":  # the /status backlog popup
-            self._send(200, EMBEDDER.backlog_detail())
+            self._send_detail(EMBEDDER.backlog_detail)
             return
         m = re.fullmatch(r"/api/sem/chunks/(\d{8})", self.path)
         if m:  # the popup's per-page chunk preview
-            self._send(200, EMBEDDER.chunks_detail(m.group(1)))
+            self._send_detail(EMBEDDER.chunks_detail, m.group(1))
             return
         m = re.fullmatch(r"/api/sem/page/(\d{8})", self.path)
         if m:

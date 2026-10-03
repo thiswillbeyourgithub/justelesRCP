@@ -6,12 +6,15 @@
 #   "numpy",
 #   "onnxruntime",
 #   "tokenizers",
+#   "loguru",
+#   "click",
 # ]
 # ///
 """Unit tests for the pure semantic-search helpers in build.py.
 
 Run: ``uv run test_embed.py`` (no model needed: onnxruntime/tokenizers are listed
-only so onnx_embed.py imports, for its pure query-cache test; the model-side embedding
+only so onnx_embed.py imports, for its pure query-cache test, and loguru/click so
+embed-service.py imports for its model-free route tests; the model-side embedding
 lives in onnx_embed.py / embed-service.py). Covers the fiddly pure pieces the feature relies
 on:
 
@@ -1574,6 +1577,75 @@ def test_stub_workers_receive_the_substance_map():
     print("ok  test_stub_workers_receive_the_substance_map")
 
 
+def _load_embed_service():
+    """Import embed-service.py by path (its '-' name is not importable)."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "embed_service", Path(build.__file__).parent / "embed-service.py")
+    es = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(es)
+    return es
+
+
+def test_embed_popup_routes_are_bounded_and_cached():
+    """The public /status popup routes segment + tokenise whole pages on every call.
+
+    They used to run unbounded and uncached, so a few clients polling them could pin
+    every core of the embed container. Now at most _DETAIL_SLOTS run at once (the
+    rest get 503 immediately), a chunk preview is cached per content hash and a
+    backlog answer is reused for _BACKLOG_TTL seconds."""
+    import threading
+    es = _load_embed_service()
+    e = es.Embedder.__new__(es.Embedder)  # no model: only what the routes touch
+    e._lock = threading.Lock()
+    e._chunks_cache, e._backlog_cache = es.OrderedDict(), None
+    e.detail_slots = threading.BoundedSemaphore(es._DETAIL_SLOTS)
+    e._overlay_for = lambda cis: (SAMPLE, "rcp")
+    e._token_counts = lambda texts: [len(t.split()) for t in texts]
+    calls = []
+    saved = es.build.section_chunks
+    es.build.section_chunks = lambda raw, cis: calls.append(cis) or saved(raw, cis)
+    try:
+        first = e.chunks_detail("60000001")
+        assert first["chunks"] and e.chunks_detail("60000001") is first
+        assert calls == ["60000001"], calls  # second call served from the cache
+    finally:
+        es.build.section_chunks = saved
+    scans = []
+    e._backlog_detail_uncached = lambda: scans.append(1) or {"items": []}
+    e.backlog_detail()
+    e.backlog_detail()
+    assert len(scans) == 1, scans
+
+    h = es._Handler.__new__(es._Handler)
+    sent = []
+    h._send = lambda code, payload: sent.append(code)
+    saved_embedder, es.EMBEDDER = es.EMBEDDER, e
+    try:
+        for _ in range(es._DETAIL_SLOTS):
+            assert e.detail_slots.acquire(blocking=False)
+        h.path = "/api/sem/backlog"
+        h.do_GET()
+        h.path = "/api/sem/chunks/60000001"
+        h.do_GET()
+        assert sent == [503, 503], sent
+        for _ in range(es._DETAIL_SLOTS):
+            e.detail_slots.release()
+        h.do_GET()
+        assert sent[-1] == 200, sent
+        # The slot was released after answering (and after a raise, via finally).
+        e.chunks_detail = lambda cis: 1 / 0
+        try:
+            h.do_GET()
+        except ZeroDivisionError:
+            pass
+        for _ in range(es._DETAIL_SLOTS):
+            assert e.detail_slots.acquire(blocking=False), "a slot leaked"
+    finally:
+        es.EMBEDDER = saved_embedder
+    print("ok  test_embed_popup_routes_are_bounded_and_cached")
+
+
 if __name__ == "__main__":
     test_load_cap_meta_excludes_decentralised()
     test_clean_substance_strips_salt_hydrate()
@@ -1624,4 +1696,5 @@ if __name__ == "__main__":
     test_query_cache_survives_concurrent_purge_and_inserts()
     test_failed_render_is_reported_and_previous_page_kept()
     test_stub_workers_receive_the_substance_map()
+    test_embed_popup_routes_are_bounded_and_cached()
     print("\nAll tests passed.")
