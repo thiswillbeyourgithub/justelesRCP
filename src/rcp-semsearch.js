@@ -874,6 +874,9 @@
 
   // The query text changed: drop the shown results and prompt for an explicit search.
   function onQueryEdited() {
+    // Drop an in-flight search for the OLD text: left running, its answer would
+    // land after this edit and repaint results for a query no longer in the box.
+    if (queryController) { queryController.abort(); queryController = null; }
     if (hits.length || highlighted.length) clearHits();
     lastRanked = ""; // so the next Enter runs a search instead of stepping to a hit
     const n = input.value.trim().length;
