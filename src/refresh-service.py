@@ -432,7 +432,7 @@ class Refresher:
         each fetch waits the base rate plus, on average, half the 0..min(rate,10)s
         jitter, plus ~1s for the request itself. Good enough for an ETA hint.
         """
-        return n * (self.demand_rate + min(self.demand_rate, 10.0) / 2 + 1.0)
+        return n * (scrape.mean_gap(self.demand_rate) + 1.0)
 
     def _due_count_locked(self, lane: _CrawlLane) -> int:
         """Count a lane's crawl pages still due per its TTL. CALLER MUST HOLD ``_lock``.
@@ -454,7 +454,7 @@ class Refresher:
         rate plus, on average, half the 0..min(rate,10)s jitter. Mirrors
         ``_eta_seconds`` for the on-demand lane. Zero when nothing is due (idle).
         """
-        return due * (rate + min(rate, 10.0) / 2)
+        return due * scrape.mean_gap(rate)
 
     def _gauge_locked(self, lane: _CrawlLane) -> dict:
         """One lane's crawl gauge for GET /api/stats. CALLER MUST HOLD ``_lock``.
@@ -503,7 +503,7 @@ class Refresher:
             # _crawl_eta_seconds, so /status can turn it into a pages/min rate and
             # compare it against the embedder's indexing speed (the catch-up gauge).
             rate = g["rate_seconds"]
-            cadence = rate + min(rate, 10.0) / 2 if rate > 0 else 0.0
+            cadence = scrape.mean_gap(rate) if rate > 0 else 0.0
             return {"enabled": g["enabled"], "total": total, "due": g["due"],
                     "done": done, "idle": g["idle"], "ttl_days": g["ttl_days"],
                     "forced": g["forced"], "eta_seconds": g["eta_seconds"],
@@ -753,7 +753,7 @@ class Refresher:
         Returns the new monotonic mark for the caller to store. Kept lane-agnostic
         so the on-demand and crawler workers reuse it with their own rate + mark.
         """
-        gap = rate + scrape.random.uniform(0.0, min(rate, 10.0))
+        gap = scrape.jitter_gap(rate)
         wait = since + gap - time.monotonic()
         if wait > 0:
             time.sleep(wait)
@@ -1232,8 +1232,7 @@ def main(host: str, port: int, rate: float, demand_rate: float, min_interval: fl
     """Run the RCP refresh service (see module docstring)."""
     global REFRESHER
     svc_http.setup_logging(log_level)
-    ua = user_agent or ("justelesRCP-refresh/1.0 (RCP freshness bot; "
-                        "contact hedv10g9@mailer.me)")
+    ua = user_agent or f"justelesRCP-refresh/1.0 (RCP freshness bot; {scrape.UA_CONTACT})"
     # The on-demand and crawler workers each build/serve on their own thread; the
     # crawler builds its frequency-ordered page list inside its worker, so the HTTP
     # server below starts accepting (and /api/health passes) without waiting on I/O.

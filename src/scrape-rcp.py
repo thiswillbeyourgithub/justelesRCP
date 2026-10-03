@@ -96,6 +96,23 @@ MANIFEST_PATH = DATA / ".scrape-manifest.json"
 # docstring for the expected JSONL shape.
 DEFAULT_FREQUENCY = DATA / "drugs_frequency.jsonl"
 
+# The reachable contact every justelesRCP fetcher (this scraper, scrape-ema.py, the
+# refresh service) puts in its User-Agent, so the ANSM / EMA can get in touch.
+UA_CONTACT = "contact hedv10g9@mailer.me"
+
+
+def jitter_gap(rate: float) -> float:
+    """One politeness gap: the base ``rate`` plus up to min(rate, 10) s of random
+    jitter, so requests are not perfectly periodic (gentler on the origin). Shared by
+    this scraper, scrape-ema.py and the refresh service's lanes."""
+    return rate + random.uniform(0.0, min(rate, 10.0))
+
+
+def mean_gap(rate: float) -> float:
+    """The average of jitter_gap(rate), for ETAs and per-page cadence figures."""
+    return rate + min(rate, 10.0) / 2
+
+
 # The live drug page. The old affichageDoc.php?specid=<cis>&typedoc=R endpoint
 # now 301-redirects here; httpx follows the redirect either way.
 PAGE_URL = "https://base-donnees-publique.medicaments.gouv.fr/medicament/{cis}/extrait"
@@ -506,7 +523,7 @@ def main(limit: int, fetch_all: bool, only: tuple[str, ...], ttl_days: int,
     """Refresh RCP overlay files from the live ANSM site (see module docstring)."""
     # Identifying User-Agent with a reachable contact so ANSM can get in touch
     # (or block) rather than seeing an anonymous bot. Override with --user-agent.
-    ua = user_agent or "justelesRCP-scraper/1.0 (RCP freshness bot; contact hedv10g9@mailer.me)"
+    ua = user_agent or f"justelesRCP-scraper/1.0 (RCP freshness bot; {UA_CONTACT})"
 
     if only:
         targets = list(dict.fromkeys(only))  # dedupe, keep order
@@ -558,10 +575,9 @@ def main(limit: int, fetch_all: bool, only: tuple[str, ...], ttl_days: int,
             if i % 25 == 0:
                 save_manifest(manifest)
             if i < total and rate > 0:
-                # Base politeness gap + up to min(rate, 10)s of jitter so requests
-                # are not perfectly periodic (gentler on the origin, and matches the
-                # "~every N s +- random" background trickle the design calls for).
-                time.sleep(rate + random.uniform(0.0, min(rate, 10.0)))
+                # Base politeness gap + jitter: the "~every N s +- random" background
+                # trickle the design calls for.
+                time.sleep(jitter_gap(rate))
 
     save_manifest(manifest)
     logger.info("done [{}]: {} RCPs, {} empty, {} errors in {}",

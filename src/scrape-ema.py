@@ -51,7 +51,6 @@ import hashlib
 import html
 import json
 import os
-import random
 import re
 import time
 import urllib.parse
@@ -90,7 +89,7 @@ DEFAULT_TTL_DAYS = int(os.environ.get("EMA_TTL_DAYS", "90"))
 GZIP_DEFAULT = os.environ.get("RCP_OVERLAY_GZIP", "1").strip().lower() not in ("0", "false", "no", "")
 USER_AGENT = os.environ.get(
     "EMA_SCRAPE_USER_AGENT",
-    "justelesRCP-ema-scraper/1.0 (SmPC freshness bot; contact hedv10g9@mailer.me)",
+    f"justelesRCP-ema-scraper/1.0 (SmPC freshness bot; {scrape.UA_CONTACT})",
 )
 
 
@@ -571,7 +570,7 @@ def main(limit, fetch_all, only, local_file, local_cis, local_src, local_via_arc
             if i % 10 == 0:
                 scrape.save_manifest(ema_manifest, EMA_MANIFEST_PATH)
             if i < total and rate > 0:
-                time.sleep(rate + random.uniform(0.0, min(rate, 10.0)))
+                time.sleep(scrape.jitter_gap(rate))
 
     scrape.save_manifest(ema_manifest, EMA_MANIFEST_PATH)
     logger.info("done: {} overlays, {} empty, {} errors in {}",
