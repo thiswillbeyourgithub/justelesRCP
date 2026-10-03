@@ -63,17 +63,18 @@ def _profile(model_name: str) -> dict:
     """Per-model runtime recipe, keyed by a substring of the name so a swap only touches
     RUNTIME_MODEL (+ the matching scripts/download-model.sh fetch). Fields:
       onnx    : the int8 ONNX file under <model_dir>/onnx/ to load
-      pooling : "cls" (first token; arctic-embed v2.0 / XLM-R lineage), "mean" (e5)
-                or "last" (final unmasked token; jina-embeddings-v5 / Qwen3 lineage)
+      pooling : "last" (final unmasked token; jina-embeddings-v5 / Qwen3 lineage),
+                "cls" (first token; arctic-embed v2.0) or "mean" (e5)
       query   : prefix prepended to a QUERY before tokenising
-      passage : prefix prepended to a DOCUMENT/passage (arctic: NONE; e5: "passage: ")
+      passage : prefix prepended to a DOCUMENT/passage
       out_dim : Matryoshka (MRL) truncation length, or None to keep the full width
 
-    arctic-embed-l-v2.0: CLS-pool -> L2-normalise, query-only "query: " prefix, MRL to
-    256 (truncate THEN normalise once; the ST pipeline's pre-truncation normalise is a
-    mathematical no-op). Verified against the repo's 1_Pooling/config.json +
-    config_sentence_transformers.json + the ONNX graph (inputs input_ids/attention_mask
-    only, output token_embeddings [B,L,1024])."""
+    The served model is jina-embeddings-v5-text-small-retrieval: LAST-token pool ->
+    L2-normalise, "Query: " / "Document: " prefixes, 1024 dims (its full width;
+    truncate THEN normalise once). Verified against the repo config + the ONNX graph
+    (inputs input_ids/attention_mask only, output token_embeddings). The arctic and e5
+    branches are ROLLBACK recipes for the two previous models, kept so a revert of
+    RUNTIME_MODEL needs no code change; nothing loads them today."""
     n = model_name.lower()
     if "jina-embeddings-v5" in n:
         # Qwen3-0.6B lineage: LAST-token pooling, and both sides carry a prefix
@@ -84,10 +85,10 @@ def _profile(model_name: str) -> dict:
         # scripts/quantise-model.py, which is why the name is not on the hub.
         return {"onnx": "model_int8.onnx", "pooling": "last",
                 "query": "Query: ", "passage": "Document: ", "out_dim": 1024}
-    if "arctic-embed" in n:
+    if "arctic-embed" in n:  # rollback recipe (previous model)
         return {"onnx": "model_int8.onnx", "pooling": "cls",
                 "query": "query: ", "passage": "", "out_dim": 1024}
-    if "e5" in n:
+    if "e5" in n:  # rollback recipe (the model before arctic)
         return {"onnx": "model_quantized.onnx", "pooling": "mean",
                 "query": "query: ", "passage": "passage: ", "out_dim": None}
     # Unknown model: safe defaults (mean pool, no prefixes, full width, common ONNX name).
@@ -541,8 +542,8 @@ class Encoder:
                 self._token_output = o.name
                 break
         self.tokenizer = Tokenizer.from_file(str(tok_path))
-        # tokenizer.json ships with truncation at 512 tokens, and that ceiling is
-        # applied inside encode_batch, BEFORE the per-call `max_len` slice, so a caller
+        # A tokenizer.json may ship with its own truncation (arctic's capped at 512
+        # tokens; jina's sets none), and that ceiling is applied inside encode_batch, BEFORE the per-call `max_len` slice, so a caller
         # asking for 1024 silently got 512. It never bit a passage (the longest chunk
         # this corpus produces is 360 tokens) but it cut 79% of the whole-page rows the
         # sibling bakes for its page-level signal, at half the length it believed it was
@@ -559,9 +560,9 @@ class Encoder:
         # Matryoshka (MRL) truncation width. ``out_dim`` (wired from EMBED_OUT_DIM by the
         # services) OVERRIDES the model profile's default when given: a positive int
         # truncates to that many dims, 0 keeps the full model width, and None (the
-        # default) uses the profile's out_dim (arctic-embed-l-v2.0 -> 1024). Truncating
+        # default) uses the profile's out_dim (jina-embeddings-v5 -> 1024). Truncating
         # below the model's native width is only meaningful for an MRL-trained model
-        # (arctic v2.0 is), so keep EMBED_OUT_DIM aligned with RUNTIME_MODEL. Changing it
+        # (jina v5 is), so keep EMBED_OUT_DIM aligned with RUNTIME_MODEL. Changing it
         # re-embeds the whole catalog (the dim is baked into each .vec.json and gated on;
         # see build.read_vec_meta / embed_page_to_vec).
         if out_dim is None:
@@ -580,8 +581,9 @@ class Encoder:
                 self.full_dim = int(json.loads(cfg.read_text())["hidden_size"])
             except Exception:
                 pass
-        # Served vector width: the MRL truncation length if set (arctic -> 256), else the
-        # model's hidden size from config.json (fallback 384). Re-confirmed on 1st encode.
+        # Served vector width: the MRL truncation length if set (jina -> 1024), else the
+        # model's hidden size from config.json (fallback 384, a placeholder until the
+        # first encode re-confirms it).
         self.dim = self._out_dim or self.full_dim or 384
         # Bounded, TIME-LIMITED LRU of query-HASH -> (vector, expiry), so repeated/edited
         # queries (common as the reader types) recompute nothing. Keyed by a hash of the
@@ -600,8 +602,8 @@ class Encoder:
         self, texts: list[str], prefix: str = "", batch_size: int = 32,
         max_len: int = PASSAGE_MAX_TOKENS, width: int | None = None
     ) -> np.ndarray:
-        """Embed texts -> float32 (N, dim): pooled per the model (CLS for arctic, mean for
-        e5), optionally MRL-truncated (arctic -> 256), then L2-normalised (so cosine == dot
+        """Embed texts -> float32 (N, dim): pooled per the model's profile (last token for
+        jina v5), optionally MRL-truncated, then L2-normalised (so cosine == dot
         product). ``prefix`` is prepended to each text (pass ``self.passage_prefix`` for
         documents, ``self.query_prefix`` for queries). Empty input -> (0, dim).
 

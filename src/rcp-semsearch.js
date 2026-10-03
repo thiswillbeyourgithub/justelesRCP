@@ -39,12 +39,10 @@
 // no-JS pages show no dead control; styling is via the .semsearch* classes (an inline
 // style="" would trip the strict style-src CSP).
 //
-// Note on responsiveness ("KV / prefix cache"): e5-small is a *bidirectional*
-// encoder, so there is no incremental prefix-KV cache to exploit (changing the tail
-// of the query re-encodes every token). Snappiness as the reader types comes instead
-// from a debounce, an AbortController that cancels the superseded in-flight request,
-// the server-side query LRU (repeated/edited queries recompute nothing), and the
-// ~15 ms encode.
+// Note on responsiveness: the query is encoded server-side, a round-trip per
+// search, so the box searches on a deliberate trigger (button, Enter, or a long
+// pause), not per keystroke. An AbortController cancels a superseded in-flight
+// request and the server-side query LRU makes a repeated query free.
 (function () {
   "use strict";
   const main = document.querySelector(".rcp[data-cis]");
@@ -135,7 +133,7 @@
   input.setAttribute("minlength", String(MIN_CHARS));
   input.setAttribute("maxlength", String(MAX_CHARS));
   // Explicit "Rechercher" trigger, next to the field. Encoding a query is a server
-  // round-trip (heavier since the arctic encoder), so we do NOT search per keystroke:
+  // round-trip, so we do NOT search per keystroke:
   // editing hides the previous results and the reader runs the search deliberately
   // (button or Enter), with only a long-pause auto-search as a fallback (see below).
   const searchBtn = document.createElement("button");
@@ -860,7 +858,7 @@
   });
 
   // --- input wiring ---------------------------------------------------------
-  // Encoding a query is a server round-trip (heavier with the arctic encoder), so we do
+  // Encoding a query is a server round-trip, so we do
   // NOT search per keystroke. Editing the text HIDES the previous results (no stale hits
   // under a changed question) and asks for a deliberate search: the reader presses
   // "Rechercher" or Enter. A long-pause auto-search is only a fallback for someone who

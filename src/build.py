@@ -497,12 +497,13 @@ def iter_rcp_raw(scrape_dates: dict[str, str] | None = None, stats: dict | None 
     """Yield ``(cis, raw, asof)`` for every drug that renders an RCP page.
 
     Sources merged with the scraped ``data/rcp`` overlay winning over the 2022 CSV
-    cell (an empty overlay means "scraped, no RCP" and is skipped, not fallen back);
-    overlay-only CIS absent from the baseline are yielded afterwards. ``asof`` is the
-    freshness date (scrape date for overlay data, else BASELINE_DATE). This is the
-    importable core of main()'s ``records()``; embed-rcp.py reuses it so the
-    build-time embeddings cover exactly the pages the build renders. ``stats``, if
-    given, gets ``stats['empty']`` incremented for each skipped empty RCP.
+    cell. An empty overlay means "scraped, no RCP" (delisted): the baseline cell is
+    then kept as an ARCHIVED page if it has text (render_record adds the retired
+    banner), else the CIS is skipped. Overlay-only CIS absent from the baseline are
+    yielded afterwards. ``asof`` is the freshness date (scrape date for overlay data,
+    else BASELINE_DATE). This is the importable core of main()'s ``records()`` (the
+    semantic-search embedders use iter_overlay_raw instead: crawled pages only).
+    ``stats``, if given, gets ``stats['empty']`` incremented for each skipped empty RCP.
     """
     if scrape_dates is None:
         scrape_dates = _load_scrape_dates()
@@ -1119,7 +1120,7 @@ _SEC_MIN_CHARS = 24
 # a stray enumeration item or a short sentence tail never becomes its own thin, diluted
 # vector: a reader prefers one longer paragraph with context over many scraps (see
 # _merge_small). Merging is bounded by _SEC_MERGE_CEIL_CHARS so a run of small pieces
-# can't grow one chunk without limit; the arctic encoder's context easily covers it.
+# can't grow one chunk without limit; the encoder's context easily covers it.
 _SEC_MERGE_MIN_CHARS = 160
 _SEC_MERGE_CEIL_CHARS = _SEC_CHUNK_CHARS * 2
 # Pure failsafe against a pathological drug blowing the index, NOT a normal limit: at
@@ -1436,7 +1437,7 @@ def section_chunks(raw: str, cis: str = "") -> list[tuple[str, str, str]]:
     embeds with that heading). The heading path is ONLY in ``chunk_text`` (embedded),
     never in ``snippet`` (displayed / used by the client's locate() to find the DOM
     paragraph), so the reader still sees the passage, not the path. The model prefix
-    (e.g. e5's "passage:") is added by the caller. A section with no body (heading
+    (e.g. jina's "Document: ") is added by the caller. A section with no body (heading
     only) still yields no chunk (a bare path is not searchable content). Pure
     stdlib+lxml, no ML dependency; imported by embed-rcp.py. Each section's body is
     gathered from the heading's following siblings up to the next top-level heading,
@@ -2732,9 +2733,9 @@ def _ref_links_html(
     tabs, reached by a fragment anchor. Kept off /eu/ pages, whose centrally-
     authorized drugs have no such ANSM tab content.
 
-    ``include_ema`` is False on /eu/ pages, which already carry a direct EMA button
-    (render_eu_page / the stub), so the EMA pill is dropped there to avoid a
-    duplicate. Reads the process-wide substance map primed by _init_worker (pool
+    ``include_ema`` adds the EMA search pill. Full /eu/ pages keep it (their only
+    source button is the direct PDF); bare /eu/ stubs pass False, since their own
+    EMA button already points there. Reads the process-wide substance map primed by _init_worker (pool
     workers) or set in main()/the refresh service. Returns '' when there is no CIS
     to link."""
     if not cis:
@@ -2892,8 +2893,11 @@ def _render_record(item: tuple[str, str, str]) -> dict[str, str]:
 # and (c) when a same-substance generic actually renders here, links to it. Stubs
 # are noindex, kept out of /browse, and kept out of the RCP cross-link graph (own
 # /eu/ path, so page_cis_from_dist's dist/rcp glob never picks them up). NO EMA
-# content is fetched: the EMA link is a search URL by brand name (never a dead
-# deep link), so this stays 100% static and scrape-free.
+# content is fetched at build: the EMA link is the exact product-information PDF
+# that scrape-rcp.py harvested off the ANSM page (or a sibling's, see resolve_eu),
+# else a search URL by brand name (never a constructed deep link that could 404).
+# A CIS whose group has a data/eu overlay is rendered as a FULL converted page
+# instead (render_eu_page).
 _EU_NUM_RE = re.compile(r"EU/\d/\d{2}/\d+")
 _EMA_SEARCH = "https://www.ema.europa.eu/en/medicines?search_api_fulltext="
 
@@ -3179,8 +3183,8 @@ def _eu_full_content(name: str, eu: str, holder: str, overlay_html: str) -> str:
     """Body of a full /eu/ page: a short EU-authorization lead + EU number/holder,
     then the converted EMA document. The drug/presentation name header is emitted by
     the page template ({{TITLE}}), shared with RCP + stub pages, so it is not
-    repeated here. The EMA source buttons + freshness banner are placed in the
-    {{ASOF}} slot by build_stubs (same as RCP pages)."""
+    repeated here. The direct-PDF source button, freshness banner and "En savoir plus"
+    pills are placed in the {{ASOF}} slot by render_eu_page (same as RCP pages)."""
     meta = _eu_meta_html(eu, holder)
     lead = (
         '<p class="stub-lead">Ce médicament bénéficie d\'une autorisation de mise '
@@ -3585,8 +3589,7 @@ def main() -> None:
     def records():
         """Yield (cis, raw, asof) for non-empty RCPs; count empties as a side effect.
 
-        Thin wrapper over the module-level iter_rcp_raw() (shared with embed-rcp.py);
-        the empties it skips are tallied into skipped_empty for the final report.
+        Thin wrapper over the module-level iter_rcp_raw(); the empties it skips are tallied into skipped_empty for the final report.
         """
         nonlocal skipped_empty
         stats = {"empty": 0}
@@ -3594,7 +3597,7 @@ def main() -> None:
         skipped_empty += stats["empty"]
 
     def output_ok(slug: str) -> bool:
-        """True when a slug's page and both precompressed siblings still exist."""
+        """True when a slug's page still exists (stored as its .br only)."""
         page = DIST / "rcp" / f"{slug}.html"
         return br_path(page).exists()
 

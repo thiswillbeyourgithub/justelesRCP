@@ -546,9 +546,9 @@ class Embedder:
         so concurrent encodes stay bounded."""
         t0 = time.perf_counter()
         # `dim` lets ONE encoder serve two indexes baked at two widths. This host has
-        # room for one copy of the model, and the sibling site justelesrecos ships a
-        # 1024-dim index while this project's .vec.json files are 256, so the width
-        # cannot be a server-wide setting any more. It stays a QUERY-side choice only:
+        # room for one copy of the model, and the sibling site justelesrecos may bake
+        # its index at a different width than this project's .vec.json files
+        # (EMBED_OUT_DIM), so the width cannot be a server-wide setting. It stays a QUERY-side choice only:
         # nothing here changes what gets stored, so no re-embed is ever triggered by it.
         vec = self.encoder.encode_query(q, dim=dim)
         qi = build.quantize_int8(vec.tolist())

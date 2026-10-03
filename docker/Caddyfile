@@ -77,7 +77,7 @@
 	handle /api/sem/* {
 		# Body cap (the query endpoint also caps internally at 8 KiB) + per-IP rate
 		# limit. A semantic-search session sends a burst (page embed + status polls +
-		# one debounced embed per keystroke), so the window is deliberately generous:
+		# one embed per deliberate search, Enter/button or a long-pause fallback), so the window is deliberately generous:
 		# it only stops a crude flood, while the embed service's own concurrency
 		# semaphore bounds CPU. Tune via SEM_RATE_EVENTS / SEM_RATE_WINDOW in docker/.env.
 		import api_limits sem {$SEM_RATE_EVENTS:120} {$SEM_RATE_WINDOW:1m}
