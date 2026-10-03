@@ -3533,51 +3533,14 @@ def build_stubs(
     return stub_index, stub_records, reused, len(stub_cis) - reused
 
 
-def main() -> None:
-    # Either input source suffices: the 2022 baseline CSV or a scraped overlay
-    # dir (scrape-rcp.py can run standalone without the bulk dump present).
-    if not CSV_PATH.exists() and not RCP_OVERLAY_DIR.is_dir():
-        sys.exit(f"missing {CSV_PATH} and {RCP_OVERLAY_DIR} (see README / scripts/download-data.sh)")
-
-    print(f"build justelesRCP v{__version__}")
-    # Release-notes gate: parse + validate every docs/changelog/<version>/changelog.md
-    # BEFORE any rendering, so a version bump with no (or malformed) notes fails in a
-    # second instead of after a full rebuild.
-    changelog = load_changelog()
-    print(f"changelog: {len(changelog['releases'])} documented releases")
-    names = load_names()
-    # CIS that actually render a page (non-empty baseline cell or overlay). Link
-    # targets are restricted to this set so a backlink never points at a pageless
-    # CIS. Baseline presence is cached (frozen CSV), so this is cheap after the
-    # first build; overlays are layered on each build. See _present_cis.
-    present = _present_cis()
-    # Cross-drug backlink index (term -> canonical target page). Built once and
-    # shared read-only with every worker; empty when the BDPM inputs are absent.
-    xref = build_xref_index(names, present)
-    print(f"  cross-drug backlink terms: {len(xref)}")
-    # Active-substance search strings for the external-reference pill row (HAS, EMA,
-    # Vidal). Set as a process-wide global so build_stubs / render_eu_page, which run
-    # in THIS process, can read it; the pool workers get their own copy via the
-    # _init_worker initargs below.
-    global _SUBSTANCES
-    _SUBSTANCES = load_substances()
-    print(f"  active-substance links: {len(_SUBSTANCES)}")
-    # Per-CIS scrape dates stamp overlay pages with a real "as of" date; baseline
-    # pages fall back to BASELINE_DATE. Loaded once, read inside records().
-    scrape_dates = _load_scrape_dates()
-
-    (DIST / "rcp").mkdir(parents=True, exist_ok=True)  # kept: incremental reuse
-
-    page_tpl = (SRC / "rcp.html").read_text(encoding="utf-8")
-
-    # Incremental cache: reuse a record's page when its inputs are unchanged and
-    # its output files still exist. A build-code or template change flips the
-    # global key and forces a full rebuild; a version-only bump does not.
-    global_key = _global_key(page_tpl, xref, _SUBSTANCES)
-    prev = _load_manifest()
-    prev_all = prev.get("records", {})  # kept outputs of failed renders (_keep_failed)
-    prev_records = prev_all if prev.get("global") == global_key else {}
-
+def _render_rcp_stage(names: dict[str, str], xref: dict, page_tpl: str,
+                      present: set[str], scrape_dates: dict[str, str],
+                      prev_records: dict, prev_all: dict):
+    """Render (or reuse from the incremental cache) every /rcp/ page, fanned out
+    over a Pool. Returns ``(index, new_records, archived_cis, reused,
+    skipped_empty)``: the search-index rows, the manifest records, the delisted
+    CIS (for the [RETIRÉ] tag), and the cache-hit / empty-CIS counts for the
+    final report. Raises via _check_render_failures if too many renders fail."""
     index: list[dict[str, str]] = []
     new_records: dict[str, dict[str, str]] = {}
     miss_hashes: dict[str, str] = {}  # cis -> record hash for pages we (re)render
@@ -3589,7 +3552,8 @@ def main() -> None:
     def records():
         """Yield (cis, raw, asof) for non-empty RCPs; count empties as a side effect.
 
-        Thin wrapper over the module-level iter_rcp_raw(); the empties it skips are tallied into skipped_empty for the final report.
+        Thin wrapper over the module-level iter_rcp_raw(); the empties it skips are
+        tallied into skipped_empty for the final report.
         """
         nonlocal skipped_empty
         stats = {"empty": 0}
@@ -3665,6 +3629,81 @@ def main() -> None:
                 "asof": entry["asof"],
             }
     _check_render_failures(failures, len(present), "RCP")
+    return index, new_records, archived_cis, reused, skipped_empty
+
+
+def _write_search_index(index: list[dict], stub_index: list[dict],
+                        archived_cis: set[str]) -> None:
+    """Write dist/search-index.json (+ .br): real RCP pages + EU stubs."""
+    search_rows = sorted(index + stub_index, key=lambda e: e["cis"])
+    # Enrich each row with its active-substance (DCI) string so client-side search can
+    # match a drug by substance, not only its brand name (e.g. "acétylcystéine" ->
+    # HIDONAC), and show the DCI under the name. From _SUBSTANCES (the same cleaned
+    # CIS_COMPO map the pill row uses). Skipped when the DCI is already contained in the
+    # name (redundant), keeping search-index.json lean; absent when composition unknown.
+    # Tag delisted (archived) RCP rows with ``ret`` so search.js appends " [RETIRÉ]"
+    # to the name: the drug is no longer marketed, we only serve the 2022 archive.
+    # archived_cis was gathered while streaming records (hits + misses), so this needs
+    # no extra filesystem pass; EU stub rows (eu:1) can't be here (empty baseline).
+    for e in search_rows:
+        sub = _SUBSTANCES.get(e["cis"], "")
+        if sub and _sort_key(sub) not in _sort_key(e["name"]):
+            e["sub"] = sub
+        if e["cis"] in archived_cis:
+            e["ret"] = 1
+    idx_json = json.dumps(search_rows, ensure_ascii=False, separators=(",", ":"))
+    (DIST / "search-index.json").write_text(idx_json, encoding="utf-8")
+    compress(DIST / "search-index.json")
+
+
+def main() -> None:
+    # Either input source suffices: the 2022 baseline CSV or a scraped overlay
+    # dir (scrape-rcp.py can run standalone without the bulk dump present).
+    if not CSV_PATH.exists() and not RCP_OVERLAY_DIR.is_dir():
+        sys.exit(f"missing {CSV_PATH} and {RCP_OVERLAY_DIR} (see README / scripts/download-data.sh)")
+
+    print(f"build justelesRCP v{__version__}")
+    # Release-notes gate: parse + validate every docs/changelog/<version>/changelog.md
+    # BEFORE any rendering, so a version bump with no (or malformed) notes fails in a
+    # second instead of after a full rebuild.
+    changelog = load_changelog()
+    print(f"changelog: {len(changelog['releases'])} documented releases")
+    names = load_names()
+    # CIS that actually render a page (non-empty baseline cell or overlay). Link
+    # targets are restricted to this set so a backlink never points at a pageless
+    # CIS. Baseline presence is cached (frozen CSV), so this is cheap after the
+    # first build; overlays are layered on each build. See _present_cis.
+    present = _present_cis()
+    # Cross-drug backlink index (term -> canonical target page). Built once and
+    # shared read-only with every worker; empty when the BDPM inputs are absent.
+    xref = build_xref_index(names, present)
+    print(f"  cross-drug backlink terms: {len(xref)}")
+    # Active-substance search strings for the external-reference pill row (HAS, EMA,
+    # Vidal). Set as a process-wide global so build_stubs / render_eu_page, which run
+    # in THIS process, can read it; the pool workers get their own copy via the
+    # _init_worker initargs below.
+    global _SUBSTANCES
+    _SUBSTANCES = load_substances()
+    print(f"  active-substance links: {len(_SUBSTANCES)}")
+    # Per-CIS scrape dates stamp overlay pages with a real "as of" date; baseline
+    # pages fall back to BASELINE_DATE. Loaded once, read inside records().
+    scrape_dates = _load_scrape_dates()
+
+    (DIST / "rcp").mkdir(parents=True, exist_ok=True)  # kept: incremental reuse
+
+    page_tpl = (SRC / "rcp.html").read_text(encoding="utf-8")
+
+    # Incremental cache: reuse a record's page when its inputs are unchanged and
+    # its output files still exist. A build-code or template change flips the
+    # global key and forces a full rebuild; a version-only bump does not.
+    global_key = _global_key(page_tpl, xref, _SUBSTANCES)
+    prev = _load_manifest()
+    prev_all = prev.get("records", {})  # kept outputs of failed renders (_keep_failed)
+    prev_records = prev_all if prev.get("global") == global_key else {}
+
+    index, new_records, archived_cis, reused, skipped_empty = _render_rcp_stage(
+        names, xref, page_tpl, present, scrape_dates, prev_records, prev_all
+    )
 
     # EU-authorization stubs: findable landing pages for centrally-authorized
     # drugs whose RCP lives at the EMA (empty ANSM cell -> no normal RCP page).
@@ -3689,25 +3728,7 @@ def main() -> None:
     # CIS so the file is stable across runs (imap_unordered returns pages in
     # arbitrary order); a stable file avoids needless recompression churn and rsync
     # transfers on unchanged data. Browse (below) gets the real RCP pages only.
-    search_rows = sorted(index + stub_index, key=lambda e: e["cis"])
-    # Enrich each row with its active-substance (DCI) string so client-side search can
-    # match a drug by substance, not only its brand name (e.g. "acétylcystéine" ->
-    # HIDONAC), and show the DCI under the name. From _SUBSTANCES (the same cleaned
-    # CIS_COMPO map the pill row uses). Skipped when the DCI is already contained in the
-    # name (redundant), keeping search-index.json lean; absent when composition unknown.
-    # Tag delisted (archived) RCP rows with ``ret`` so search.js appends " [RETIRÉ]"
-    # to the name: the drug is no longer marketed, we only serve the 2022 archive.
-    # archived_cis was gathered while streaming records (hits + misses), so this needs
-    # no extra filesystem pass; EU stub rows (eu:1) can't be here (empty baseline).
-    for e in search_rows:
-        sub = _SUBSTANCES.get(e["cis"], "")
-        if sub and _sort_key(sub) not in _sort_key(e["name"]):
-            e["sub"] = sub
-        if e["cis"] in archived_cis:
-            e["ret"] = 1
-    idx_json = json.dumps(search_rows, ensure_ascii=False, separators=(",", ":"))
-    (DIST / "search-index.json").write_text(idx_json, encoding="utf-8")
-    compress(DIST / "search-index.json")
+    _write_search_index(index, stub_index, archived_cis)
     write_static_assets(changelog)
 
     # Per-drug semantic search: the section vectors (dist/<slug>.vec.json) are now
