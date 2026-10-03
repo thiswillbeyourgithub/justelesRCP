@@ -2415,16 +2415,20 @@ def vec_is_fresh(vec: Path, overlay: Path, model: str, *, check_model: bool,
             return False
     except OSError:
         return False
-    if check_model:
-        meta = read_vec_meta(vec)
-        if not meta or meta.get("model") != model:
-            return False
-        if dim is not None and meta.get("dim") not in (0, dim):
-            return False
-        # A chunkless page (dim 0) has no vectors at all, so no quantisation to match.
-        if quant is not None and meta.get("dim") != 0 and meta.get("quant") != quant:
-            return False
-    return True
+    return not check_model or _meta_matches(read_vec_meta(vec), model, dim, quant)
+
+
+def _meta_matches(meta: dict | None, model: str, dim: int | None,
+                  quant: str | None) -> bool:
+    """True when a ``read_vec_meta`` dict was embedded with this model, served width and
+    quantisation; ``dim``/``quant`` of None skip that check. A stored dim of 0 = a
+    chunkless page, dimensionless and vectorless, so it matches ANY width and ANY
+    quantisation. Shared by ``vec_is_fresh`` and ``vec_is_current``."""
+    if not meta or meta.get("model") != model:
+        return False
+    if dim is not None and meta.get("dim") not in (0, dim):
+        return False
+    return quant is None or meta.get("dim") == 0 or meta.get("quant") == quant
 
 
 def iter_overlay_paths():
@@ -2489,12 +2493,9 @@ def vec_is_current(meta: dict | None, src_hash: str, model: str, dim: int,
     embed-rcp.py's pre-scan (which sizes a resumed run to the pages still stale) so the
     two can never disagree on what "fresh" means."""
     # Re-embed on ANY of: content change (src_hash), model swap, served-width
-    # change (EMBED_OUT_DIM) or quantisation change (EMBED_VEC_QUANT). A stored dim
-    # of 0 = a chunkless page, dimensionless and vectorless, so it stays fresh
-    # regardless of the current width AND quantisation.
-    return bool(meta and meta.get("src_hash") == src_hash and meta.get("model") == model
-                and meta.get("dim") in (0, dim)
-                and (meta.get("dim") == 0 or meta.get("quant") == quant))
+    # change (EMBED_OUT_DIM) or quantisation change (EMBED_VEC_QUANT).
+    return bool(meta and meta.get("src_hash") == src_hash
+                and _meta_matches(meta, model, dim, quant))
 
 
 def embed_page_to_vec(cis: str, raw: str, subdir: str, encoder, *,
