@@ -941,7 +941,7 @@ Key facts that aren't obvious from a single file:
   against the repo config + ONNX graph (inputs `input_ids`/`attention_mask` only, output
   `token_embeddings`). The MRL width is the profile default but is **env-configurable via
   `EMBED_OUT_DIM`** (`Encoder(out_dim=...)`, `--out-dim` on embed-service.py + embed-rcp.py;
-  default 1024, `0`=full model width, which for this model 1024 also is): the served width is baked into each `.vec.json` and
+  unset = the profile width, 1024, `0`=full model width, which for this model 1024 also is): the served width is baked into each `.vec.json` and
   gated alongside the model, so a change to EITHER `RUNTIME_MODEL` OR `EMBED_OUT_DIM`
   re-embeds the whole catalog (`read_vec_meta`/`embed_page_to_vec`/`vec_is_fresh` compare
   both, keeping the reader's query vectors and the stored passage vectors at one width; a
@@ -967,7 +967,8 @@ Key facts that aren't obvious from a single file:
   in JS `decodeVec`.
 
   **The stored PASSAGE quantisation is a second knob, `EMBED_VEC_QUANT`** (`build.VEC_QUANTS`,
-  `--vec-quant` on embed-service.py + embed-rcp.py; default `int8`). `int8` is one byte per
+  `--vec-quant` on embed-service.py + embed-rcp.py; default `binary`, the single
+  `build.DEFAULT_VEC_QUANT` every default reads). `int8` is one byte per
   dimension; `binary` (`build.quantize_binary`) is one BIT per dimension, its sign, MSB-first,
   so a vector is 8x narrower and `dim` in the payload becomes the LOGICAL width rather than
   the byte count. The query stays int8 whatever the passages are: scoring is asymmetric, a

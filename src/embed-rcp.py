@@ -79,14 +79,15 @@ onnx_embed = svc_http.load_sibling("onnx_embed.py", "onnx_embed")  # warm ONNX e
 @click.option("--model-dir", default=str(onnx_embed.DEFAULT_MODEL_DIR), show_default=True,
               envvar="EMBED_MODEL_DIR",
               help="Directory of the ONNX model + tokenizer (run ./scripts/download-model.sh).")
-@click.option("--out-dim", type=int, default=1024, show_default=True,
+@click.option("--out-dim", type=int, default=None,
               envvar="EMBED_OUT_DIM",
-              help="Matryoshka (MRL) width to truncate to (env EMBED_OUT_DIM); 0 also keeps "
-                   "the full model width, which 1024 is for jina-embeddings-v5-text-small. MUST match "
+              help="Matryoshka (MRL) width to truncate to (env EMBED_OUT_DIM). Unset uses "
+                   "the model profile's width (onnx_embed._profile, 1024 for "
+                   "jina-embeddings-v5-text-small); 0 keeps the full model width. MUST match "
                    "the embed service's EMBED_OUT_DIM, else the service re-embeds these "
                    "pages (the width is gated per .vec.json).")
-@click.option("--vec-quant", type=click.Choice(build.VEC_QUANTS), default="binary",
-              show_default=True, envvar="EMBED_VEC_QUANT",
+@click.option("--vec-quant", type=click.Choice(build.VEC_QUANTS),
+              default=build.DEFAULT_VEC_QUANT, show_default=True, envvar="EMBED_VEC_QUANT",
               help="Passage quantisation baked into each .vec.json (env "
                    "EMBED_VEC_QUANT): 'int8' is one byte per dimension, 'binary' one "
                    "BIT (its sign). MUST match the embed service's EMBED_VEC_QUANT for "

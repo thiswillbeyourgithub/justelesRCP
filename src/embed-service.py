@@ -148,7 +148,7 @@ class Embedder:
                  reconcile_seconds: float, queue_max: int, refresh_url: str,
                  timeout: float, min_chars: int, max_chars: int,
                  max_concurrent_queries: int = 8, query_wait: float = 2.0,
-                 sem_floor: float = 0.0, quant: str = "binary",
+                 sem_floor: float = 0.0, quant: str = build.DEFAULT_VEC_QUANT,
                  model_rss: float | None = None) -> None:
         self.encoder = encoder
         self.model = model
@@ -927,10 +927,11 @@ EMBEDDER: Embedder | None = None  # set in main(), read by _Handler
               envvar="EMBED_MODEL_DIR",
               help="Directory of the ONNX model + tokenizer (env EMBED_MODEL_DIR). "
                    "Mounted read-only from ./models by scripts/download-model.sh.")
-@click.option("--out-dim", type=int, default=1024, show_default=True,
+@click.option("--out-dim", type=int, default=None,
               envvar="EMBED_OUT_DIM",
               help="Matryoshka (MRL) embedding width to truncate to (env EMBED_OUT_DIM). "
-                   "1024 is jina-embeddings-v5-text-small's full width and the default because "
+                   "Unset uses the model profile's width (onnx_embed._profile): 1024, "
+                   "jina-embeddings-v5-text-small's full width, which is affordable because "
                    "EMBED_VEC_QUANT stores a passage at one bit per dimension, so wide "
                    "is cheaper than precise (128 bytes a vector against 256 for the old "
                    "256-int8); 0 also keeps the full model width. This is "
@@ -939,8 +940,8 @@ EMBEDDER: Embedder | None = None  # set in main(), read by _Handler
                    "on), which is why a client that wants another width sends `dim` in "
                    "its /api/sem/embed body instead: query width is free, passage width "
                    "is not.")
-@click.option("--vec-quant", type=click.Choice(build.VEC_QUANTS), default="binary",
-              show_default=True, envvar="EMBED_VEC_QUANT",
+@click.option("--vec-quant", type=click.Choice(build.VEC_QUANTS),
+              default=build.DEFAULT_VEC_QUANT, show_default=True, envvar="EMBED_VEC_QUANT",
               help="Passage quantisation baked into each .vec.json (env "
                    "EMBED_VEC_QUANT). 'int8' is one byte per dimension; 'binary' is one "
                    "BIT per dimension (its sign), 8x narrower at the same width, which "

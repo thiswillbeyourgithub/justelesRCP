@@ -1210,6 +1210,9 @@ def dequantize_int8(q) -> list[float]:
 # cross-corpus over 27k chunks gives 256-binary 0.282 against 0.419 for 1024-binary.
 # Inside one RCP there are a few hundred sections and the right one is not close-run.
 VEC_QUANTS = ("int8", "binary")
+# The served default (EMBED_VEC_QUANT): the one place embed-service.py, embed-rcp.py
+# and the vec helpers below take it from.
+DEFAULT_VEC_QUANT = "binary"
 
 
 def quantize_binary(values) -> bytes:
@@ -2265,7 +2268,7 @@ def write_changelog(payload: dict) -> None:
 # embed-service.py, or embed-rcp.py offline), NOT baked from data/emb here. These two
 # helpers are the SHARED writer both use, so the served format has one definition.
 def vec_payload(chunks, vecs, model: str, query_prefix: str, src_hash: str,
-                *, quant: str = "binary") -> dict:
+                *, quant: str = DEFAULT_VEC_QUANT) -> dict:
     """Build one page's served .vec.json dict from its section chunks + float vectors.
 
     ``chunks`` is section_chunks()'s ``[(sec_id, snippet, chunk_text), ...]``; ``vecs``
@@ -2495,7 +2498,7 @@ def vec_is_current(meta: dict | None, src_hash: str, model: str, dim: int,
 
 
 def embed_page_to_vec(cis: str, raw: str, subdir: str, encoder, *,
-                      model: str, quant: str = "binary", force: bool = False,
+                      model: str, quant: str = DEFAULT_VEC_QUANT, force: bool = False,
                       stats: dict | None = None, page: Path | None = None) -> str:
     """Segment a crawled page's raw HTML into sections, embed them with ``encoder``,
     and write ``dist/<subdir>/<slug>.vec.json``. Returns ``"ok"`` (wrote fresh
