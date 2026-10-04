@@ -85,6 +85,25 @@
   const vecUrl = location.pathname.replace(/\.html$/, "") + ".vec.json";
   const pageUrl = "/api/sem/page/" + cis;
 
+  // An uncaught error in this script would otherwise leave a box that silently does
+  // nothing: on 2026-10-03 a `deploy.sh --quick` shipped this file to pages rendered
+  // before util.js existed, `window.jlrcp.track` threw at load, and every search was a
+  // dead button with no message. Say so in the box instead, with the error text so a
+  // reader's report is actionable. Looked up in the DOM rather than through the consts
+  // below, which are still in their temporal dead zone if the throw came first.
+  function showFailure(err) {
+    const st = document.querySelector(".semsearch-status");
+    if (!st) return; // failed before the box existed: nothing to write into
+    st.textContent =
+      "Recherche sémantique en panne (erreur du site, pas de votre requête). " +
+      "Rechargez la page ; si cela persiste, signalez-le. Détail : " +
+      ((err && err.message) || String(err));
+    for (const el of document.querySelectorAll(".semsearch-input, .semsearch-go")) el.disabled = true;
+  }
+  window.addEventListener("error", (ev) => {
+    if ((ev.filename || "").indexOf("/rcp-semsearch.js") !== -1) showFailure(ev.error || ev.message);
+  });
+
   // --- UI (created here, class-styled only) ---------------------------------
   const box = document.createElement("details");
   box.className = "semsearch";
@@ -474,7 +493,14 @@
   }
 
   // --- query + ranking ------------------------------------------------------
-  async function runSearch() {
+  // Every caller fires and forgets, so a throw inside (say, in rank()) would surface as
+  // an unhandled rejection that carries no filename and that the "error" listener above
+  // never sees: catch it here and route it to the same message.
+  function runSearch() {
+    return searchOnce().catch(showFailure);
+  }
+
+  async function searchOnce() {
     const raw = input.value.trim();
     if (raw.length < MIN_CHARS) {
       clearHits();
