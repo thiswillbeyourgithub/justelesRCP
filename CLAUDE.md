@@ -1240,6 +1240,10 @@ Key facts that aren't obvious from a single file:
   synchronously in `<head>`, before `util.js`. Because the drug-page template and the
   browse pages carry the `<script>` tag, a change here needs a FULL build, never
   `deploy.sh --quick` alone (old pages would load the new scripts without `util.js`).
+  That is exactly what took semantic search down on 2026-10-03, silently, despite this note,
+  so it is now enforced: a full build stamps `dist/rcp/.shell-key` (`build.shell_key`: the
+  template plus the build code) and `--quick` refuses unless the VPS's stamp equals
+  `build.py --shell-key`. `rcp-semsearch.js` also writes any crash of its own into the box.
 - **Runtime config is injected, not baked.** Every page loads `/app-config.js`,
   which defines `window.__APP_CONFIG__` (optional umami analytics + a DEV
   banner). `src/app-config.js` is the local-dev fallback (all empty = nothing
@@ -1362,6 +1366,8 @@ uv run src/build.py           # build ./dist from ./data (overlay wins over the 
                           #  overlay makes /eu/<cis> a full converted page instead of a stub). Does NOT
                           #  bake vectors anymore: the embed service / embed-rcp.py write .vec.json
                           #  directly; build.py only prunes orphan .vec.json when a slug is dropped.
+uv run src/build.py --shell-key   # what a full build would stamp into dist/rcp/.shell-key now;
+                          #  deploy.sh --quick refuses when the VPS's stamp differs.
 uv run src/build.py --assets-only  # rewrite ONLY the static assets (home, /a-propos, /status
                           #  pages, JS, CSS, app-version.js, changelog.json; still runs the changelog
                           #  gate) in under a second, no drug page touched. Used by `deploy.sh --quick`

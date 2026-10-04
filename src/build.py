@@ -93,6 +93,11 @@ EU_OVERLAY_DIR = DATA / "eu"
 # per CIS, the hash of the inputs that produced its page so an unchanged record
 # can be reused instead of re-parsed and re-compressed. See main().
 MANIFEST_PATH = DIST / ".build-manifest.json"
+# Which page template + build code rendered the drug pages in dist/rcp and dist/eu
+# (see shell_key). Unlike the manifest it IS deployed, so the copy on the VPS says
+# what the live pages were rendered from, and `deploy.sh --quick` (which never ships
+# pages) can refuse when the tree's assets expect a different page.
+SHELL_KEY_PATH = DIST / "rcp" / ".shell-key"
 # Cache of which CIS have a NON-EMPTY baseline RCP cell in CIS_RCP.csv (i.e. would
 # render a page). The bulk CSV is frozen (BASELINE_DATE), so this full ~18s parse
 # runs once and is reused on every later build, keyed by the CSV's (size, mtime).
@@ -159,6 +164,17 @@ def _code_fingerprint() -> bytes:
     """
     src = Path(__file__).read_text(encoding="utf-8")
     return re.sub(r"(?m)^__version__\s*=.*$", "", src).encode("utf-8")
+
+
+def shell_key(page_tpl: str) -> str:
+    """The page template + build code, without the data-dependent parts of _global_key
+    (backlinks, substances). Those change a page's body; this changes its shell, i.e.
+    which scripts it loads. On 2026-10-03 a --quick deploy shipped JS that needed
+    util.js to pages whose shell predated it, and semantic search died silently."""
+    h = hashlib.sha256(_code_fingerprint())
+    h.update(b"\0")
+    h.update(page_tpl.encode("utf-8"))
+    return h.hexdigest()[:16]
 
 
 def _global_key(
@@ -3723,6 +3739,7 @@ def main() -> None:
     MANIFEST_PATH.write_text(
         json.dumps({"global": global_key, "records": new_records}), encoding="utf-8"
     )
+    SHELL_KEY_PATH.write_text(shell_key(page_tpl) + "\n", encoding="utf-8")
 
     # Homepage + assets. search-index.json = real RCP pages + EU stubs, sorted by
     # CIS so the file is stable across runs (imap_unordered returns pages in
@@ -3826,7 +3843,11 @@ if __name__ == "__main__":
         # Same release-notes gate as a full build.
         print(f"build justelesRCP v{__version__} (assets only)")
         write_static_assets(load_changelog())
+    elif sys.argv[1:] == ["--shell-key"]:
+        # What a full build would stamp into SHELL_KEY_PATH now; deploy.sh --quick
+        # compares it with the VPS's copy.
+        print(shell_key((SRC / "rcp.html").read_text(encoding="utf-8")))
     elif sys.argv[1:]:
-        sys.exit(f"unknown arguments {sys.argv[1:]}; the only option is --assets-only")
+        sys.exit(f"unknown arguments {sys.argv[1:]}; the options are --assets-only and --shell-key")
     else:
         main()

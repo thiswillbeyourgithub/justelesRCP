@@ -1373,6 +1373,18 @@ def test_record_hash_changes_when_archived():
     print("ok  test_record_hash_changes_when_archived")
 
 
+def test_shell_key_follows_the_template_not_the_data():
+    # deploy.sh --quick ships assets but never pages, and refuses when the VPS's
+    # dist/rcp/.shell-key differs from what this tree would render. So the key must
+    # move when the template moves (the 2026-10-03 outage: rcp.html gained util.js,
+    # --quick shipped JS that needed it to pages without it) and must be stable for an
+    # unchanged template, or every --quick would be refused.
+    tpl = (build.SRC / "rcp.html").read_text(encoding="utf-8")
+    assert build.shell_key(tpl) == build.shell_key(tpl)
+    assert build.shell_key(tpl) != build.shell_key(tpl.replace("/util.js", "/other.js"))
+    print("ok  test_shell_key_follows_the_template_not_the_data")
+
+
 def test_eu_figures_become_shared_files_and_orphans_are_pruned():
     # render_eu_page swaps each base64 figure for /eu/img/<hash>: two sibling pages
     # carrying the same figure share ONE file (the whole point: siblings used to
@@ -1835,6 +1847,7 @@ if __name__ == "__main__":
     test_present_cis_matches_iter_rcp_raw()
     test_load_names_tolerates_stray_directory_and_parses_like_the_catalog()
     test_record_hash_changes_when_archived()
+    test_shell_key_follows_the_template_not_the_data()
     test_eu_figures_become_shared_files_and_orphans_are_pruned()
     test_br_only_pages_are_listed_pruned_and_served_plain()
     test_changelog_parses_bilingual_bullets_and_shas()
