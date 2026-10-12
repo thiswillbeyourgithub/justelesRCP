@@ -8,7 +8,7 @@
 # SEPARATE container from the read-only web server, like the refresh service, and
 # given only narrow writable mounts (dist/rcp, dist/eu). Build context is the repo
 # root (see compose), so the root .dockerignore keeps data/dist/models out of it.
-FROM python:3.12.15-slim
+FROM python:3.14.8-slim
 
 # These mirror the PEP 723 dependency header of embed-service.py, which is the source
 # of truth for WHICH packages; if you change the deps there, change them here too.
