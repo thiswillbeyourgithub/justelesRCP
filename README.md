@@ -10,7 +10,7 @@
 
 *Read this in [English](README.en.md).*
 
-*Site frère : **[psydocs](https://justelesrecospsy.olicorne.org)**, les recommandations de bonne pratique en psychiatrie, avec le passage surligné sur la page du PDF officiel.*
+*Site frère : **[psychiathèque](https://psychiatheque.olicorne.org)**, les recommandations de bonne pratique en psychiatrie, avec le passage surligné sur la page du PDF officiel.*
 
 **Juste les RCP (résumés des caractéristiques du produit) de tous les médicaments
 français et européens**. Un site statique rapide, sans pub et sans compte, qui

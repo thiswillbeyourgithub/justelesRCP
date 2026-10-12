@@ -10,7 +10,7 @@
 
 *Lire ceci en [français](README.md).*
 
-*Sister site: **[psydocs](https://justelesrecospsy.olicorne.org)**, the psychiatry practice guidelines, with the passage highlighted on the page of the official PDF.*
+*Sister site: **[psychiathèque](https://psychiatheque.olicorne.org)**, the psychiatry practice guidelines, with the passage highlighted on the page of the official PDF.*
 
 **Juste les RCP (=Only the SmPC) of every French and European medicine**. A fast,
 ad-free, no-account static site giving access to the SmPC (Summaries of Product
