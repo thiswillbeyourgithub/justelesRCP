@@ -3,7 +3,7 @@
 //
 // The pages load these as classic <script> files, so a syntax error in one is not a
 // build failure anywhere: the file simply never runs, and the page comes up with its
-// buttons dead and its dynamic text missing. The sister site justelesrecospsy shipped
+// buttons dead and its dynamic text missing. The sister site psychiatheque shipped
 // exactly that (a stray `});` left behind by a removed listener) past its own syntax
 // check, because `node --check <path>` guesses the module type and the guess passed
 // the broken file. So the source is parsed explicitly as a classic script with
