@@ -995,6 +995,8 @@ def test_rcp_page_has_canonical_and_no_leftover_slots():
     # Installable as an app: the manifest, and the touch icon iOS reads instead of it.
     assert '<link rel="manifest" href="/manifest.webmanifest">' in html
     assert '<link rel="apple-touch-icon" href="/apple-touch-icon.png">' in html
+    # The footer points at the sister site.
+    assert 'href="https://psychiatheque.olicorne.org"' in html
     # Two JSON-LD blocks: the Drug @graph, then the BreadcrumbList.
     blocks = [b.split("</script>")[0]
               for b in html.split('<script type="application/ld+json">')[1:]]
