@@ -3803,6 +3803,7 @@ def write_static_assets(changelog: dict) -> None:
         "changelog.js",  # "Quoi de neuf ?" popup; fetches changelog.json (written below)
         "lightbox.js",  # click-to-zoom for figures in the drug body; loaded by rcp.html
         "logo.svg",  # the site logo (favicon + README); SVG text, so it compresses well
+        "manifest.webmanifest",  # makes the site installable as an app (with the icons below)
     )
     # index.html + a-propos.html are hand-written static pages carrying a {{HEAD}}
     # placeholder; inject their canonical/social/JSON-LD head (built from the one
@@ -3822,9 +3823,13 @@ def write_static_assets(changelog: dict) -> None:
     write_changelog(changelog)
     for f in (*static_assets, "app-version.js"):
         compress(DIST / f)
-    # og.png (the social-card image for og:image / twitter:image) is a raster already
-    # compressed by PNG, so copy it as-is without a .br sibling.
-    shutil.copy(SRC / "og.png", DIST / "og.png")
+    # og.png (the social-card image for og:image / twitter:image) and the app icons
+    # the manifest and iOS ask for are rasters already compressed by PNG, so they are
+    # copied as-is without a .br sibling. The icons are rendered from logo.svg once
+    # and committed, like og.png: `rsvg-convert --width N --height N
+    # --keep-aspect-ratio --background-color '#ffffff'` at 192, 512 and 180 (iOS).
+    for raster in ("og.png", "icon-192.png", "icon-512.png", "apple-touch-icon.png"):
+        shutil.copy(SRC / raster, DIST / raster)
 
 
 def _esc(text: str) -> str:

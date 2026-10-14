@@ -103,6 +103,7 @@ dist/status.html status.js  noindex live ops dashboard (crawl/embed/query stats 
                             the curated /api/summary + /api/sem/summary endpoints)
 dist/logo.svg               site logo (SVG favicon on every page + README header)
 dist/og.png                 raster social card for og:image / twitter:image (1200x630)
+dist/manifest.webmanifest icon-192.png icon-512.png apple-touch-icon.png  makes the site installable as an app
 dist/app-config.js app-init.js dev-banner.js toc.js app-version.js rcp-semsearch.js  (runtime client assets)
 dist/rcp/<cis>-<slug>.vec.json   OPTIONAL per-page section vectors for server-side
 dist/eu/<cis>-<slug>.vec.json    per-drug semantic search, written DIRECTLY by
@@ -1238,7 +1239,12 @@ Key facts that aren't obvious from a single file:
   `.breadcrumb` in `style.css`. `test_embed.py` covers the pure pieces. The brand
   assets `src/logo.svg` (SVG favicon linked in all four `src/*.html` heads + the
   README header) and `src/og.png` (the `og:image` card, regenerated from the logo)
-  are copied to `dist/` by `main()` (`og.png` uncompressed).
+  are copied to `dist/` by `main()` (`og.png` uncompressed). So are
+  `src/manifest.webmanifest` and the icons it and iOS ask for (`icon-192.png`,
+  `icon-512.png`, `apple-touch-icon.png` at 180), linked from every page head, which
+  make the site installable as an app; the icons are rendered from the logo with
+  `rsvg-convert` and committed (the command is in `build.py`). No service worker: no
+  current browser needs one to install. Redraw the icons whenever the logo changes.
 - **Shared client helpers live in `src/util.js`** (`window.jlrcp = {el, track, lsGet,
   lsSet, lsDel, fold, frDate, ago}`: DOM element factory, guarded analytics forward,
   storage that degrades in private mode, the accent-fold search and the semantic search

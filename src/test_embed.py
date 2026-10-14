@@ -992,6 +992,9 @@ def test_rcp_page_has_canonical_and_no_leftover_slots():
     assert '<meta name="twitter:card" content="summary">' in html
     # SVG favicon (from the template head).
     assert '<link rel="icon" type="image/svg+xml" href="/logo.svg">' in html
+    # Installable as an app: the manifest, and the touch icon iOS reads instead of it.
+    assert '<link rel="manifest" href="/manifest.webmanifest">' in html
+    assert '<link rel="apple-touch-icon" href="/apple-touch-icon.png">' in html
     # Two JSON-LD blocks: the Drug @graph, then the BreadcrumbList.
     blocks = [b.split("</script>")[0]
               for b in html.split('<script type="application/ld+json">')[1:]]
@@ -1803,6 +1806,23 @@ def test_embed_request_during_embed_is_rerun_not_dropped():
     print("ok  test_embed_request_during_embed_is_rerun_not_dropped")
 
 
+def test_web_manifest_icons_ship():
+    """The manifest parses, and every icon it names is a PNG of its declared size that
+    build.py copies into dist (a missing one silently makes the site uninstallable)."""
+    manifest = json.loads((build.SRC / "manifest.webmanifest").read_text(encoding="utf-8"))
+    assert manifest["display"] == "standalone" and manifest["start_url"] == "/"
+    build_src = (build.SRC / "build.py").read_text(encoding="utf-8")
+    icons = [(icon["src"].lstrip("/"), int(icon["sizes"].split("x")[0]))
+             for icon in manifest["icons"]] + [("apple-touch-icon.png", 180)]
+    assert {size for _, size in icons} >= {192, 512}
+    for name, size in icons:
+        png = (build.SRC / name).read_bytes()
+        assert png[:8] == b"\x89PNG\r\n\x1a\n", name
+        assert int.from_bytes(png[16:20], "big") == size, name
+        assert f'"{name}"' in build_src, f"{name} is not copied into dist by build.py"
+    print("ok  test_web_manifest_icons_ship")
+
+
 if __name__ == "__main__":
     test_load_cap_meta_excludes_decentralised()
     test_clean_substance_strips_salt_hydrate()
@@ -1859,4 +1879,5 @@ if __name__ == "__main__":
     test_every_drug_page_path_fills_every_template_slot()
     test_embed_popup_routes_are_bounded_and_cached()
     test_embed_request_during_embed_is_rerun_not_dropped()
+    test_web_manifest_icons_ship()
     print("\nAll tests passed.")
