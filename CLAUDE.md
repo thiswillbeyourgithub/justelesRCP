@@ -1197,6 +1197,19 @@ Key facts that aren't obvious from a single file:
   (refresh-service.py), `Embedder.start` (embed-service.py), the `@br_only`/
   `@br_fallback` routes in `docker/Caddyfile`, and
   `test_br_only_pages_are_listed_pruned_and_served_plain`.
+- **The site as text for AI assistants (`/llms.txt`, `/md/...`) is NOT stored.**
+  `src/llm_pages.py`, imported by the refresh service, converts a served `/rcp/` or
+  `/eu/` page to Markdown on each request (`read_served` then lxml), and lists the
+  served pages for `/md/browse[/<letter>]` from the directories (cached on their
+  mtimes). Caddy's `@llm` route rewrites `/llms.txt` and `/md/*` to `/api{path}` in
+  its own rate zone (`MD_RATE_EVENTS`/`MD_RATE_WINDOW`). Deliberate: a stored `.md`
+  would have joined every br-only rule above, and an edit to build.py re-renders the
+  whole site, which llm_pages.py does not. The public paths sit outside `/api/` because
+  `robots.txt` disallows it and assistants fetching for a person (Claude-User &co)
+  honour that; the service sends `X-Robots-Tag: noindex` so search engines skip them,
+  and they stay out of the sitemap. The `/md/` path is the page path with `/md` in
+  front; keep `llm_pages.MD_PAGE_RE` as strict as `_PLAIN_RE`. Tests:
+  `test_markdown_*` in `src/test_embed.py`. Built with Claude Code.
 - **SEO is baked at build time, from ONE origin constant (`SITE_URL`).** The site
   is a mirror of public ANSM/EMA data, so the SEO job is discovery + making its
   advantages (speed, structure, no ads) legible, not unique content. `SITE_URL`
