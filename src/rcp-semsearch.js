@@ -868,6 +868,39 @@
       }
       target.scrollIntoView({ block: "center", behavior: "smooth" });
     }
+    shareHit(hits[current]);
+  }
+
+  // Put the selected passage in the URL, so a shared link lands on it. It is a
+  // browser-native text fragment, "#sec-12:~:text=<first words>,<last words>": the
+  // recipient's browser scrolls to the passage and highlights it with no script of
+  // ours, and one that ignores the directive still jumps to the #sec-12 heading.
+  // replaceState, not pushState: stepping through 25 hits must not fill Back.
+  // Limits: a passage inside a collapsed /eu/ annex group is expanded by Chrome but
+  // not by every browser, and the directive is invisible to location.hash, so we
+  // cannot help from here.
+  const FRAGMENT_WORDS = 6; // words per side; few enough to stay inside one block
+  function textDirective(s) {
+    // Encode the directive's own syntax characters too ("-" and "," delimit terms).
+    return encodeURIComponent(s).replace(/-/g, "%2D");
+  }
+  function shareHit(hit) {
+    // Split on ASCII whitespace only: French text is full of no-break spaces
+    // ("10\u00a0mg"), and folding them into plain ones would break the browser's match.
+    const words = (el) => el.textContent.split(/[ \t\r\n]+/).filter(Boolean);
+    const first = words(hit.els[0]);
+    const last = words(hit.els[hit.els.length - 1]);
+    let frag = "#" + hit.sec;
+    if (hit.els[0].id !== hit.sec && first[0]) { // not the heading fallback of locate()
+      // A short lone paragraph is quoted whole; otherwise its start and end words.
+      const range = hit.els.length > 1 || first.length > 2 * FRAGMENT_WORDS;
+      const start = range ? first.slice(0, FRAGMENT_WORDS).join(" ") : first.join(" ");
+      const end = range ? last.slice(-FRAGMENT_WORDS).join(" ") : "";
+      frag += ":~:text=" + textDirective(start) + (end ? "," + textDirective(end) : "");
+    }
+    try {
+      history.replaceState(history.state, "", location.pathname + location.search + frag);
+    } catch (e) { /* sandboxed iframe or similar: sharing is a nicety */ }
   }
 
   prevBtn.addEventListener("click", () => {

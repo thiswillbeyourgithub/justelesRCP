@@ -1115,7 +1115,16 @@ Key facts that aren't obvious from a single file:
   the ONLY scroll path; `rank()` never scrolls). Clicking a result ALSO collapses the
   whole `.semsearch` box first (so the hit in the drug text is unobstructed and the
   smooth scroll lands on a settled layout); prev/next call `setCurrent` directly and
-  keep the box open. It is injected right AFTER the ToC (so
+  keep the box open. **Selecting a hit makes it shareable**: `setCurrent` ends with
+  `shareHit`, which `history.replaceState`s the URL to a browser-native text fragment
+  `#<sec-N>:~:text=<first words>,<last words>` (`FRAGMENT_WORDS` per side, a short lone
+  paragraph quoted whole, words split on ASCII whitespace only so the no-break spaces of
+  French text still match), so a copied link scrolls to AND highlights the passage with no
+  script on the recipient's side; a browser ignoring the directive still jumps to the
+  `sec-N` heading. `replaceState`, never `pushState` (stepping hits must not fill Back).
+  Known limit: a hit inside a collapsed `/eu/` annex group relies on the browser
+  auto-expanding `<details>` (Chrome does), and JS cannot read the directive back
+  (`location.hash` hides it). It is injected right AFTER the ToC (so
   the reading column reads pills -> Sommaire -> search) and is `position: sticky` (like
   the ToC), so a reader can search a long RCP without scrolling back up; its offset
   (`top: 7.2rem` on all viewports now the sidebar is gone) stacks under the sticky top
