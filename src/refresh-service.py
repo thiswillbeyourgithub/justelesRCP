@@ -82,6 +82,7 @@ build = svc_http.load_sibling("build.py", "build")
 # After build.py is loaded: its own `import build` then gets this very instance
 # (load_sibling registers it in sys.modules), primed by _init_worker below.
 import llm_pages  # noqa: E402  the site as text for AI assistants
+import umami  # noqa: E402  counts the reads of those pages (no-op unless configured)
 # EMA lane: fetch + convert an EMA product-information PDF into a /eu/ overlay.
 # scrape-ema.py transitively imports scrape-rcp.py and ema_pdf.py (which needs
 # pymupdf, hence the dep above); all import-safe (__main__-guarded).
@@ -1157,9 +1158,12 @@ class _Handler(svc_http.JSONHandler):
         # The site as text for AI assistants (llm_pages.py): /llms.txt and /md/...
         # reach here through docker/Caddyfile. Kept out of search engines; the
         # assistant a person asked is what reads them.
-        answer = llm_pages.route(self._path_parts().path)
+        path = self._path_parts().path
+        answer = llm_pages.route(path)
         if answer is not None:
             code, text, ctype = answer
+            # Counted under the public path Caddy mapped here (/llms.txt, /md/...).
+            UMAMI.track(self.headers, path.removeprefix("/api"))
             self._send_body(code, text.encode("utf-8"), ctype, noindex=True)
             return
         if self.path == "/api/health":
@@ -1192,6 +1196,7 @@ class _Handler(svc_http.JSONHandler):
 
 
 REFRESHER: Refresher | None = None  # set in main(), read by _Handler
+UMAMI = umami.Tracker(env={})  # replaced in main() from the environment
 
 
 @click.command(context_settings={"help_option_names": ["-h", "--help"]})
@@ -1281,8 +1286,9 @@ def main(host: str, port: int, rate: float, demand_rate: float, min_interval: fl
          gzip_overlay: bool, user_agent: str | None, embed_notify_url: str,
          log_level: str) -> None:
     """Run the RCP refresh service (see module docstring)."""
-    global REFRESHER
+    global REFRESHER, UMAMI
     svc_http.setup_logging(log_level)
+    UMAMI = umami.Tracker(log=logger.warning)
     ua = user_agent or f"justelesRCP-refresh/1.0 (RCP freshness bot; {scrape.UA_CONTACT})"
     # The on-demand and crawler workers each build/serve on their own thread; the
     # crawler builds its frequency-ordered page list inside its worker, so the HTTP
@@ -1307,13 +1313,13 @@ def main(host: str, port: int, rate: float, demand_rate: float, min_interval: fl
 
     logger.info("refresh service on {}:{} (crawl-rate {}s, demand-rate {}s, "
                 "min-interval {}s, demand-hourly-max={}, overlay={}, rcp-crawl={}, "
-                "eu-crawl={}, embed-notify={})",
+                "eu-crawl={}, embed-notify={}, umami-ai-reads={})",
                 host, port, rate, demand_rate, min_interval,
                 demand_hourly_max or "off",
                 "gzip" if gzip_overlay else "plain",
                 f"on ttl={crawl_ttl_days}d" if crawl else "off",
                 f"on rate={eu_rate}s ttl={eu_crawl_ttl_days}d" if eu_crawl else "off",
-                embed_notify_url or "off")
+                embed_notify_url or "off", "on" if UMAMI.enabled else "off")
     svc_http.QuietHTTPServer((host, port), _Handler).serve_forever()
 
 

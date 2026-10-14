@@ -1210,6 +1210,11 @@ Key facts that aren't obvious from a single file:
   and they stay out of the sitemap. The `/md/` path is the page path with `/md` in
   front; keep `llm_pages.MD_PAGE_RE` as strict as `_PLAIN_RE`. Tests:
   `test_markdown_*` in `src/test_embed.py`. Built with Claude Code.
+  Each answer is counted in umami server side (`src/umami.py`, a daemon thread per
+  send, path only, no IP), because an assistant runs no script; it reuses
+  `ANALYTICS_URL`/`ANALYTICS_WEBSITE_ID`, and umami must set `DISABLE_BOT_CHECK`
+  or drops every such event. `src/umami.py` is in refresh.Dockerfile's COPY and in
+  deploy.sh's `BAKED_SOURCES`; a new module the refresh service imports needs both.
 - **SEO is baked at build time, from ONE origin constant (`SITE_URL`).** The site
   is a mirror of public ANSM/EMA data, so the SEO job is discovery + making its
   advantages (speed, structure, no ads) legible, not unique content. `SITE_URL`

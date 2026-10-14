@@ -1027,6 +1027,35 @@ def test_markdown_routes_answer_pages_letters_and_llms_txt():
     print("ok  test_markdown_routes_answer_pages_letters_and_llms_txt")
 
 
+def test_umami_counts_an_ai_read_by_path_and_agent_only():
+    import umami
+    sent = []
+
+    def opener(request, timeout):
+        sent.append((request.full_url, request.get_header("User-agent"), json.loads(request.data)))
+        return tempfile.TemporaryFile()  # anything with .close()
+
+    env = {"ANALYTICS_URL": "https://u.example.org/script.js", "ANALYTICS_WEBSITE_ID": "id-1"}
+    assert not umami.Tracker(env={}).enabled
+    tracker = umami.Tracker(env=env, opener=opener, log=lambda line: sent.append(line))
+    ua = "Mozilla/5.0 (compatible; Claude-User/1.0)"
+    tracker.track({"Host": "rcp.example.org", "User-Agent": ua}, "/md/rcp/x?q=secret").join()
+    url, header_ua, body = sent.pop()
+    assert url == "https://u.example.org/api/send" and header_ua == ua
+    assert body["payload"] == {"website": "id-1", "hostname": "rcp.example.org", "url": "/md/rcp/x",
+                               "userAgent": ua, "browser": "Claude-User"}
+    # DNT, a forged Host, an ordinary browser's family
+    assert tracker.track({"Host": "rcp.example.org", "DNT": "1"}, "/llms.txt") is None
+    assert tracker.track({"Host": "evil/<x>"}, "/llms.txt") is None
+    assert umami.agent_of("Mozilla/5.0 (X11; Linux) Firefox/130.0") is None
+    # A failed send is logged, and frees its slot.
+    tracker._opener = lambda request, timeout: (_ for _ in ()).throw(OSError("down"))
+    for _ in range(umami.MAX_IN_FLIGHT + 1):
+        tracker.track({"Host": "rcp.example.org"}, "/llms.txt").join()
+    assert sent == ["umami failed for /llms.txt: down"] * (umami.MAX_IN_FLIGHT + 1)
+    print("ok  test_umami_counts_an_ai_read_by_path_and_agent_only")
+
+
 def test_rcp_page_has_canonical_and_no_leftover_slots():
     # Renders a real RCP page through the shared template and asserts the canonical is
     # injected AND no template slot survived unfilled (guards every render path that
@@ -1920,6 +1949,7 @@ if __name__ == "__main__":
     test_markdown_page_keeps_the_text_and_drops_the_chrome()
     test_markdown_table_keeps_every_row_and_splits_cell_paragraphs()
     test_markdown_routes_answer_pages_letters_and_llms_txt()
+    test_umami_counts_an_ai_read_by_path_and_agent_only()
     test_jsonld_escapes_script_breakout_and_website_searchaction()
     test_embed_page_to_vec_reports_stats()
     test_fresh_page_bumps_the_br_mtime_so_the_sweep_stops()
