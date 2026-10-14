@@ -50,6 +50,8 @@ lents et à but lucratif.
 - Médicaments à autorisation européenne (dont le RCP est publié par l'EMA et non
   par l'ANSM, ex. Abilify) : leur RCP officiel est récupéré, converti et affiché
   ici, avec un lien vers le document source de l'EMA.
+- Utilisable par les assistants IA (Claude, ChatGPT, Le Chat...) via
+  [`/llms.txt`](#utilisable-par-les-ia), sans serveur MCP.
 - Mesure d'audience respectueuse de la vie privée (umami : sans cookies, sans
   traçage publicitaire). Site hébergé en France.
 
@@ -98,6 +100,14 @@ altération du sens, aucune suggestion de caractère officiel. Le socle des RCP 
 du 2 mai 2022, le contenu peut donc être ancien même si les pages sont
 progressivement rafraîchies. justelesRCP n'est affilié à aucune autorité (ANSM,
 HAS, EMA…) et ne remplace pas un avis médical professionnel.
+
+## Utilisable par les IA
+
+Collez une fois [`justelesrcp.olicorne.org/llms.txt`](https://justelesrcp.olicorne.org/llms.txt) dans Claude, ChatGPT, Le Chat de Mistral, Gemini ou tout assistant capable de lire une page web, et demandez-lui de retenir le site. Cette page lui explique comment trouver un médicament (`/md/browse/<lettre>`, la liste A-Z) et lire son RCP en texte brut (`/md/rcp/<CIS>-<nom>`, la même adresse que la page, précédée de `/md`). Il peut alors citer la rubrique exacte du RCP officiel (posologie, contre-indications, grossesse...) au lieu de répondre de mémoire.
+
+Ces pages Markdown sont produites à la demande à partir de la page servie elle-même, donc elles disent exactement ce qu'elle dit. Elles ne sont pas indexées par les moteurs de recherche (`X-Robots-Tag: noindex`), et leur débit est limité par IP.
+
+**Pourquoi pas de serveur MCP ?** Le [Model Context Protocol](https://fr.wikipedia.org/wiki/Model_Context_Protocol) est l'autre façon courante de brancher un site sur un assistant IA, mais il exige un programme serveur qui tourne à côté du site, un connecteur que chaque utilisateur doit ajouter à la main, et un entretien continu au fil des évolutions du protocole. C'est aussi davantage de surface d'attaque. justelesRCP suit plutôt la convention [`/llms.txt`](https://llmstxt.org) : du texte brut que tout assistant capable de lire une page web peut utiliser sans rien installer.
 
 ## Des questions ?
 

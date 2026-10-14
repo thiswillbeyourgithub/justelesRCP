@@ -49,6 +49,8 @@ slow, for-profit medicine sites.
 - Centrally-authorized medicines (whose RCP is published by the EMA, not the
   ANSM, e.g. Abilify): their official RCP is fetched, converted and shown here,
   with a link to the source document on the EMA.
+- Usable by AI assistants (Claude, ChatGPT, Le Chat...) through
+  [`/llms.txt`](#usable-by-ai-assistants), with no MCP server.
 - Privacy-respecting analytics (umami: no cookies, no ad tracking). Hosted in
   France.
 
@@ -93,6 +95,14 @@ distort the data, and does not imply any official status. The RCP baseline dates
 from 2 May 2022, so the content can be old even though pages are progressively
 refreshed. justelesRCP is not affiliated with any authority (ANSM, HAS, EMA…) and
 does not replace professional medical advice.
+
+## Usable by AI assistants
+
+Paste [`justelesrcp.olicorne.org/llms.txt`](https://justelesrcp.olicorne.org/llms.txt) once into Claude, ChatGPT, Mistral's Le Chat, Gemini or any assistant that can read web pages, and ask it to remember the site. That page tells it how to find a drug (`/md/browse/<letter>`, the A-Z list) and read its RCP as plain text (`/md/rcp/<CIS>-<name>`, the page's own address with `/md` in front). It can then quote the exact section of the official RCP (dosage, contraindications, pregnancy...) instead of answering from memory.
+
+These Markdown pages are produced on request from the served page itself, so they say exactly what it says. Search engines are told not to index them (`X-Robots-Tag: noindex`), and they are rate-limited per IP.
+
+**Why no MCP server?** The [Model Context Protocol](https://en.wikipedia.org/wiki/Model_Context_Protocol) is the other common way to plug a site into an AI assistant, but it needs a server program running next to the site, a connector that each user has to add by hand, and ongoing upkeep as the protocol evolves. It is also more attack surface. justelesRCP follows the [`/llms.txt`](https://llmstxt.org) convention instead: plain text that any assistant able to read a web page can use with nothing to install.
 
 ## Questions?
 
