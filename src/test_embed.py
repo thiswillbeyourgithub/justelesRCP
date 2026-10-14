@@ -970,6 +970,63 @@ def _render_one_rcp(d):
     return row, html
 
 
+def test_markdown_page_keeps_the_text_and_drops_the_chrome():
+    # llm_pages.page_markdown reads the SERVED page, so render one for real: the
+    # official sections must come through as headings, the page's own chrome
+    # (breadcrumb, Sommaire, reference pills) must not.
+    import llm_pages
+    with tempfile.TemporaryDirectory() as d:
+        row, html = _render_one_rcp(d)
+    md = llm_pages.page_markdown(html, f"/rcp/{row['slug']}")
+    assert md.startswith("# DOLIPRANE 1000 mg, comprime\n")
+    assert "## 1. DENOMINATION DU MEDICAMENT" in md
+    assert "## 4.1 Indications therapeutiques" in md
+    assert "Traitement symptomatique des douleurs." in md
+    assert f"{build.SITE_URL}/rcp/{row['slug']}" in md
+    for chrome in ("Sommaire", "En savoir plus", "Accueil", "{{"):
+        assert chrome not in md, chrome
+    print("ok  test_markdown_page_keeps_the_text_and_drops_the_chrome")
+
+
+def test_markdown_table_keeps_every_row_and_splits_cell_paragraphs():
+    # Unlike build._linearize_table (an embedding chunk, capped at 60 rows), a page
+    # read whole must keep the whole table, a title row included.
+    import llm_pages
+    rows = "".join(f"<tr><td>SOC {i}</td><td><p>Anorexie</p><p>Nausee</p></td></tr>" for i in range(80))
+    page = (f'<html><body><main class="rcp" data-cis="12345678"><h1>X</h1><table>'
+            f'<tr><td colspan="2"><p>Effets par frequence</p></td></tr>{rows}</table></main></body></html>')
+    md = llm_pages.page_markdown(page, "/rcp/12345678-x")
+    assert "| Effets par frequence |" in md
+    assert "| SOC 79 | Anorexie; Nausee |" in md
+    print("ok  test_markdown_table_keeps_every_row_and_splits_cell_paragraphs")
+
+
+def test_markdown_routes_answer_pages_letters_and_llms_txt():
+    import llm_pages
+    with tempfile.TemporaryDirectory() as d:
+        row, _ = _render_one_rcp(d)
+        saved = (build.DIST, build._NAMES)
+        build.DIST, build._NAMES = Path(d), {"12345678": "DOLIPRANE 1000 mg, comprime"}
+        llm_pages._index_cache = (None, {})
+        try:
+            code, body, ctype = llm_pages.route(f"/api/md/rcp/{row['slug']}")
+            assert (code, ctype) == (200, llm_pages.MARKDOWN) and "## 1. DENOMINATION" in body
+            code, body, _ = llm_pages.route("/api/md/browse/d")
+            assert code == 200 and f"/md/rcp/{row['slug']})" in body
+            assert "- D: " in llm_pages.route("/api/md/browse")[1]
+            code, body, ctype = llm_pages.route("/api/llms.txt")
+            assert code == 200 and ctype.startswith("text/plain") and "of 1 drugs" in body
+            # Strict paths: a traversal, an unknown letter or slug is a 404, never a read.
+            for bad in ("/api/md/rcp/../../etc/passwd", "/api/md/browse/zz",
+                        "/api/md/rcp/12345678-nope", "/api/md/browse/q"):
+                assert llm_pages.route(bad)[0] == 404, bad
+            assert llm_pages.route("/api/status/12345678") is None
+        finally:
+            build.DIST, build._NAMES = saved
+            llm_pages._index_cache = (None, {})
+    print("ok  test_markdown_routes_answer_pages_letters_and_llms_txt")
+
+
 def test_rcp_page_has_canonical_and_no_leftover_slots():
     # Renders a real RCP page through the shared template and asserts the canonical is
     # injected AND no template slot survived unfilled (guards every render path that
@@ -1860,6 +1917,9 @@ if __name__ == "__main__":
     test_sitemap_lists_indexable_pages()
     test_robots_points_at_sitemap()
     test_rcp_page_has_canonical_and_no_leftover_slots()
+    test_markdown_page_keeps_the_text_and_drops_the_chrome()
+    test_markdown_table_keeps_every_row_and_splits_cell_paragraphs()
+    test_markdown_routes_answer_pages_letters_and_llms_txt()
     test_jsonld_escapes_script_breakout_and_website_searchaction()
     test_embed_page_to_vec_reports_stats()
     test_fresh_page_bumps_the_br_mtime_so_the_sweep_stops()

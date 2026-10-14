@@ -79,6 +79,9 @@ import svc_http  # shared JSON handler / server / logging / sibling loader
 
 scrape = svc_http.load_sibling("scrape-rcp.py", "scrape_rcp")
 build = svc_http.load_sibling("build.py", "build")
+# After build.py is loaded: its own `import build` then gets this very instance
+# (load_sibling registers it in sys.modules), primed by _init_worker below.
+import llm_pages  # noqa: E402  the site as text for AI assistants
 # EMA lane: fetch + convert an EMA product-information PDF into a /eu/ overlay.
 # scrape-ema.py transitively imports scrape-rcp.py and ema_pdf.py (which needs
 # pymupdf, hence the dep above); all import-safe (__main__-guarded).
@@ -1109,6 +1112,8 @@ class _Handler(svc_http.JSONHandler):
     ``GET  /api/summary``       - curated, public-safe crawl/refresh view for the
                                   /status page (proxied through Caddy, rate-limited).
     ``GET  /api/health``        - {ok: true} for container healthchecks (never logged).
+    ``GET  /api/llms.txt``, ``/api/md/...`` - the site as text for AI assistants
+                                  (llm_pages.py; public as /llms.txt and /md/...).
     """
 
     server_version = "justelesRCP-refresh"
@@ -1122,11 +1127,17 @@ class _Handler(svc_http.JSONHandler):
         if hit is None:
             self._send(404, {"error": "not found"})
             return
-        body, ctype = hit
+        self._send_body(200, *hit, head=head)
+
+    def _send_body(self, code: int, body: bytes, ctype: str, head: bool = False,
+                   noindex: bool = False) -> None:
         try:
-            self.send_response(200)
+            self.send_response(code)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(body)))
+            if noindex:
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("X-Robots-Tag", "noindex")
             self.end_headers()
             if not head:
                 self.wfile.write(body)
@@ -1142,6 +1153,14 @@ class _Handler(svc_http.JSONHandler):
     def do_GET(self) -> None:
         if self.path.startswith("/api/plain/"):
             self._send_plain(head=False)
+            return
+        # The site as text for AI assistants (llm_pages.py): /llms.txt and /md/...
+        # reach here through docker/Caddyfile. Kept out of search engines; the
+        # assistant a person asked is what reads them.
+        answer = llm_pages.route(self._path_parts().path)
+        if answer is not None:
+            code, text, ctype = answer
+            self._send_body(code, text.encode("utf-8"), ctype, noindex=True)
             return
         if self.path == "/api/health":
             self._send(200, {"ok": True})

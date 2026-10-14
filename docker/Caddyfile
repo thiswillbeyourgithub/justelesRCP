@@ -84,6 +84,21 @@
 		reverse_proxy embed:8461
 	}
 
+	# The site as text for AI assistants (src/llm_pages.py, in the refresh service):
+	# /llms.txt, then /md/browse[/<letter>], /md/rcp/<slug> and /md/eu/<slug>, each
+	# converted on request from the served page. Public paths OUTSIDE /api/ on
+	# purpose: robots.txt disallows /api/, and the agents an assistant fetches with
+	# for a person (Claude-User and its kind) honour it. The service sends
+	# X-Robots-Tag: noindex, so search engines still leave them alone. Own zone, since
+	# each page costs a decompress and a parse. Tune via MD_RATE_EVENTS /
+	# MD_RATE_WINDOW in docker/.env.
+	@llm path /llms.txt /md/*
+	handle @llm {
+		import api_limits md {$MD_RATE_EVENTS:60} {$MD_RATE_WINDOW:1m}
+		rewrite * /api{path}
+		reverse_proxy refresh:8460
+	}
+
 	# On-demand RCP refresh API -> the companion service container (refresh-service.py
 	# on :8460, not published to the host). Same-origin, so the strict `connect-src
 	# 'self'` CSP below covers the fetch()es from app-init.js. If the refresh service
