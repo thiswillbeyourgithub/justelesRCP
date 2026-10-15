@@ -58,11 +58,15 @@ re-render), e.g. ``uv run scrape-rcp.py --all && uv run build.py``.
 
 from __future__ import annotations
 
+import base64
 import gzip
 import hashlib
+import html
+import re
 import json
 import random
 import time
+import urllib.parse
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -359,6 +363,108 @@ def write_overlay(cis: str, rcp_html: str, gzip_overlay: bool,
     return dest
 
 
+MAX_REDIRECTS = 5
+
+
+def get_on_hosts(client: httpx.Client, url: str, hosts: tuple[str, ...],
+                 max_bytes: int) -> tuple[bytes, httpx.Headers]:
+    """GET ``url``, following redirects BY HAND so every hop (not just the first
+    URL) must be https on ``hosts``: the URLs come from scraped third-party HTML and
+    are fetched server-side, so a hop to an internal address must never be taken
+    (SSRF). The body is STREAMED and abandoned past ``max_bytes``; returns
+    ``(body, headers)``. Raises on a disallowed hop, too many redirects, an oversized
+    body, or an HTTP error. Shared with scrape-ema.py (EMA PDFs, Internet Archive)."""
+    for _ in range(MAX_REDIRECTS + 1):
+        if not bdpm.url_on_hosts(url, hosts):
+            raise RuntimeError(f"refusing to fetch off-host URL {url[:120]!r}")
+        with client.stream("GET", url, follow_redirects=False) as resp:
+            if resp.is_redirect:
+                url = str(resp.url.join(resp.headers.get("location", "")))
+                continue
+            resp.raise_for_status()
+            chunks, size = [], 0
+            for chunk in resp.iter_bytes():
+                size += len(chunk)
+                if size > max_bytes:
+                    raise RuntimeError(f"body over {max_bytes} bytes, aborted")
+                chunks.append(chunk)
+            return b"".join(chunks), resp.headers
+    raise RuntimeError(f"too many redirects ({MAX_REDIRECTS})")
+
+
+# --- RCP figures --------------------------------------------------------------
+# An RCP occasionally carries images: figures, posology diagrams, and the black
+# triangle of the "surveillance supplémentaire" warning. The ANSM page links them
+# root-relative (/images/R0439918/image001.png) and the 2022 dump on a long-dead
+# internal host (http://prod-bdm.ansm.integra.fr/Rcp_Notices/images//R.../...), whose
+# paths are the same files under the public host's /images/. Neither resolves on our
+# site, so inline_images fetches each one at scrape time and embeds it as a base64
+# data: URI, exactly like ema_pdf does for EMA figures: the overlay stays
+# self-contained, build.py serves each image once from dist/rcp/img/<hash> (see
+# build._externalize_images) and the reader's browser never contacts the ANSM. An
+# image that cannot be fetched keeps its URL, and build.py drops it at render time.
+ANSM_ORIGIN = "https://base-donnees-publique.medicaments.gouv.fr"
+ANSM_HOSTS = (urllib.parse.urlsplit(ANSM_ORIGIN).hostname,)
+_DEAD_IMG_PREFIX = "http://prod-bdm.ansm.integra.fr/Rcp_Notices/images/"
+IMG_MAX_BYTES = 10 * 1024 * 1024
+_IMG_MAGIC = ((b"\x89PNG\r\n\x1a\n", "png"), (b"\xff\xd8\xff", "jpeg"), (b"GIF8", "gif"))
+_IMG_SRC_RE = re.compile(r'(<img\b[^>]*?\bsrc=")([^"]*)(")', re.IGNORECASE)
+
+
+def ansm_image_url(src: str) -> str:
+    """The public URL of an image an RCP links, or "" when it is not an ANSM image
+    (a Word export's "_fichiers" leftover, another host, an inlined data: URI)."""
+    src = html.unescape(src).strip()
+    if src.startswith(_DEAD_IMG_PREFIX):
+        src = "/images/" + src[len(_DEAD_IMG_PREFIX):].lstrip("/")
+    url = urllib.parse.urljoin(ANSM_ORIGIN + "/", src)
+    ok = bdpm.url_on_hosts(url, ANSM_HOSTS) and urllib.parse.urlsplit(url).path.startswith("/images/")
+    return url if ok else ""
+
+
+def _image_kind(data: bytes) -> str:
+    """"png" / "jpeg" / "gif" from the file signature, "" for anything else (an
+    HTML error page served with a 200, say)."""
+    return next((kind for magic, kind in _IMG_MAGIC if data.startswith(magic)), "")
+
+
+def inline_images(client: httpx.Client, rcp_html: str) -> str:
+    """Embed every ANSM image ``rcp_html`` links as a data: URI (see above). Best
+    effort: an image that fails to download keeps its URL (and is dropped at render)."""
+    cache: dict[str, str] = {}
+
+    def _one(m: re.Match) -> str:
+        url = ansm_image_url(m[2])
+        if not url:
+            return m[0]
+        if url not in cache:
+            try:
+                data, _ = get_on_hosts(client, url, ANSM_HOSTS, IMG_MAX_BYTES)
+                kind = _image_kind(data)
+                if not kind:
+                    raise RuntimeError(f"not an image ({len(data)}B)")
+                cache[url] = f"data:image/{kind};base64,{base64.b64encode(data).decode()}"
+            except Exception as exc:  # noqa: BLE001 (network, HTTP, format: all non-fatal)
+                logger.warning("image {} not inlined: {}", url, exc)
+                cache[url] = ""
+        return f"{m[1]}{cache[url]}{m[3]}" if cache[url] else m[0]
+    return _IMG_SRC_RE.sub(_one, rcp_html)
+
+
+def overlays_missing_images() -> list[str]:
+    """CIS whose overlay links an ANSM image that inline_images did not embed: the
+    overlays scraped before it existed (plus any whose image download failed)."""
+    out = []
+    for path in sorted(RCP_OVERLAY_DIR.glob("*.html*")):
+        if path.name.endswith(".tmp") or path.stat().st_size == 0:
+            continue
+        raw = path.read_bytes()
+        text = (gzip.decompress(raw) if path.suffix == ".gz" else raw).decode("utf-8", "replace")
+        if any(ansm_image_url(m[2]) for m in _IMG_SRC_RE.finditer(text)):
+            out.append(path.name.split(".", 1)[0])
+    return out
+
+
 def fetch_one(client: httpx.Client, cis: str) -> tuple[str, int]:
     """Fetch a drug page and return its raw HTML plus the final HTTP status."""
     resp = client.get(PAGE_URL.format(cis=cis))
@@ -385,7 +491,7 @@ def scrape_one(client: httpx.Client, cis: str, gzip_overlay: bool,
     page, status = fetch_one(client, cis)
     if status != 200:
         raise RuntimeError(f"HTTP {status}")
-    rcp = extract_rcp(page)
+    rcp = inline_images(client, extract_rcp(page))
     dest = write_overlay(cis, rcp, gzip_overlay)
     logger.debug("{}: wrote {} ({} bytes on disk) from {} bytes of HTML",
                  cis, dest.name, dest.stat().st_size, len(page))
@@ -496,6 +602,9 @@ def build_queue(
               help="Fetch every due CIS (one-time full scrape; overrides --limit).")
 @click.option("--only", multiple=True, metavar="CIS",
               help="Fetch these exact CIS codes, ignoring TTL and ordering. Repeatable.")
+@click.option("--missing-images", is_flag=True,
+              help="Re-fetch every overlay whose images are not inlined yet (scraped "
+                   "before inline_images existed), ignoring TTL and ordering.")
 @click.option("--ttl-days", type=int, default=30, show_default=True,
               help="Skip a CIS refreshed more recently than this many days.")
 @click.option("--rate", type=float, default=2.0, show_default=True,
@@ -516,7 +625,7 @@ def build_queue(
 @click.option("--user-agent",
               default=None,
               help="Override the HTTP User-Agent sent to the ANSM site.")
-def main(limit: int, fetch_all: bool, only: tuple[str, ...], ttl_days: int,
+def main(limit: int, fetch_all: bool, only: tuple[str, ...], missing_images: bool, ttl_days: int,
          rate: float, gzip_overlay: bool, force: bool, frequency: Path | None,
          timeout: float, user_agent: str | None) -> None:
     """Refresh RCP overlay files from the live ANSM site (see module docstring)."""
@@ -524,6 +633,9 @@ def main(limit: int, fetch_all: bool, only: tuple[str, ...], ttl_days: int,
     # (or block) rather than seeing an anonymous bot. Override with --user-agent.
     ua = user_agent or f"justelesRCP-scraper/1.0 (RCP freshness bot; {UA_CONTACT})"
 
+    if missing_images:
+        only = tuple(overlays_missing_images())
+        logger.info("{} overlays link images that are not inlined yet", len(only))
     if only:
         targets = list(dict.fromkeys(only))  # dedupe, keep order
         logger.info("scraping {} explicitly requested CIS", len(targets))

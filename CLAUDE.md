@@ -841,7 +841,7 @@ Key facts that aren't obvious from a single file:
   (https on `ema.europa.eu` or a subdomain, parsed host, NOT a substring; the path is
   not required to end in `.pdf`, real links include `..._fr.pdf-0` and `/fr/media/N`)
   gates it everywhere: `extract_ema_pdf`, `_ema_pi_index`, `_load_ema_links`, `_eu_pdf`,
-  and `_fetch_pdf`, which follows redirects by hand (`_get_on_hosts`) so EVERY hop is
+  and `_fetch_pdf`, which follows redirects by hand (`scrape-rcp.py`'s `get_on_hosts`, also used for ANSM images) so EVERY hop is
   checked; the Wayback path is allowed only on `bdpm.WAYBACK_HOSTS`. Bodies are
   streamed and abandoned past `EMA_PDF_MAX_BYTES` (60 MB), and `ema_pdf.convert`
   refuses a PDF over `MAX_PAGES` (400) before parsing (untrusted input). **Internet

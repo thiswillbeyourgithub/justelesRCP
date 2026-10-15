@@ -301,8 +301,8 @@ def test_pdf_fetch_and_convert_are_size_capped():
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
         try:
-            sema._get_on_hosts(client, "https://www.ema.europa.eu/a.pdf",
-                               sema.scrape.bdpm.EMA_HOSTS, max_bytes=1000)
+            sema.scrape.get_on_hosts(client, "https://www.ema.europa.eu/a.pdf",
+                                     sema.scrape.bdpm.EMA_HOSTS, max_bytes=1000)
             assert False, "oversized body was accepted"
         except RuntimeError as exc:
             assert "over 1000 bytes" in str(exc), exc
@@ -478,6 +478,41 @@ def test_summary_reports_crawler_refresh_count_not_the_lane_gauge():
     print("ok  test_summary_reports_crawler_refresh_count_not_the_lane_gauge")
 
 
+def test_rcp_images_are_inlined_from_the_public_ansm_host():
+    # scrape_one embeds the images an ANSM RCP links (DEPAMIDE's black triangle) as
+    # data: URIs. Root-relative paths and the 2022 dump's dead internal host both map
+    # to the public host's /images/; anything else (Word "_fichiers" leftovers,
+    # another host) is never fetched, and a non-image body (an HTML 404 page served
+    # with a 200) leaves the URL for build.py to drop.
+    import httpx
+    scrape = sema.scrape
+    url = scrape.ansm_image_url
+    pub = "https://base-donnees-publique.medicaments.gouv.fr/images/R1/image001.png"
+    assert url("/images/R1/image001.png") == pub
+    assert url("http://prod-bdm.ansm.integra.fr/Rcp_Notices/images//R1/image001.png") == pub
+    assert url("12_fichiers/image003.png") == ""
+    assert url("https://evil.example/images/x.png") == ""
+    assert url("data:image/png;base64,AAAA") == ""
+    seen = []
+
+    def handler(req):
+        seen.append(str(req.url))
+        if req.url.path.endswith("bad.png"):
+            return httpx.Response(200, content=b"<html>not found</html>")
+        return httpx.Response(200, content=b"\x89PNG\r\n\x1a\n rest")
+
+    page = ('<p><img width="21" src="/images/R1/image001.png" alt="BT">Warning '
+            '<img src="/images/R1/image001.png"><img src="/images/R2/bad.png">'
+            '<img src="12_fichiers/image003.png"></p>')
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        out = scrape.inline_images(client, page)
+    assert out.count('src="data:image/png;base64,') == 2, out
+    assert 'src="/images/R2/bad.png"' in out and 'src="12_fichiers/image003.png"' in out
+    assert 'width="21"' in out and "Warning" in out
+    assert len(seen) == 2, seen  # the repeated image is fetched once
+    print("ok  test_rcp_images_are_inlined_from_the_public_ansm_host")
+
+
 if __name__ == "__main__":
     test_parse_tolerates_runon_records()
     test_pi_index_prefers_french_and_filters_type()
@@ -494,4 +529,5 @@ if __name__ == "__main__":
     test_crawl_order_is_rebuilt_after_a_rotation_and_a_live_harvest()
     test_single_cis_scrape_records_empty_status_and_keeps_ema_link()
     test_summary_reports_crawler_refresh_count_not_the_lane_gauge()
+    test_rcp_images_are_inlined_from_the_public_ansm_host()
     print("\nAll tests passed.")
