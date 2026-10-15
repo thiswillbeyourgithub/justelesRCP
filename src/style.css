@@ -594,6 +594,9 @@ a:not([href]):hover { text-decoration: none; }
    ANSM bookmark anchor inside them, see a:not([href])), whether anchored or not. */
 .rcp .AmmAnnexeTitre1, .rcp .AmmAnnexeTitre2 { color: var(--accent); }
 .rcp .AmmAnnexeTitre3 { font-weight: 600; margin: 1rem 0 .3rem; }
+/* A handful of RCPs (9) carry raw Word <h1>-<h6> in their body, sometimes around plain
+   prose: keep them at text size so they do not outshout the section titles. */
+.rcp :is(h2, h3, h4, h5, h6), .rcp h1:not(.rcp-title) { font-size: 1rem; margin: .5rem 0; }
 .rcp .AmmDenomination { font-size: 1.25rem; font-weight: 700; }
 .rcp table { border-collapse: collapse; width: 100%; overflow-x: auto; display: block; }
 .rcp td, .rcp th { border: 1px solid var(--line); padding: .3rem .5rem; }
