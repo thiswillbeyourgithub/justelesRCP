@@ -942,12 +942,12 @@ _RCP_TEMPLATE_SLOTS = (
 )
 
 
-def _render_one_rcp(d):
-    """Render a minimal RCP page in a temp DIST, returning (row, html). Sets the
-    module globals render_record reads (normally primed by the pool worker)."""
+def _render_one_rcp(d, raw=None):
+    """Render a minimal RCP page (or ``raw``) in a temp DIST, returning (row, html).
+    Sets the module globals render_record reads (normally primed by the pool worker)."""
     # This test now lives in src/ alongside rcp.html (a sibling), same dir as build.py.
     tpl = (Path(__file__).parent / "rcp.html").read_text()
-    raw = ('<html><body><div id="textDocument">'
+    raw = raw or ('<html><body><div id="textDocument">'
            '<p class="AmmAnnexeTitre1">1. DENOMINATION DU MEDICAMENT</p>'
            '<p>DOLIPRANE 1000 mg, comprime. Contient du paracetamol.</p>'
            '<p class="AmmAnnexeTitre1">4.1 Indications therapeutiques</p>'
@@ -1484,19 +1484,20 @@ def test_eu_figures_become_shared_files_and_orphans_are_pruned():
     png = base64.b64encode(b"\x89PNG fake bytes").decode()
     jpg = base64.b64encode(b"\xff\xd8 other bytes").decode()
     with tempfile.TemporaryDirectory() as d:
-        old = build.EU_IMG_DIR
-        build.EU_IMG_DIR = Path(d) / "eu" / "img"
+        old = build.DIST
+        build.DIST = Path(d)
+        img_dir = build.img_dir("eu")
         try:
             page = f'<img src="data:image/png;base64,{png}" alt=""><img src="data:image/jpeg;base64,{jpg}" alt="">'
-            a = build._externalize_images(page)
-            b = build._externalize_images(page)
+            a = build._externalize_images(page, "eu")
+            b = build._externalize_images(page, "eu")
             assert a == b and "data:" not in a, a
-            files = sorted(f.name for f in build.EU_IMG_DIR.iterdir())
+            files = sorted(f.name for f in img_dir.iterdir())
             assert len(files) == 2 and files[0].endswith(".jpg") and files[1].endswith(".png"), files
-            assert (build.EU_IMG_DIR / files[1]).read_bytes() == b"\x89PNG fake bytes"
+            assert (img_dir / files[1]).read_bytes() == b"\x89PNG fake bytes"
             assert 'loading="lazy"' in a
             # Only the PNG is still linked by a page: the JPEG is an orphan.
-            build.write_served(build.EU_IMG_DIR.parent / "1-x.html",
+            build.write_served(img_dir.parent / "1-x.html",
                                f'<img src="/eu/img/{files[1]}" loading="lazy">'.encode())
             # A figure written AFTER the build started is spared even though no page
             # links it yet: the refresh service writes figures before their page.
@@ -1504,21 +1505,21 @@ def test_eu_figures_become_shared_files_and_orphans_are_pruned():
             # few ms before time.time()).
             started = __import__("time").time() - 1
             for f in files:
-                os.utime(build.EU_IMG_DIR / f, (started - 10, started - 10))
+                os.utime(img_dir / f, (started - 10, started - 10))
             fresh = build._externalize_images(
-                f'<img src="data:image/png;base64,{base64.b64encode(b"new fig").decode()}">')
+                f'<img src="data:image/png;base64,{base64.b64encode(b"new fig").decode()}">', "eu")
             fresh_name = fresh.split("/eu/img/", 1)[1].split('"', 1)[0]
-            assert build._prune_eu_images(since=started) == 1
-            assert sorted(f.name for f in build.EU_IMG_DIR.iterdir()) == sorted([files[1], fresh_name])
+            assert build._prune_images("eu", since=started) == 1
+            assert sorted(f.name for f in img_dir.iterdir()) == sorted([files[1], fresh_name])
             # Reusing an existing figure bumps its date, so it is spared as well.
-            os.utime(build.EU_IMG_DIR / files[1], (started - 10, started - 10))
-            build._externalize_images(page)  # re-creates the pruned JPEG, touches the PNG
-            assert (build.EU_IMG_DIR / files[1]).stat().st_mtime >= started
+            os.utime(img_dir / files[1], (started - 10, started - 10))
+            build._externalize_images(page, "eu")  # re-creates the pruned JPEG, touches the PNG
+            assert (img_dir / files[1]).stat().st_mtime >= started
             # Once the build start is past them, the unlinked figures go.
-            assert build._prune_eu_images(since=__import__("time").time() + 10) == 2
-            assert [f.name for f in build.EU_IMG_DIR.iterdir()] == [files[1]]
+            assert build._prune_images("eu", since=__import__("time").time() + 10) == 2
+            assert [f.name for f in img_dir.iterdir()] == [files[1]]
         finally:
-            build.EU_IMG_DIR = old
+            build.DIST = old
     print("ok  test_eu_figures_become_shared_files_and_orphans_are_pruned")
 
 
@@ -1747,6 +1748,33 @@ def test_stub_workers_receive_the_substance_map():
     print("ok  test_stub_workers_receive_the_substance_map")
 
 
+def test_rcp_images_unreachable_dropped_inlined_served_from_rcp_img():
+    # DEPAMIDE opens on the "surveillance supplémentaire" warning whose black-triangle
+    # <img> pointed at ANSM's /images/...: on our site that was a broken icon followed
+    # by its alt text "BT_1000x858px". An image that is not inlined is now dropped
+    # (keeping the warning text that FOLLOWS it in the same paragraph), and an inlined
+    # one is served once from /rcp/img/<hash> like the /eu/ figures.
+    import base64
+    gif = base64.b64encode(b"GIF89a fake").decode()
+    raw = ('<html><body><div id="textDocument">'
+           '<p class="AmmCorpsTexte"><a name="_Toc1"><img src="/images/R1/image001.png" '
+           'alt="BT_1000x858px">Ce médicament fait l’objet d’une surveillance '
+           'supplémentaire.</a></p>'
+           '<p class="AmmAnnexeTitre1">1. DENOMINATION DU MEDICAMENT</p>'
+           f'<p>ZZDRUG 5 mg.<img src="data:image/gif;base64,{gif}" alt="fig"></p>'
+           '<p><img src="12_fichiers/image003.png">Texte après.</p>'
+           '</div></body></html>')
+    with tempfile.TemporaryDirectory() as d:
+        _row, html = _render_one_rcp(d, raw)
+        files = [f.name for f in (Path(d) / "rcp" / "img").iterdir()]
+    assert "BT_1000x858px" not in html and "/images/R1" not in html and "_fichiers" not in html
+    assert "Ce médicament fait l’objet d’une surveillance supplémentaire." in html
+    assert "Texte après." in html
+    assert len(files) == 1 and files[0].endswith(".gif"), files
+    assert f'src="/rcp/img/{files[0]}"' in html and "data:image" not in html
+    print("ok  test_rcp_images_unreachable_dropped_inlined_served_from_rcp_img")
+
+
 def test_every_drug_page_path_fills_every_template_slot():
     """The /rcp/ page, the full /eu/ page and the /eu/ stub each used to chain their
     own ten ``.replace`` calls over rcp.html, so a slot added to the template could be
@@ -1768,8 +1796,8 @@ def test_every_drug_page_path_fills_every_template_slot():
     meta = ("ZZDRUG 5 mg, comprime", "EU/1/00/000/001", "ZZ Pharma")
     with tempfile.TemporaryDirectory() as d:
         _row, rcp_html = _render_one_rcp(d)
-        saved = build.DIST, build.EU_IMG_DIR
-        build.DIST, build.EU_IMG_DIR = Path(d), Path(d) / "eu" / "img"
+        saved = build.DIST
+        build.DIST = Path(d)
         try:
             row = build.render_eu_page("12345678", overlay, meta, tpl)
             full_html = build.read_served(Path(d) / "eu" / f"{row['slug']}.html").decode()
@@ -1777,7 +1805,7 @@ def test_every_drug_page_path_fills_every_template_slot():
             stub_html = build.read_served(
                 Path(d) / "eu" / f"87654321-{build.slugify(meta[0])}.html").decode()
         finally:
-            build.DIST, build.EU_IMG_DIR = saved
+            build.DIST = saved
     for kind, html in (("rcp", rcp_html), ("eu full", full_html), ("eu stub", stub_html)):
         assert not slot_re.search(html), (kind, slot_re.findall(html))
     assert "ZZDRUG 5 mg, comprime pellicule." in full_html
@@ -1969,6 +1997,7 @@ if __name__ == "__main__":
     test_failed_render_is_reported_and_previous_page_kept()
     test_stub_workers_receive_the_substance_map()
     test_every_drug_page_path_fills_every_template_slot()
+    test_rcp_images_unreachable_dropped_inlined_served_from_rcp_img()
     test_embed_popup_routes_are_bounded_and_cached()
     test_embed_request_during_embed_is_rerun_not_dropped()
     test_web_manifest_icons_ship()

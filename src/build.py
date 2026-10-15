@@ -897,6 +897,13 @@ def _parse_clean(raw: str):
     doc = lxml_html.fromstring(_demojibake(raw))
     for node in doc.xpath(_STRIP_XPATH):
         node.getparent().remove(node)
+    # An image the overlay did not inline (see scrape.inline_images) points at ANSM's
+    # own paths, the long-dead prod-bdm.ansm.integra.fr host or a Word export's
+    # "_fichiers" folder: none of those resolve here, so it would render as a broken
+    # icon plus its alt text (DEPAMIDE's black triangle showed "BT_1000x858px").
+    # drop_tree keeps the text that follows it, which is often the whole paragraph.
+    for img in doc.xpath("//img[not(starts-with(@src, 'data:'))]"):
+        img.drop_tree()
     # Drop inline font/size styling; keep the class hooks (AmmDenomination, ...).
     for node in doc.xpath("//*[@style]"):
         style = node.get("style")
@@ -2891,7 +2898,7 @@ def _render_record(item: tuple[str, str, str]) -> dict[str, str]:
         ),
         content=cleaned, xref=_xref_html(xref_links), more_bottom=refs,
     )
-    write_served(DIST / "rcp" / f"{slug}.html", page.encode("utf-8"))
+    write_served(DIST / "rcp" / f"{slug}.html", _externalize_images(page, "rcp").encode("utf-8"))
     # ``asof`` rides back only for the manifest (sitemap <lastmod>); main() strips it
     # before it can reach the client-downloaded search-index.json. The archived state
     # is NOT returned: main() gathers it in misses() (covering cache hits too, which
@@ -3220,58 +3227,68 @@ def _eu_full_content(name: str, eu: str, holder: str, overlay_html: str) -> str:
     return f'<div class="rcp-eu">{lead}{meta}{archive_note}</div>{overlay_html}'
 
 
-# --- /eu/ figures: one shared file per distinct image ------------------------
-# ema_pdf.convert embeds each PDF figure as a base64 data: URI, which keeps the
-# overlay self-contained. Served that way, though, the figures were ~70% of every
-# /eu/ page, stored once per sibling presentation (every strength/pack of a product
-# shares one SmPC, hence the same figures) and again in each precompressed copy,
-# where they barely shrink: 1.4 GB of figures for 0.45 GB of distinct images. So
-# render_eu_page writes each one to dist/eu/img/ under a hash of its bytes, which
-# dedupes siblings for free, and the page links it. The overlay stays unchanged.
-EU_IMG_DIR = DIST / "eu" / "img"
-_DATA_IMG_RE = re.compile(r'src="data:image/(png|jpeg);base64,([A-Za-z0-9+/=]+)"')
-_EU_IMG_REF_RE = re.compile(r'/eu/img/([0-9a-f]{20}\.(?:png|jpg))"')
+# --- page figures: one shared file per distinct image -----------------------
+# Overlays carry their figures as base64 data: URIs, which keeps each overlay
+# self-contained: ema_pdf.convert embeds the EMA PDF's figures, and scrape-rcp.py
+# inlines the images an ANSM page links (scrape.inline_images). Served that way,
+# though, the figures were ~70% of every /eu/ page, stored once per sibling
+# presentation (every strength/pack of a product shares one SmPC, hence the same
+# figures) and again in each precompressed copy, where they barely shrink: 1.4 GB of
+# figures for 0.45 GB of distinct images. So the renderers write each one to
+# dist/<rcp|eu>/img/ under a hash of its bytes, which dedupes siblings for free, and
+# the page links it. The overlay stays unchanged.
+IMG_LANES = ("rcp", "eu")
+_DATA_IMG_RE = re.compile(r'src="data:image/(png|jpeg|gif);base64,([A-Za-z0-9+/=]+)"')
+_IMG_REF_RE = re.compile(r'/(?:rcp|eu)/img/([0-9a-f]{20}\.(?:png|jpg|gif))"')
 
 
-def _externalize_images(page: str) -> str:
-    """Swap every base64 figure in an /eu/ page for a link to its file in
-    EU_IMG_DIR, writing the file when it is new. Content-addressed, so concurrent
+def img_dir(lane: str) -> Path:
+    """Where the figures of one page lane ("rcp" or "eu") are served from."""
+    return DIST / lane / "img"
+
+
+def _externalize_images(page: str, lane: str) -> str:
+    """Swap every base64 figure in a ``lane`` page for a link to its file in
+    img_dir(lane), writing the file when it is new. Content-addressed, so concurrent
     render workers writing the same figure write the same bytes (the temp name is
-    per process, and the rename is atomic). Not precompressed: PNG/JPEG already are."""
+    per process, and the rename is atomic). Not precompressed: PNG/JPEG/GIF already are."""
+    d = img_dir(lane)
+
     def _one(m: re.Match) -> str:
         data = base64.b64decode(m[2])
-        name = f"{hashlib.sha256(data).hexdigest()[:20]}.{'jpg' if m[1] == 'jpeg' else 'png'}"
-        out = EU_IMG_DIR / name
+        name = f"{hashlib.sha256(data).hexdigest()[:20]}.{'jpg' if m[1] == 'jpeg' else m[1]}"
+        out = d / name
         try:
             # Reused figure: bump its date so a concurrent build's prune (which
             # spares figures newer than its start) cannot delete it before the
             # page linking it is written.
             os.utime(out)
         except FileNotFoundError:
-            EU_IMG_DIR.mkdir(parents=True, exist_ok=True)
+            d.mkdir(parents=True, exist_ok=True)
             tmp = out.with_name(f"{name}.{os.getpid()}.tmp")
             tmp.write_bytes(data)
             tmp.replace(out)
-        return f'src="/eu/img/{name}" loading="lazy"'
+        return f'src="/{lane}/img/{name}" loading="lazy"'
     return _DATA_IMG_RE.sub(_one, page)
 
 
-def _prune_eu_images(since: float) -> int:
-    """Delete the figures in EU_IMG_DIR that no /eu/ page links any more (a product
-    whose SmPC changed its figures, a page dropped from the build). Scans the pages
-    themselves rather than a manifest, so a figure written by the refresh service for
-    a page re-rendered on the server counts as used too. Only figures last modified
-    BEFORE ``since`` (the build's start) are candidates: the refresh service writes a
-    page's figures first and the page itself last, so a figure it wrote during the
-    build may not be linked by any page YET when the pages are scanned. Returns the
-    count removed."""
-    if not EU_IMG_DIR.is_dir():
+def _prune_images(lane: str, since: float) -> int:
+    """Delete the figures in img_dir(lane) that no page of that lane links any more
+    (a product whose text changed its figures, a page dropped from the build). Scans
+    the pages themselves rather than a manifest, so a figure written by the refresh
+    service for a page re-rendered on the server counts as used too. Only figures
+    last modified BEFORE ``since`` (the build's start) are candidates: the refresh
+    service writes a page's figures first and the page itself last, so a figure it
+    wrote during the build may not be linked by any page YET when the pages are
+    scanned. Returns the count removed."""
+    d = img_dir(lane)
+    if not d.is_dir():
         return 0
     used: set[str] = set()
-    for page in served_pages(EU_IMG_DIR.parent):
-        used.update(_EU_IMG_REF_RE.findall((read_served(page) or b"").decode("utf-8")))
+    for page in served_pages(d.parent):
+        used.update(_IMG_REF_RE.findall((read_served(page) or b"").decode("utf-8")))
     removed = 0
-    for img in EU_IMG_DIR.iterdir():
+    for img in d.iterdir():
         if img.name in used:
             continue
         try:
@@ -3335,7 +3352,7 @@ def render_eu_page(cis: str, overlay_html: str, meta: tuple[str, str, str] | Non
         content=_eu_full_content(name, eu, holder, body), xref="", more_bottom=refs,
     )
     out = DIST / "eu" / f"{slug}.html"
-    write_served(out, _externalize_images(page).encode("utf-8"))
+    write_served(out, _externalize_images(page, "eu").encode("utf-8"))
     return {"cis": cis, "name": name, "slug": slug, "eu": 1}
 
 
@@ -3481,12 +3498,12 @@ def build_stubs(
     # (_init_stub_worker), so siblings landing in one worker still share a read.
     groups = auth_groups(cap)
     eu_dir = DIST / "eu"
-    # Figures newer than this are never pruned (see _prune_eu_images).
+    # Figures newer than this are never pruned (see _prune_images).
     started = time.time()
 
     def _prune(keep: set[str]) -> None:
         _prune_pages(eu_dir, keep)
-        _prune_eu_images(since=started)
+        _prune_images("eu", since=started)
 
     if not cap:  # no BDPM file: build nothing, sweep away any prior stubs
         _prune(set())
@@ -3679,6 +3696,8 @@ def main() -> None:
         sys.exit(f"missing {CSV_PATH} and {RCP_OVERLAY_DIR} (see README / scripts/download-data.sh)")
 
     print(f"build justelesRCP v{__version__}")
+    # Figures newer than this are never pruned (see _prune_images).
+    started = time.time()
     # Release-notes gate: parse + validate every docs/changelog/<version>/changelog.md
     # BEFORE any rendering, so a version bump with no (or malformed) notes fails in a
     # second instead of after a full rebuild.
@@ -3734,6 +3753,7 @@ def main() -> None:
     # Prune outputs left behind by renamed slugs or CIS dropped from the source.
     keep = {e["slug"] for e in index}
     pruned = _prune_pages(DIST / "rcp", keep)
+    _prune_images("rcp", since=started)
     unplained = drop_plain_copies()
 
     MANIFEST_PATH.write_text(

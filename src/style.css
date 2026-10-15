@@ -646,6 +646,10 @@ a:not([href]):hover { text-decoration: none; }
   max-width: 100%; height: auto; cursor: zoom-in;
   background: var(--fig-img-bg); padding: var(--fig-img-pad); border-radius: .3rem;
 }
+/* ANSM RCP images sit inline in the text (scrape-rcp.py inlines them, build.py serves
+   them from /rcp/img/) with Word's pixel width/height attributes: keep them inside the
+   reading column on a phone. */
+.rcp img { max-width: 100%; height: auto; vertical-align: middle; }
 /* Nested ToC entries: on RCP pages the numbered subsections (4.1, 4.2...)
    under their top-level section, and on full /eu/ pages the SmPC's sections under
    their annex group. The descendant selector indents any further-nested level too

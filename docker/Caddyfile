@@ -134,11 +134,11 @@
 	#      gzips it on the way out. Without the refresh service, such a client gets a
 	#      502 on those pages (a browser never takes this route).
 	# A leftover plain file still wins for a non-br client (falls through to the
-	# generic handle below), so a half-migrated dist keeps working. /eu/img/ holds
-	# ordinary PNG/JPEG files and is excluded from both routes.
+	# generic handle below), so a half-migrated dist keeps working. /eu/img/ and
+	# /rcp/img/ hold ordinary PNG/JPEG/GIF files and are excluded from both routes.
 	@br_only {
 		path /rcp/* /eu/*
-		not path /eu/img/*
+		not path /eu/img/* /rcp/img/*
 		header Accept-Encoding *br*
 		file {path}.br {path}.html.br
 	}
@@ -154,7 +154,7 @@
 	}
 	@br_fallback {
 		path /rcp/* /eu/*
-		not path /eu/img/*
+		not path /eu/img/* /rcp/img/*
 		not file {path} {path}.html
 		file {path}.br {path}.html.br
 	}
@@ -170,7 +170,7 @@
 		reverse_proxy refresh:8460
 	}
 
-	# Everything else (home, browse, assets, /eu/img/): plain files with a .br sibling.
+	# Everything else (home, browse, assets, figures): plain files with a .br sibling.
 	handle {
 		# Serve the precompressed .br sibling when the client supports it (zero
 		# runtime CPU); a client without brotli gets the plain file through the
@@ -217,13 +217,13 @@
 	# max-age=86400 on .css/.js let stale assets live in the browser for up to a
 	# day, so a soft reload kept showing the old UI. (An upstream reverse proxy
 	# or CDN in front of :8459 could still cache; make sure it honors no-cache.)
-	# The one exception is /eu/img/: the figures of the EMA pages, which build.py
-	# names after a hash of their bytes, so a given URL can never change content
-	# and the browser may keep it for good instead of revalidating each figure.
-	@eu_img path /eu/img/*
-	@not_eu_img not path /eu/img/*
-	header @not_eu_img Cache-Control "no-cache"
-	header @eu_img Cache-Control "public, max-age=31536000, immutable"
+	# The one exception is /eu/img/ + /rcp/img/: the figures of the drug pages, which
+	# build.py names after a hash of their bytes, so a given URL can never change
+	# content and the browser may keep it for good instead of revalidating each one.
+	@page_img path /eu/img/* /rcp/img/*
+	@not_page_img not path /eu/img/* /rcp/img/*
+	header @not_page_img Cache-Control "no-cache"
+	header @page_img Cache-Control "public, max-age=31536000, immutable"
 
 	log {
 		output stdout

@@ -53,6 +53,9 @@
   }
 
   imgs.forEach(function (img) {
+    // An inline icon (the 21px black triangle of an ANSM "surveillance
+    // supplémentaire" warning) is already shown whole: nothing to zoom into.
+    if (+img.getAttribute("width") && +img.getAttribute("width") < 48) return;
     function activate() { open(img.currentSrc || img.src, img.getAttribute("alt")); }
     // Make each image an accessible, keyboard-activatable button. EMA figures carry an
     // empty alt, so give the control an explicit label (role=button needs a name).
