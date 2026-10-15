@@ -113,8 +113,9 @@ dist/eu/<cis>-<slug>.vec.json    per-drug semantic search, written DIRECTLY by
 dist/.build-manifest.json    incremental-build cache (per-CIS input hashes)
 + a .br precompressed sibling for every other text file (Caddy serves it; no .gz);
   dist/rcp + dist/eu pages and .vec.json are stored as the .br ONLY (no plain copy)
-dist/eu/img/<hash>.png|jpg   /eu/ page figures, one file per distinct image (see the
-                             EMA conversion bullet), not precompressed
+dist/eu/img/<hash>.png|jpg|gif   /eu/ page figures, one file per distinct image (see the
+dist/rcp/img/<hash>.png|jpg|gif  EMA conversion bullet; /rcp/ ones come from scrape-rcp's
+                             inline_images), not precompressed
 ```
 
 Docker lives under `docker/` (compose, Caddyfile, entrypoint.sh, env.example).
@@ -261,6 +262,17 @@ Key facts that aren't obvious from a single file:
   the contract in sync across `_build_toc`/`_toc_html`/`_toc_ol_html`/`_eu_toc`/
   `_eu_prepare`/`_promote_subheads`/`_is_subhead`/`_TOC_DEPTH` (build.py), the `{{TOC}}` slot in `src/rcp.html`, `src/toc.js`, and
   `.toc` in `style.css`.
+- **ANSM HTML quirks handled at render time** (all in `_parse_clean` or `style.css`,
+  so a rebuild fixes them, no re-scrape): (1) Word bookmarks wrap whole paragraphs
+  in `<a name="_Toc...">`, so `a:not([href])` resets to `color: inherit` (it used to
+  paint ~12.6k pages' text in the link colour) and the `AmmAnnexeTitre1/2` accent is
+  set explicitly; (2) a page with NO `AmmAnnexeTitre1` (a few baseline pages set
+  their titles as plain or bold paragraphs, or one level too deep) gets its
+  QRD-numbered titles promoted by `_promote_numbered_titles` ("N. ALL CAPS" ->
+  Titre1, "N.N. Title" without a closing period -> Titre2, never in a table/list),
+  else its Sommaire is empty (test: `test_untitled_rcp_gets_its_numbered_titles_promoted`);
+  (3) the few raw Word `<h1>`-`<h6>` in a body are kept at text size. Literal QRD
+  placeholders (`<...>` text) found on a handful of pages are SOURCE content, left as is.
 - **Every page has an `<h1>` drug/presentation-name header** at the top, emitted
   from the shared template's `{{TITLE}}` slot (filled with the drug name by
   `render_record`, `render_eu_page` and `render_eu_stub` alike, `.rcp-title` in
@@ -797,14 +809,30 @@ Key facts that aren't obvious from a single file:
   Content-addressed, so every sibling presentation of a product (same SmPC, same
   figures) shares one file; inline, the figures were ~1.4 GB of the ~1.9 GB of
   `/eu/` HTML, stored once per sibling and again in each precompressed copy, for
-  ~0.45 GB of distinct images. `build_stubs`' `_prune` ends with
-  `_prune_eu_images`, which deletes the figures no `/eu/` page links (it scans the
+  ~0.45 GB of distinct images. The SAME store serves `/rcp/` pages (`IMG_LANES`,
+  `img_dir(lane)`, `_externalize_images(page, lane)`): ANSM RCPs link their figures
+  ANSM-relative (`/images/R.../image001.png`, e.g. DEPAMIDE's black-triangle
+  "surveillance supplémentaire" pictogram), which 404 here, so `scrape-rcp.py`'s
+  `inline_images` downloads each one at SCRAPE time off `ANSM_HOSTS` (the dead
+  `prod-bdm.ansm.integra.fr` host the 2022 baseline links is rewritten to the public
+  one, `ansm_image_url`) and bakes it into the overlay as a `data:` URI; an image that
+  cannot be fetched keeps its URL and `_parse_clean` DROPS every non-`data:` `<img>`
+  (keeping its tail text), so a reader never sees a broken icon + alt text.
+  `scrape-rcp.py --missing-images` re-scrapes just the overlays still carrying a
+  remote `<img>` (`overlays_missing_images`). `main()` prunes `/rcp/img/` with
+  `_prune_images("rcp", since=started)`. `build_stubs`' `_prune` ends with
+  `_prune_images("eu", ...)`, which deletes the figures no `/eu/` page links (it scans the
   pages, not a manifest, so figures the refresh service wrote count too; and it spares any figure modified since `build_stubs` started, since the refresh service writes figures before their page, and `_externalize_images` bumps a reused figure's date for the same reason). The
   Caddyfile serves `/eu/img/*` as `immutable` (a hash URL never changes content)
   and everything else `no-cache`. The refresh container writes them through its
-  existing `dist/eu` mount. Keep in sync across `EU_IMG_DIR`/`_externalize_images`/
-  `_prune_eu_images`/`render_eu_page` (build.py), the `@eu_img` header rule in
-  `docker/Caddyfile`, and `test_eu_figures_become_shared_files_and_orphans_are_pruned`.
+  existing `dist/eu` and `dist/rcp` mounts. `/eu/img/` and `/rcp/img/` are excluded from
+  the `@br_only`/`@br_fallback` routes. Keep in sync across `IMG_LANES`/`img_dir`/
+  `_externalize_images`/`_prune_images`/`render_eu_page`/`render_record`/the `<img>`
+  drop in `_parse_clean` (build.py), `inline_images`/`ansm_image_url`/`get_on_hosts`/
+  `overlays_missing_images` (scrape-rcp.py), the `@page_img` header rule in
+  `docker/Caddyfile`, `test_eu_figures_become_shared_files_and_orphans_are_pruned`,
+  `test_rcp_images_unreachable_dropped_inlined_served_from_rcp_img` and
+  `test_rcp_images_are_inlined_from_the_public_ansm_host` (test_ema_seed.py).
   `scrape-ema.py` (PEP 723; imports scrape-rcp.py + ema_pdf.py) is the EMA
   counterpart of `scrape-rcp.py`: it reads the `ema_pdf` links scrape-rcp.py
   harvested into the ANSM manifest, fetches each PDF politely, and writes one
@@ -1192,7 +1220,7 @@ Key facts that aren't obvious from a single file:
   ("*.html")` on those dirs; each also accepts a legacy plain file, and
   `drop_plain_copies` (run by the build and at embed-service startup, which owns the
   VPS's vectors) removes a plain/`.gz` copy that has a `.br`. Top-level assets, browse
-  pages and `/eu/img/` stay plain (+ `.br` via `compress()`). Keep the contract in
+  pages and `/eu/img/` + `/rcp/img/` stay plain (+ `.br` via `compress()`). Keep the contract in
   sync across those helpers + `plain_for`/`_prune_pages` (build.py), `_send_plain`
   (refresh-service.py), `Embedder.start` (embed-service.py), the `@br_only`/
   `@br_fallback` routes in `docker/Caddyfile`, and
@@ -1360,6 +1388,8 @@ uv run src/scrape-rcp.py --limit 60   # OPTIONAL manual/one-time bulk scrape int
                                   # env: RCP_OVERLAY_GZIP (gzip overlays, default on),
                                   # RCP_SCRAPE_RATE_SECONDS (base gap between fetches);
                                   # logs a progress bar + ETA and the trigger (user/timer)
+                                  # --missing-images re-scrapes only the overlays whose figures
+                                  #  are not inlined yet (see the EMA conversion bullet)
 uv run src/scrape-ema.py --limit 60   # OPTIONAL bulk scrape of EMA product-information PDFs into
                                   # data/eu/ overlays (converted to HTML by ema_pdf.py). Reads the
                                   # ema_pdf links scrape-rcp.py harvested; own manifest
