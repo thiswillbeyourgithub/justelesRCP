@@ -272,7 +272,7 @@ Key facts that aren't obvious from a single file:
   Titre1, "N.N. Title" without a closing period -> Titre2, never in a table/list),
   else its Sommaire is empty (test: `test_untitled_rcp_gets_its_numbered_titles_promoted`);
   (3) the few raw Word `<h1>`-`<h6>` in a body are kept at text size. Literal QRD
-  placeholders (`<...>` text) found on a handful of pages are SOURCE content, left as is.
+  placeholders (`<...>` text) found on a handful of pages are SOURCE content, left as is. Added by Claude Code.
 - **Every page has an `<h1>` drug/presentation-name header** at the top, emitted
   from the shared template's `{{TITLE}}` slot (filled with the drug name by
   `render_record`, `render_eu_page` and `render_eu_stub` alike, `.rcp-title` in
