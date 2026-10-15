@@ -1775,6 +1775,33 @@ def test_rcp_images_unreachable_dropped_inlined_served_from_rcp_img():
     print("ok  test_rcp_images_unreachable_dropped_inlined_served_from_rcp_img")
 
 
+def test_untitled_rcp_gets_its_numbered_titles_promoted():
+    # BETAMETHASONE ARROW (61111556) sets its section titles as bold AmmCorpsTexte
+    # paragraphs and another baseline page puts them one level too deep: with no
+    # AmmAnnexeTitre1 the Sommaire was empty. The QRD-numbered titles are promoted,
+    # but only on such a document, and numbered prose ("40 gouttes ...", a "4.1"
+    # sentence ending in a period) stays body text.
+    raw = ('<html><body><div id="textDocument">'
+           '<p class="AmmCorpsTexte"><b>1. DENOMINATION DU MEDICAMENT</b></p>'
+           '<p class="AmmCorpsTexteGras">ZZDRUG 0,05 %, solution buvable</p>'
+           '<p class="AmmAnnexeTitre2">4. DONNEES CLINIQUES</p>'
+           '<p class="AmmCorpsTexte">4.1. Indications thérapeutiques</p>'
+           '<p class="AmmCorpsTexte">40 gouttes correspondent à 1 ml de solution.</p>'
+           '<p class="AmmCorpsTexte">4.2. Voir la rubrique précédente.</p>'
+           '</div></body></html>')
+    _d, _c, toc, _x = build.clean_rcp(raw)
+    assert [(t[1], [c[1] for c in t[2]]) for t in toc] == [
+        ("1. DENOMINATION DU MEDICAMENT", []),
+        ("4. DONNEES CLINIQUES", ["4.1. Indications thérapeutiques"]),
+    ], toc
+    # A normal page is left alone: its plain "2. ..." paragraph is not a title.
+    normal = raw.replace('<p class="AmmCorpsTexte"><b>1.', '<p class="AmmAnnexeTitre1"><b>1.')
+    normal = normal.replace('<p class="AmmAnnexeTitre2">4.', '<p class="AmmCorpsTexte">2.')
+    _d, _c, toc, _x = build.clean_rcp(normal)
+    assert [t[1] for t in toc] == ["1. DENOMINATION DU MEDICAMENT"], toc
+    print("ok  test_untitled_rcp_gets_its_numbered_titles_promoted")
+
+
 def test_every_drug_page_path_fills_every_template_slot():
     """The /rcp/ page, the full /eu/ page and the /eu/ stub each used to chain their
     own ten ``.replace`` calls over rcp.html, so a slot added to the template could be
@@ -1998,6 +2025,7 @@ if __name__ == "__main__":
     test_stub_workers_receive_the_substance_map()
     test_every_drug_page_path_fills_every_template_slot()
     test_rcp_images_unreachable_dropped_inlined_served_from_rcp_img()
+    test_untitled_rcp_gets_its_numbered_titles_promoted()
     test_embed_popup_routes_are_bounded_and_cached()
     test_embed_request_during_embed_is_rerun_not_dropped()
     test_web_manifest_icons_ship()

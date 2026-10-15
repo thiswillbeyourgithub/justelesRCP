@@ -912,8 +912,36 @@ def _parse_clean(raw: str):
             node.set("style", ";".join(kept))
         else:
             del node.attrib["style"]
+    _promote_numbered_titles(doc)
     _promote_subheads(doc)
     return doc
+
+
+# A few baseline RCPs (2 in the 2022 dump) never use AmmAnnexeTitre1: their section
+# titles are plain bold paragraphs ("1. DENOMINATION DU MEDICAMENT" as AmmCorpsTexte)
+# or one level too deep (AmmAnnexeTitre2). With no top-level heading the page got an
+# empty Sommaire and no section anchors. Only on such a document, the QRD-numbered
+# titles are re-tagged: "N. ALL CAPS" as level 1, "N.N. Title" as level 2. A fresh
+# scrape always has AmmAnnexeTitre1 (extract_rcp requires it), so overlays, and the
+# semantic-search chunks built from them, are untouched.
+_NUMBERED_TITLE_RE = re.compile(r"^(\d{1,2})\.(\d{1,2}\.?)?\s+\S")
+_NUMBERED_TITLE_MAX = 120
+
+
+def _promote_numbered_titles(doc) -> None:
+    if doc.xpath("//*[contains(@class, 'AmmAnnexeTitre1')]"):
+        return
+    for p in doc.iter("p"):
+        if any(a.tag in ("td", "th", "li") for a in p.iterancestors()):
+            continue
+        t = _norm_ws(p.text_content())
+        m = _NUMBERED_TITLE_RE.match(t)
+        if not m or len(t) > _NUMBERED_TITLE_MAX:
+            continue
+        if not m[2] and not any(c.islower() for c in t):
+            p.set("class", "AmmAnnexeTitre1")
+        elif m[2] and not t.endswith("."):
+            p.set("class", "AmmAnnexeTitre2")
 
 
 # Unstyled subheadings. Many RCPs (most EMA SmPCs, some ANSM pages) set their
