@@ -64,6 +64,10 @@ body {
 }
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
+/* ANSM wraps whole paragraphs in Word bookmarks (<a name="_Toc...">): not links,
+   so they must read as the surrounding text, not in the link colour. */
+a:not([href]) { color: inherit; }
+a:not([href]):hover { text-decoration: none; }
 
 /* --- top bar (RCP pages) --- */
 .topbar {
@@ -586,6 +590,9 @@ a:hover { text-decoration: underline; }
   padding-top: .8rem; border-top: 1px solid var(--line);
 }
 .rcp .AmmAnnexeTitre2 { font-weight: 700; margin: 1.3rem 0 .3rem; }
+/* Section titles in the accent colour on purpose (they used to inherit it from the
+   ANSM bookmark anchor inside them, see a:not([href])), whether anchored or not. */
+.rcp .AmmAnnexeTitre1, .rcp .AmmAnnexeTitre2 { color: var(--accent); }
 .rcp .AmmAnnexeTitre3 { font-weight: 600; margin: 1rem 0 .3rem; }
 .rcp .AmmDenomination { font-size: 1.25rem; font-weight: 700; }
 .rcp table { border-collapse: collapse; width: 100%; overflow-x: auto; display: block; }
