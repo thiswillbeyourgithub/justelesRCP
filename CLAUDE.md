@@ -525,8 +525,11 @@ Key facts that aren't obvious from a single file:
      text, so an old ANSM date is NOT staleness.
   2. **Our capture date** = `data-rcp-asof` = `BASELINE_DATE` (`2022-05-02`) for a
      baseline CSV cell, or the scrape date for an overlay (from
-     `.scrape-manifest.json`'s `last_fetch`, else the overlay mtime; see
-     `_load_scrape_dates`/`_overlay_date`). Shown as a small "Version vérifiée par
+     `.scrape-manifest.json`'s `last_fetch`, else the gzip overlay's header MTIME
+     (the same fetch time, `bdpm.overlay_stamp`), else the overlay mtime; see
+     `_load_scrape_dates`/`_overlay_date`). deploy.sh pulls the VPS's manifest with
+     its overlays and runs `scrape-rcp.py --merge-manifest <vps copy> --backfill-dates`,
+     so a VPS-scraped overlay is dated locally too. Shown as a small "Version vérifiée par
      justelesRCP le …" line (`.rcp-checked`). `app-init.js` also keys the `.stale`
      "notre copie" notice AND the on-demand refresh trigger off THIS date only
      (not the ANSM date): a copy we have not re-checked in >1 year may lag ANSM's

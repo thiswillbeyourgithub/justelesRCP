@@ -513,6 +513,63 @@ def test_rcp_images_are_inlined_from_the_public_ansm_host():
     print("ok  test_rcp_images_are_inlined_from_the_public_ansm_host")
 
 
+def test_overlays_date_themselves_and_manifests_merge():
+    """An overlay pulled down from the VPS (deploy.sh) arrived without its manifest
+    entry, so ~9.4k local overlays had no scrape date. The gzip header now carries
+    the fetch time (the same stamp as the manifest's last_fetch), backfill dates an
+    undescribed overlay from it and nothing else, and the VPS manifest merges in
+    with the newer capture winning."""
+    import gzip
+    import tempfile
+    from datetime import datetime, timezone
+    scrape = sema.scrape
+    when = datetime(2026, 7, 20, 12, 0, tzinfo=timezone.utc)
+    saved = scrape.fetch_one, scrape.inline_images
+    page = ('<html><body><div id="tabpanel-rcp-panel"><div id="contenu">'
+            '<p class="AmmAnnexeTitre1">1. DENOMINATION</p><p>X</p></div></div></body></html>')
+    scrape.fetch_one = lambda client, cis: (page, 200)
+    scrape.inline_images = lambda client, html_doc: html_doc
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            odir = Path(d)
+            path = scrape.write_overlay("12345678", "<p>RCP</p>", True, odir, fetched=when)
+            assert scrape.bdpm.overlay_stamp(path) == when
+            assert scrape.bdpm.overlay_stamp(scrape.write_overlay("87654321", "", True, odir)) is None
+            # scrape_one: the manifest date and the header are one stamp.
+            saved_dir, scrape.RCP_OVERLAY_DIR = scrape.RCP_OVERLAY_DIR, odir
+            try:
+                _, entry = scrape.scrape_one(None, "11112222", True)
+            finally:
+                scrape.RCP_OVERLAY_DIR = saved_dir
+            stamp = scrape.bdpm.overlay_stamp(odir / "11112222.html.gz")
+            assert datetime.fromisoformat(entry["last_fetch"]).replace(microsecond=0) == stamp
+            # Backfill: an undescribed overlay is dated from its header, a described
+            # one is left alone, the zero-byte sentinel stays undated.
+            manifest = {"11112222": entry}
+            counts = scrape.backfill_from_headers(manifest, odir)
+            assert counts == {"dated": 1, "redated": 0, "described": 1, "no_stamp": 0}, counts
+            assert manifest["12345678"]["last_fetch"] == when.isoformat()
+            assert manifest["12345678"]["date_source"] == "gzip header"
+            assert manifest["11112222"] == entry and "87654321" not in manifest
+            # A content change the manifest does not describe is re-dated.
+            (odir / "11112222.html.gz").write_bytes(gzip.compress(b"<p>new</p>", mtime=when.timestamp()))
+            assert scrape.backfill_from_headers(manifest, odir)["redated"] == 1
+            assert manifest["11112222"]["last_fetch"] == when.isoformat()
+    finally:
+        scrape.fetch_one, scrape.inline_images = saved
+    # Merge: the newer capture wins, an EMA link survives from either side.
+    link = "https://www.ema.europa.eu/fr/x_fr.pdf"
+    base = {"1": {"last_fetch": "2026-07-01T00:00:00+00:00", "status": "ok", "ema_pdf": link},
+            "2": {"last_fetch": "2026-08-01T00:00:00+00:00", "status": "ok"}}
+    vps = {"1": {"last_fetch": "2026-09-01T00:00:00+00:00", "status": "ok"},
+           "2": {"last_fetch": "2026-07-01T00:00:00+00:00", "status": "ok"},
+           "3": {"last_fetch": "2026-09-02T00:00:00+00:00", "status": "empty"}}
+    assert scrape.merge_manifests(base, vps) == 2
+    assert base["1"] == {"last_fetch": "2026-09-01T00:00:00+00:00", "status": "ok", "ema_pdf": link}
+    assert base["2"]["last_fetch"].startswith("2026-08") and base["3"]["status"] == "empty"
+    print("ok  test_overlays_date_themselves_and_manifests_merge")
+
+
 if __name__ == "__main__":
     test_parse_tolerates_runon_records()
     test_pi_index_prefers_french_and_filters_type()
@@ -530,4 +587,5 @@ if __name__ == "__main__":
     test_single_cis_scrape_records_empty_status_and_keeps_ema_link()
     test_summary_reports_crawler_refresh_count_not_the_lane_gauge()
     test_rcp_images_are_inlined_from_the_public_ansm_host()
+    test_overlays_date_themselves_and_manifests_merge()
     print("\nAll tests passed.")

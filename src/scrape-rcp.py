@@ -36,7 +36,11 @@ What it does
    rsync size for greppability. A zero-byte file means "scraped, this drug has
    no RCP", which build.py treats as a real value and skips (not a fallback).
 5. Records ``{last_fetch, hash, status, http}`` per CIS in
-   ``data/.scrape-manifest.json`` for the TTL and change detection.
+   ``data/.scrape-manifest.json`` for the TTL and change detection. The same
+   fetch time is the gzip overlay's header MTIME, so an overlay copied without
+   the manifest still dates itself: ``--merge-manifest`` folds another machine's
+   manifest in and ``--backfill-dates`` dates an undescribed overlay from its
+   header (deploy.sh runs both after pulling the VPS's overlays).
 
 Politeness
 ----------
@@ -329,7 +333,8 @@ def record_error(manifest: dict, cis: str, msg: str) -> None:
 
 
 def write_overlay(cis: str, rcp_html: str, gzip_overlay: bool,
-                  overlay_dir: Path | None = None) -> Path:
+                  overlay_dir: Path | None = None,
+                  fetched: datetime | None = None) -> Path:
     """Write the overlay for a CIS atomically (temp file + rename); return its path.
 
     With ``gzip_overlay`` the RCP is stored gzip-compressed as ``<cis>.html.gz``
@@ -344,6 +349,11 @@ def write_overlay(cis: str, rcp_html: str, gzip_overlay: bool,
     The "scraped, but no RCP" case (``rcp_html == ""``) is stored as a zero-byte
     file (never a gzip of the empty string) so both sides recognise the sentinel
     by size alone without gunzipping.
+
+    A gzip overlay's header MTIME is ``fetched`` (the capture time, default now),
+    so the file dates itself: the manifest is a local file, and an overlay that
+    reaches another machine without it (deploy.sh pulls the VPS's ``data/rcp/``)
+    still says when it was scraped (see ``bdpm.overlay_stamp``).
     """
     odir = overlay_dir or RCP_OVERLAY_DIR
     odir.mkdir(parents=True, exist_ok=True)
@@ -353,7 +363,8 @@ def write_overlay(cis: str, rcp_html: str, gzip_overlay: bool,
     if rcp_html == "":
         payload = b""  # zero-byte sentinel in either mode
     elif gzip_overlay:
-        payload = gzip.compress(rcp_html.encode("utf-8"))
+        payload = gzip.compress(rcp_html.encode("utf-8"),
+                                mtime=(fetched or datetime.now(timezone.utc)).timestamp())
     else:
         payload = rcp_html.encode("utf-8")
     tmp = dest.with_name(dest.name + ".tmp")
@@ -361,6 +372,76 @@ def write_overlay(cis: str, rcp_html: str, gzip_overlay: bool,
     tmp.replace(dest)
     sibling.unlink(missing_ok=True)  # never leave both formats for one CIS
     return dest
+
+
+def _fetch_time(entry: dict | None) -> datetime | None:
+    try:
+        return datetime.fromisoformat((entry or {}).get("last_fetch") or "")
+    except ValueError:
+        return None
+
+
+def merge_manifests(base: dict, other: dict) -> int:
+    """Fold ``other`` (another machine's manifest, e.g. the VPS's) into ``base`` in
+    place, per CIS keeping the entry with the newer successful ``last_fetch`` and
+    any ``ema_pdf`` link either side harvested. Returns how many entries changed.
+
+    deploy.sh pulls the VPS's overlays down; without its manifest every overlay
+    the VPS scraped would land here undated."""
+    changed = 0
+    for cis, theirs in other.items():
+        if not isinstance(theirs, dict):
+            continue
+        mine = base.get(cis)
+        if theirs.get("status") == "error" and "last_error" not in theirs:
+            theirs = {k: v for k, v in theirs.items() if k != "last_fetch"}
+        t_mine, t_theirs = _fetch_time(mine), _fetch_time(theirs)
+        if mine is None or (t_theirs and (t_mine is None or t_theirs > t_mine)):
+            merged = dict(theirs)
+            link = (mine or {}).get("ema_pdf")
+            if link and not merged.get("ema_pdf"):
+                merged["ema_pdf"] = link
+            if merged != mine:
+                base[cis], changed = merged, changed + 1
+        elif theirs.get("ema_pdf") and not mine.get("ema_pdf"):
+            mine["ema_pdf"] = theirs["ema_pdf"]
+            changed += 1
+    return changed
+
+
+def backfill_from_headers(manifest: dict, overlay_dir: Path | None = None) -> dict[str, int]:
+    """Date every gzip overlay the manifest does not describe, in place, from the
+    overlay's own header (``overlay_stamp``): no entry, an entry with no
+    ``last_fetch``, or one whose ``hash`` is not this file's content (the file
+    came from a later scrape elsewhere). The entry then carries
+    ``date_source: "gzip header"``. Nothing is invented: a plain or zero-byte
+    overlay has no stamp and stays undated. Returns counts by outcome."""
+    odir = overlay_dir or RCP_OVERLAY_DIR
+    counts = {"dated": 0, "redated": 0, "described": 0, "no_stamp": 0}
+    for path in sorted(odir.glob("*.html*")):
+        cis = path.name.split(".", 1)[0]
+        if not re.fullmatch(r"\d{8}", cis) or path.name.endswith(".tmp"):
+            continue
+        entry = manifest.get(cis) or {}
+        if not path.stat().st_size:
+            continue  # the "no RCP" sentinel: nothing to date it by
+        stamp = bdpm.overlay_stamp(path)
+        raw = path.read_bytes()
+        html_text = (gzip.decompress(raw) if path.suffix == ".gz" else raw).decode("utf-8", "replace")
+        digest = hashlib.sha256(html_text.encode("utf-8")).hexdigest()
+        stale_error = entry.get("status") == "error" and "last_error" not in entry
+        if entry.get("last_fetch") and not stale_error and entry.get("hash") in (None, digest):
+            counts["described"] += 1
+            continue
+        if stamp is None:
+            counts["no_stamp"] += 1
+            continue
+        counts["redated" if entry.get("last_fetch") else "dated"] += 1
+        new = {k: v for k, v in entry.items() if k in ("ema_pdf",)}
+        new.update({"last_fetch": stamp.isoformat(), "hash": digest, "status": "ok",
+                    "date_source": "gzip header"})
+        manifest[cis] = new
+    return counts
 
 
 MAX_REDIRECTS = 5
@@ -492,11 +573,12 @@ def scrape_one(client: httpx.Client, cis: str, gzip_overlay: bool,
     if status != 200:
         raise RuntimeError(f"HTTP {status}")
     rcp = inline_images(client, extract_rcp(page))
-    dest = write_overlay(cis, rcp, gzip_overlay)
+    fetched = datetime.now(timezone.utc)  # one stamp: the manifest and the gzip header
+    dest = write_overlay(cis, rcp, gzip_overlay, fetched=fetched)
     logger.debug("{}: wrote {} ({} bytes on disk) from {} bytes of HTML",
                  cis, dest.name, dest.stat().st_size, len(page))
     entry = {
-        "last_fetch": _now_iso(),
+        "last_fetch": fetched.isoformat(),
         "hash": hashlib.sha256(rcp.encode("utf-8")).hexdigest(),
         "status": "empty" if rcp == "" else "ok", "http": status,
     }
@@ -622,13 +704,29 @@ def build_queue(
                    f"names. Defaults to {DEFAULT_FREQUENCY} if present.")
 @click.option("--timeout", type=float, default=30.0, show_default=True,
               help="Per-request timeout in seconds.")
+@click.option("--merge-manifest", "merge_from", type=click.Path(exists=True, path_type=Path),
+              default=None, help="Fold another machine's scrape manifest (the VPS's, "
+              "pulled by deploy.sh) into the local one, newer last_fetch winning, then exit.")
+@click.option("--backfill-dates", is_flag=True,
+              help="Date every gzip overlay the manifest does not describe from its own "
+                   "gzip header (see backfill_from_headers), then exit. Fetches nothing.")
 @click.option("--user-agent",
               default=None,
               help="Override the HTTP User-Agent sent to the ANSM site.")
 def main(limit: int, fetch_all: bool, only: tuple[str, ...], missing_images: bool, ttl_days: int,
          rate: float, gzip_overlay: bool, force: bool, frequency: Path | None,
-         timeout: float, user_agent: str | None) -> None:
+         timeout: float, merge_from: Path | None, backfill_dates: bool,
+         user_agent: str | None) -> None:
     """Refresh RCP overlay files from the live ANSM site (see module docstring)."""
+    if merge_from or backfill_dates:
+        manifest = load_manifest()
+        if merge_from:
+            n = merge_manifests(manifest, load_manifest(merge_from))
+            logger.info("merged {}: {} entr(ies) updated", merge_from, n)
+        if backfill_dates:
+            logger.info("backfill from gzip headers: {}", backfill_from_headers(manifest))
+        save_manifest(manifest)
+        return
     # Identifying User-Agent with a reachable contact so ANSM can get in touch
     # (or block) rather than seeing an anonymous bot. Override with --user-agent.
     ua = user_agent or f"justelesRCP-scraper/1.0 (RCP freshness bot; {UA_CONTACT})"

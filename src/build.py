@@ -52,7 +52,7 @@ from lxml import html as lxml_html
 
 import bdpm  # shared, pure-stdlib BDPM tokenising + frequency scoring
 
-__version__ = "0.61.0"  # single source of truth; bump patch/minor per change
+__version__ = "0.61.1"  # single source of truth; bump patch/minor per change
 
 # This script lives in ``src/`` (alongside the frontend templates it renders), so the
 # repo root is its parent's parent; data/, src/ and dist/ all hang off that root. In the
@@ -400,12 +400,16 @@ def _read_overlay(path: Path) -> str:
 
 
 def _overlay_date(cis: str) -> str:
-    """Fallback 'as of' date for an overlay with no manifest entry: the overlay
+    """Fallback 'as of' date for an overlay with no manifest entry: the scrape time
+    a gzip overlay carries in its header (``bdpm.overlay_stamp``), else the overlay
     file's own modification date. '' if it cannot be read."""
     path = _overlay_path(cis)
     if path is None:
         return ""
     try:
+        stamp = bdpm.overlay_stamp(path)
+        if stamp is not None:
+            return stamp.date().isoformat()
         return date.fromtimestamp(path.stat().st_mtime).isoformat()
     except OSError:
         return ""

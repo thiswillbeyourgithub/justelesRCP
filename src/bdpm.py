@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import math
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 import unicodedata
 import urllib.parse
@@ -261,3 +262,20 @@ def order_by_score(
     """Order CIS by descending score, breaking ties by original file order."""
     order = {cis: i for i, (cis, _) in enumerate(catalog)}
     return sorted((cis for cis, _ in catalog), key=lambda c: (-scores[c], order[c]))
+
+
+def overlay_stamp(path: Path) -> datetime | None:
+    """The capture time a gzip overlay carries in its header MTIME (UTC), or None
+    for a plain / zero-byte overlay or a header with no time (MTIME 0).
+
+    ``gzip.compress`` has always stamped the compression time, which
+    scrape-rcp.py's ``scrape_one`` runs right after the fetch, and its
+    ``write_overlay`` passes the fetch time explicitly, so the header is the scrape time either way."""
+    if path.suffix != ".gz":
+        return None
+    with path.open("rb") as fh:
+        head = fh.read(10)
+    if len(head) < 10 or head[:2] != b"\x1f\x8b":
+        return None
+    mtime = int.from_bytes(head[4:8], "little")
+    return datetime.fromtimestamp(mtime, timezone.utc) if mtime else None
