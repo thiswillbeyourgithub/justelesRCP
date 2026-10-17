@@ -2033,6 +2033,48 @@ def test_passage_batches_are_bounded_by_attention_cost():
     print("ok passage batches bounded by attention cost")
 
 
+def test_crash_guard_counts_restarts_and_quarantines_a_killer_page():
+    """The VPS embed container was OOM-killed on one page 344 times: each restart reset
+    every in-memory counter, /status saw a young healthy service ("à jour", since a
+    missing scan figure read as 0) and the same page came back first. _CrashGuard
+    records boots and the in-flight page in a file, so a page that killed the process
+    twice is skipped until its content changes, and /status sees the restarts."""
+    import tempfile
+    es = _load_embed_service()
+    with tempfile.TemporaryDirectory() as d:
+        path = Path(d) / ".embed-state.json"
+        g = es._CrashGuard(path)
+        assert g.restarts_since(3600) == 0 and not g.quarantine_list()
+        g.begin("64587553", "h1")              # ... and the kernel kills us here
+        g = es._CrashGuard(path)               # restart 1
+        assert not g.quarantined("64587553", "h1")
+        g.begin("64587553", "h1")
+        g = es._CrashGuard(path)               # restart 2: that's the page
+        assert g.quarantined("64587553", "h1") and g.quarantine_list() == ["64587553"]
+        assert not g.quarantined("64587553", "h2")   # re-scraped: a fresh chance
+        assert g.restarts_since(3600) == 2
+        g.begin("60000001", "x"); g.end()      # a page that finishes leaves no trace
+        g = es._CrashGuard(path)
+        assert "60000001" not in g.crashed
+        path.write_text("{not json")           # corrupt state never stops the service
+        assert es._CrashGuard(path).restarts_since(3600) == 0
+    # before the first scan of a boot, the summary says "unknown", not "0 behind"
+    import threading
+    e = es.Embedder.__new__(es.Embedder)
+    e._lock = threading.Lock()
+    e._last_scan, e.crash, e._running, e._running_since = {}, None, None, 0.0
+    e.backlog, e.backlog_rate, e._started = True, 0.0, 0.0
+    e.stats = lambda: {"enabled": True, "model": "m", "dim": 4, "quant": "binary",
+                       "embedded": 0, "skipped": 0, "errors": 0, "chars": 0,
+                       "mean_chars_per_s": 0, "embed_seconds": 0.0, "queries": 0,
+                       "queries_shed": 0, "crawl_triggered": 0, "queue": 500,
+                       "pending": 501, "running": None}
+    summary = e.public_summary()
+    assert summary["crawl_gap"] == {"scan_pending": True}, summary
+    assert summary["health"]["restarts_24h"] == 0
+    print("ok  test_crash_guard_counts_restarts_and_quarantines_a_killer_page")
+
+
 if __name__ == "__main__":
     test_load_cap_meta_excludes_decentralised()
     test_clean_substance_strips_salt_hydrate()
@@ -2098,4 +2140,5 @@ if __name__ == "__main__":
     test_embed_request_during_embed_is_rerun_not_dropped()
     test_web_manifest_icons_ship()
     test_passage_batches_are_bounded_by_attention_cost()
+    test_crash_guard_counts_restarts_and_quarantines_a_killer_page()
     print("\nAll tests passed.")

@@ -330,9 +330,31 @@
     var frag = document.createDocumentFragment();
     if (!s.enabled) frag.appendChild(note("Indexation de fond désactivée sur ce serveur.", "off"));
 
+    // Restart loop / stuck page / quarantine: the service's counters reset on every
+    // restart, so without this a service killed every few minutes looks healthy.
+    var h = s.health || {};
+    if (h.restarts_24h > 0)
+      frag.appendChild(note("Le service d'indexation a redémarré " + num(h.restarts_24h) +
+        " fois ces dernières 24 h (manque de mémoire ?) : les compteurs ci-dessous ne " +
+        "portent que sur la période depuis le dernier redémarrage.", "warn"));
+    if (h.quarantined && h.quarantined.length)
+      frag.appendChild(note("Mise(s) de côté car elles faisaient planter l'indexation : " +
+        h.quarantined.join(", "), "warn"));
+    if (h.running_seconds > 600)
+      frag.appendChild(note("La page en cours (" + s.backlog.running + ") est indexée depuis " +
+        dur(h.running_seconds) + ".", "warn"));
+
     // "Is embedding behind the crawler?" - the headline gauge.
     var gap = s.crawl_gap;
-    if (gap) {
+    if (gap && gap.scan_pending) {
+      var head0 = el("div", "status-lane-head");
+      head0.appendChild(el("h3", "status-lane-title", "Avancement de l'indexation"));
+      head0.appendChild(badge("vérification en cours", "run"));
+      frag.appendChild(head0);
+      frag.appendChild(note("Le service vient de démarrer : le décompte des pages à indexer " +
+        "est en cours."));
+      frag.appendChild(el("div", "status-sep"));
+    } else if (gap) {
       var head = el("div", "status-lane-head");
       head.appendChild(el("h3", "status-lane-title", "Avancement de l'indexation"));
       if (gap.awaiting_embed > 0) {
@@ -391,7 +413,19 @@
     var frag = document.createDocumentFragment();
     var gap = embedS.crawl_gap;
     var idxPm = (embedS.indexing && embedS.indexing.pages_per_min) || 0;
-    var backlog = gap ? gap.awaiting_embed : 0;
+    // No scan figure yet (fresh boot, or an older service without crawl_gap): unknown,
+    // NOT zero. Reading it as 0 is what showed "à jour" during a restart loop.
+    if (!gap || gap.scan_pending) {
+      var h0 = el("div", "status-lane-head");
+      h0.appendChild(el("h3", "status-lane-title", "L'indexation rattrape-t-elle l'exploration ?"));
+      h0.appendChild(badge("mesure en cours", "run"));
+      var f0 = document.createDocumentFragment();
+      f0.appendChild(h0);
+      f0.appendChild(note("Le décompte des pages à indexer n'est pas encore disponible."));
+      setBody("body-catchup", f0);
+      return;
+    }
+    var backlog = gap.awaiting_embed;
 
     var crawlPm = 0, crawlKnown = !!crawlS;
     if (crawlS) {

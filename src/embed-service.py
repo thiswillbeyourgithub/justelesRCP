@@ -50,6 +50,8 @@ from __future__ import annotations
 
 import base64
 import json
+import os
+import random
 import re
 import signal
 import struct
@@ -102,6 +104,13 @@ _BACKLOG_TTL = 10.0
 _CHUNKS_CACHE_MAX = 8
 _RECENT_MAX = 50
 _FAILURES_MAX = 200
+#: A page whose embed killed the process this many times (the kernel OOM-killed the
+#: container mid-page) is quarantined: never embedded again until its overlay
+#: changes. One crash can be bad luck (a reader query's encode at the same moment);
+#: two on the same page is the page. See _CrashGuard.
+_CRASH_QUARANTINE = 2
+#: Boot timestamps kept for the restart count /status shows (24 h window).
+_BOOTS_KEPT = 200
 
 
 def _rss_mb() -> float | None:
@@ -138,6 +147,72 @@ def _rate(chars_per_s: float) -> str:
         return f"{chars_per_s / 1000:.1f}k c/s"
     return f"{chars_per_s:.0f} c/s"
 
+
+
+class _CrashGuard:
+    """Survives a process death, which nothing in memory does. The VPS embed container
+    was OOM-killed on one page 344 times in a row: each restart reset every counter
+    (uptime, errors), so /status saw a young, healthy service, and the same page came
+    back to the front of the queue. A small JSON file in the writable vectors mount
+    records each boot and the page being embedded right now; a boot that finds a page
+    still marked in flight knows the previous process died during it. Wiped by a
+    deploy's mirror rsync, which is fine: a deploy may well have fixed the cause."""
+
+    def __init__(self, path) -> None:
+        self.path = path
+        try:
+            state = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            state = {}
+        state = state if isinstance(state, dict) else {}
+        now = time.time()
+        self.boots = [t for t in state.get("boots", []) if isinstance(t, (int, float))]
+        self.boots = (self.boots + [now])[-_BOOTS_KEPT:]
+        # {cis: {"crashes": n, "src_hash": h, "at": t}}
+        self.crashed: dict = {k: v for k, v in (state.get("crashed") or {}).items()
+                              if isinstance(v, dict)}
+        died = state.get("inflight")
+        if isinstance(died, dict) and died.get("cis"):
+            prev = self.crashed.get(died["cis"], {})
+            same = prev.get("src_hash") == died.get("src_hash")
+            self.crashed[died["cis"]] = {"crashes": (prev.get("crashes", 0) if same else 0) + 1,
+                                         "src_hash": died.get("src_hash"), "at": now}
+            logger.error("previous process died while embedding cis {} (crash #{})",
+                         died["cis"], self.crashed[died["cis"]]["crashes"])
+        self.inflight: dict | None = None
+        self._save()
+
+    def _save(self) -> None:
+        state = {"boots": self.boots, "crashed": self.crashed, "inflight": self.inflight}
+        tmp = self.path.with_name(self.path.name + ".tmp")
+        try:
+            tmp.write_text(json.dumps(state), encoding="utf-8")
+            os.replace(tmp, self.path)
+        except OSError as exc:  # never let bookkeeping stop embedding
+            logger.warning("crash guard state not saved: {}", exc)
+
+    def begin(self, cis: str, src_hash: str | None) -> None:
+        self.inflight = {"cis": cis, "src_hash": src_hash, "at": time.time()}
+        self._save()
+
+    def end(self) -> None:
+        self.inflight = None
+        self._save()
+
+    def quarantined(self, cis: str, src_hash: str | None) -> bool:
+        """True when this exact page content has crashed the process often enough.
+        A new overlay (different src_hash) gets a fresh chance."""
+        c = self.crashed.get(cis)
+        return bool(c and c.get("crashes", 0) >= _CRASH_QUARANTINE
+                    and c.get("src_hash") == src_hash)
+
+    def restarts_since(self, seconds: float) -> int:
+        cutoff = time.time() - seconds
+        return max(0, sum(1 for t in self.boots if t >= cutoff) - 1)
+
+    def quarantine_list(self) -> list[str]:
+        return sorted(k for k, v in self.crashed.items()
+                      if v.get("crashes", 0) >= _CRASH_QUARANTINE)
 
 class Embedder:
     """Owns the warm encoder + a single background page-embedding worker with a
@@ -190,6 +265,7 @@ class Embedder:
         self._queue: deque[str] = deque()
         self._pending: "OrderedDict[str, str]" = OrderedDict()  # cis -> source
         self._running: str | None = None
+        self._running_since = 0.0  # monotonic start of the in-flight embed
         # CIS asked for again WHILE being embedded (-> source): the running embed may
         # have read the overlay before the new one landed, so it is re-run at the
         # front once it finishes instead of being dropped as a duplicate.
@@ -205,6 +281,9 @@ class Embedder:
         # many still lack a fresh .vec.json), so the /status page can answer "is the
         # embedder behind the crawler?" without an expensive per-request full scan.
         self._last_scan: dict = {}
+        # Crash bookkeeping that outlives the process (see _CrashGuard); created by
+        # start(), so a test building an Embedder writes no state file.
+        self.crash: _CrashGuard | None = None
         # For the /status backlog popup: the last failure per CIS (cleared once the page
         # embeds or turns out fresh) and the last few worker results, whatever they were.
         # A page that keeps coming back is visible here, with its error and its timing.
@@ -222,6 +301,7 @@ class Embedder:
     def start(self) -> None:
         # .vec.json is stored br-only now; drop the plain copies an older embedder left
         # (no build ever rewrites them on the VPS, and they are ~0.8 GB).
+        self.crash = _CrashGuard(build.DIST / "rcp" / ".embed-state.json")
         dropped = build.drop_plain_copies()
         if dropped:
             logger.info("dropped {} plain/.gz copies superseded by a .br", dropped)
@@ -354,20 +434,35 @@ class Embedder:
         raw, subdir = ov
         if info is not None:
             info["lane"] = subdir
-        return build.embed_page_to_vec(cis, raw, subdir, self.encoder,
-                                       model=self.model, quant=self.quant, stats=info)
+        if self.crash is None:
+            return build.embed_page_to_vec(cis, raw, subdir, self.encoder,
+                                           model=self.model, quant=self.quant, stats=info)
+        src_hash = build.raw_hash(raw)
+        if self.crash.quarantined(cis, src_hash):
+            return "quarantined"
+        self.crash.begin(cis, src_hash)
+        try:
+            return build.embed_page_to_vec(cis, raw, subdir, self.encoder,
+                                           model=self.model, quant=self.quant, stats=info)
+        finally:
+            self.crash.end()
 
     def _worker(self) -> None:
         while True:
             cis, source = self._take()
             with self._lock:
                 self._running = cis
+                self._running_since = time.monotonic()
             result = "error"
             error = None
             info: dict = {}
             t0 = time.perf_counter()
             try:
                 result = self._embed_page(cis, info)
+                if result == "quarantined":
+                    result = "error"
+                    error = ("quarantined: embedding this page killed the service "
+                             f"{_CRASH_QUARANTINE}+ times (out of memory?)")
             except Exception as exc:  # never let one bad page kill the worker
                 error = f"{type(exc).__name__}: {exc}"[:500]
                 logger.warning("embed cis {} failed: {}", cis, exc)
@@ -433,7 +528,9 @@ class Embedder:
         queued = 0
         overlays = 0  # crawled pages seen on disk this pass
         stale = 0     # of those, how many lack a fresh .vec.json (the embed backlog)
-        stale_cis: list[str] = []  # which ones, for the /status backlog popup
+        stale_cis: list[str] = []
+        todo: list[str] = []  # stale pages to enqueue, shuffled below
+        quarantined = set(self.crash.quarantine_list()) if self.crash else set()  # which ones, for the /status backlog popup
         # ONE directory scan per lane, not a glob per CIS (see build.dist_pages_index):
         # the per-CIS glob cost ~10 minutes of CPU per pass on the full catalog.
         pages = {subdir: build.dist_pages_index(subdir)
@@ -450,6 +547,15 @@ class Embedder:
             stale += 1
             if len(stale_cis) < _BACKLOG_LIST_MAX:
                 stale_cis.append(cis)
+            if not (self.crash and cis in quarantined):
+                todo.append(cis)
+        # RANDOM order, not overlay order: the queue holds EMBED_QUEUE_MAX pages, so
+        # with a fixed order every pass and every restart offered the same first 500,
+        # and one page that kills the process (the OOM loop of Oct 2026) blocked all
+        # the others behind it forever. Shuffled, a bad page costs one slot, and the
+        # pages that do embed are spread over the whole backlog.
+        random.shuffle(todo)
+        for cis in todo:
             if self._enqueue(cis, "sweep", front=False) == "queued":
                 queued += 1
         # Record for /api/sem/summary: total crawled pages vs how many still await an
@@ -781,8 +887,23 @@ class Embedder:
             "backlog": {"queue": s["queue"], "pending": s["pending"],
                         "running": s["running"]},
         }
+        # Health that survives a restart (see _CrashGuard): a service the kernel kills
+        # every few minutes otherwise looks young and fine, uptime and all counters
+        # reset. running_seconds shows a page that never finishes.
+        with self._lock:
+            running_for = (time.monotonic() - self._running_since) if self._running else 0.0
+        summary["health"] = {
+            "restarts_24h": self.crash.restarts_since(86400) if self.crash else 0,
+            "quarantined": self.crash.quarantine_list() if self.crash else [],
+            "running_seconds": round(running_for, 1),
+        }
         # "Is the embedder behind the crawler?" from the last reconcile scan: total
-        # crawled overlays on disk vs how many still lack a fresh vector.
+        # crawled overlays on disk vs how many still lack a fresh vector. Until the
+        # first scan of this boot has finished there is NO figure, and the summary says
+        # so: a missing crawl_gap used to read as "0 behind" on /status, i.e. "à jour",
+        # which is exactly what a service restarting every few minutes showed.
+        if not last:
+            summary["crawl_gap"] = {"scan_pending": True}
         if last:
             awaiting = last.get("stale", 0)
             crawled = last.get("overlays", 0)
