@@ -1654,7 +1654,7 @@ Restart is not needed (Caddy reads the mounted dir live), but a
   resident at batch 32 measured locally), so the service now runs with the arena OFF
   (`Encoder(cpu_arena=False)`, `EMBED_CPU_ARENA`, ~630 MB between pages) and a batch of 8
   (`EMBED_BATCH_SIZE`, peak ~1.05 GB against 2.3 GB at 32, ~25% slower page embedding).
-  The offline `embed-rcp.py` keeps the arena (speed, and it is not long-lived). Keep in
+  The offline `embed-rcp.py` keeps the arena (speed, and it is not long-lived). `batch_size` bounds the row count, not the cost: a batch is also capped at `onnx_embed.BATCH_CHAR_BUDGET` (rows x longest-row-chars squared, via `_batch_bounds`), because one page's 46 linearised table rows of ~3300 chars peaked at 3.6 GB in a batch of 8 and OOM-killed the embed container in a restart loop that embedded nothing for days (1.3 GB with the budget). The int8 graph quantises activations per batch, so the split moves those long rows' vectors slightly (cosine ~0.97); nothing re-embeds over it. Keep in
   sync across the three services in `docker/docker-compose.yml`, the memory section +
   the two embed knobs in `docker/env.example`, `cpu_arena` in `onnx_embed.Encoder`, and
   `--batch-size`/`--cpu-arena`/`BATCH_DEFAULT` in `embed-service.py`.
