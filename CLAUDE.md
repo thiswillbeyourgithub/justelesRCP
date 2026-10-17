@@ -692,7 +692,7 @@ Key facts that aren't obvious from a single file:
   `noindex` (thin, ever-changing: `_static_page_head` prepends the robots meta for
   `status.html`) and deliberately kept OUT of the sitemap; it is discoverable via the
   home + `/a-propos` footers. Both services track a monotonic `_started` for uptime and
-  the counters are per-process ("since last reboot").
+  the counters are per-process ("since last reboot"). Because a restart wipes those, the embed summary also carries a `health` block from `_CrashGuard` (embed-service.py), a small `dist/rcp/.embed-state.json` that outlives the process: boot timestamps (`restarts_24h`), the page being embedded right now (so a boot that finds one still in flight knows the previous process died during it; after `_CRASH_QUARANTINE` (2) deaths on the same content hash that page is quarantined, skipped by the sweep and listed on /status, until its overlay changes), plus `running_seconds`. A deploy's mirror rsync wipes the file, which is fine. Before the first reconcile scan of a boot, `crawl_gap` is `{scan_pending: true}` and /status shows "vérification en cours" / "mesure en cours": it used to read the missing figure as 0 and show "à jour" during the Oct 2026 OOM restart loop. The reconcile sweep enqueues stale pages in RANDOM order (the queue holds `EMBED_QUEUE_MAX`, so a fixed order offered the same first 500 every pass and one killer page blocked all the rest). Added by Claude Code.
   **The backlog popup.** The embed card has a "Voir le détail de la file d'indexation"
   button opening a `window.jlrcpModal` table (built in `src/status.js`) fed by `GET
   /api/sem/backlog` (`Embedder.backlog_detail`): every page the service knows is not
