@@ -116,6 +116,7 @@ a:not([href]):hover { text-decoration: none; }
 /* "[RETIRÉ]" suffix on a delisted drug's search result (search.js, ret:1 rows): small,
    warn-tinted, so the reader sees at a glance the page is our archived 2022 copy. */
 .result-retired { color: #b45309; font-size: .82em; font-weight: 600; }
+.result-aip { font-style: italic; }
 .status { color: var(--muted); font-size: .85rem; margin-top: 1.2rem; }
 /* Provenance/licence/credit notice under the home index count; same muted small type as
    the footer copy the other templates carry (the home footer has no copy of it). */

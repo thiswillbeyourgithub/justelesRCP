@@ -570,6 +570,45 @@ def test_overlays_date_themselves_and_manifests_merge():
     print("ok  test_overlays_date_themselves_and_manifests_merge")
 
 
+def test_parallel_import_reference_is_harvested_and_kept():
+    """A parallel import (AIP) has no RCP: its ANSM page names the reference product
+    in a ``p.text-aip`` notice. scrape_one stores that CIS as ``aip_ref`` (only from
+    that notice, never a self-link), a merge with the VPS manifest keeps it, and the
+    build turns it into a search row that opens the reference's page."""
+    import tempfile
+    scrape = sema.scrape
+    page = ('<html><body><a href="/medicament/99999999/extrait">autre</a>'
+            '<p class="text-aip">Ce médicament est mis sur le marché en France en tant '
+            "qu'importation parallèle du médicament "
+            '<a href="/medicament/64720167/extrait">VENTOLINE 100 microgrammes</a>.</p>'
+            '</body></html>')
+    assert scrape.extract_aip_ref(page, "67458236") == "64720167"
+    assert scrape.extract_aip_ref(page.replace("64720167", "67458236"), "67458236") == ""
+    assert scrape.extract_aip_ref("<html><body><a href='/medicament/64720167/extrait'>x</a></body></html>") == ""
+    saved = scrape.fetch_one, scrape.RCP_OVERLAY_DIR
+    scrape.fetch_one = lambda client, cis: (page, 200)
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            scrape.RCP_OVERLAY_DIR = Path(d)
+            rcp, entry = scrape.scrape_one(None, "67458236", True)
+    finally:
+        scrape.fetch_one, scrape.RCP_OVERLAY_DIR = saved
+    assert rcp == "" and entry["status"] == "empty" and entry["aip_ref"] == "64720167", entry
+    # a newer VPS entry without the field (older scraper) must not erase it
+    base = {"67458236": dict(entry)}
+    vps = {"67458236": {"last_fetch": "2099-01-01T00:00:00+00:00", "status": "empty"}}
+    scrape.merge_manifests(base, vps)
+    assert base["67458236"]["aip_ref"] == "64720167", base
+    # build side: the row opens the reference page and names it
+    build = sema.svc_http.load_sibling("build.py", "build")
+    index = [{"cis": "64720167", "name": "VENTOLINE 100", "slug": "64720167-ventoline-100"}]
+    names = {"67458236": "VENTOLINE 100 (AIP)", "11111111": "ORPHAN AIP"}
+    rows = build.aip_search_rows({"67458236": "64720167", "11111111": "22222222"}, names, index)
+    assert rows == [{"cis": "67458236", "name": "VENTOLINE 100 (AIP)",
+                     "slug": "64720167-ventoline-100", "aip": "VENTOLINE 100"}], rows
+    print("ok parallel import reference harvested, merged and linked")
+
+
 if __name__ == "__main__":
     test_parse_tolerates_runon_records()
     test_pi_index_prefers_french_and_filters_type()
@@ -588,4 +627,5 @@ if __name__ == "__main__":
     test_summary_reports_crawler_refresh_count_not_the_lane_gauge()
     test_rcp_images_are_inlined_from_the_public_ansm_host()
     test_overlays_date_themselves_and_manifests_merge()
+    test_parallel_import_reference_is_harvested_and_kept()
     print("\nAll tests passed.")

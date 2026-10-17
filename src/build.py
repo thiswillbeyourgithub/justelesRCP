@@ -308,12 +308,8 @@ def _load_scrape_dates() -> dict[str, str]:
     """CIS -> 'YYYY-MM-DD' of its last successful scrape, from scrape-rcp.py's
     manifest. Used to stamp each overlay-sourced page with a real 'as of' date;
     returns {} when the manifest is absent (baseline-only build)."""
-    try:
-        raw = json.loads(SCRAPE_MANIFEST_PATH.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
     dates: dict[str, str] = {}
-    for cis, entry in raw.items():
+    for cis, entry in _read_scrape_manifest().items():
         entry = entry or {}
         # An old-format error entry stamped last_fetch with the FAILED attempt's
         # time; it is not a capture date (new error entries keep the last success).
@@ -338,11 +334,44 @@ def _load_ema_links() -> dict[str, str]:
     EMA brand search. Returns {} when the manifest is absent (baseline-only
     build); a CIS not yet re-scraped since this feature landed simply won't
     appear and its stub falls back to the search URL."""
+    return bdpm.ema_links(_read_scrape_manifest())
+
+
+def _load_aip_refs() -> dict[str, str]:
+    """CIS of a parallel import (AIP, "autorisation d'importation parallèle") -> CIS of
+    its reference spécialité, from the ``aip_ref`` field scrape-rcp.py's
+    extract_aip_ref harvests off the AIP's ANSM page. An AIP has no RCP of its own (its
+    ANSM page sends the reader to the reference's), so it renders no page; see
+    aip_search_rows for how it stays findable."""
+    return {cis: e["aip_ref"] for cis, e in _read_scrape_manifest().items()
+            if isinstance(e, dict) and CIS_RE.match(str(e.get("aip_ref", "")))}
+
+
+def aip_search_rows(refs: dict[str, str], names: dict[str, str],
+                    index: list[dict]) -> list[dict]:
+    """Search-index rows for parallel imports: ``{cis, name, slug, aip}`` where ``slug``
+    is the REFERENCE's /rcp/ page and ``aip`` its name, so searching the import's name
+    (e.g. VENTOLINE in a parallel-import pack) opens the RCP that applies to it and
+    search.js says whose it is. No page of its own: it would duplicate the reference's
+    text and add thin-content SEO surface. An import whose reference renders no page,
+    or that renders a page itself, gets no row."""
+    by_cis = {e["cis"]: e for e in index}
+    rows = []
+    for cis, ref in sorted(refs.items()):
+        target = by_cis.get(ref)
+        if target and cis not in by_cis and names.get(cis):
+            rows.append({"cis": cis, "name": names[cis], "slug": target["slug"],
+                         "aip": target["name"]})
+    return rows
+
+
+def _read_scrape_manifest() -> dict:
+    """scrape-rcp.py's manifest, or {} when absent/unreadable (baseline-only build)."""
     try:
         raw = json.loads(SCRAPE_MANIFEST_PATH.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
-    return bdpm.ema_links(raw) if isinstance(raw, dict) else {}
+    return raw if isinstance(raw, dict) else {}
 
 
 def _overlay_path(cis: str, overlay_dir: Path | None = None) -> Path | None:
@@ -3721,7 +3750,8 @@ def _render_rcp_stage(names: dict[str, str], xref: dict, page_tpl: str,
 
 def _write_search_index(index: list[dict], stub_index: list[dict],
                         archived_cis: set[str]) -> None:
-    """Write dist/search-index.json (+ .br): real RCP pages + EU stubs."""
+    """Write dist/search-index.json (+ .br): real RCP pages + EU stubs (+ parallel
+    imports pointing at their reference's page, see aip_search_rows)."""
     search_rows = sorted(index + stub_index, key=lambda e: e["cis"])
     # Enrich each row with its active-substance (DCI) string so client-side search can
     # match a drug by substance, not only its brand name (e.g. "acétylcystéine" ->
@@ -3819,7 +3849,9 @@ def main() -> None:
     # CIS so the file is stable across runs (imap_unordered returns pages in
     # arbitrary order); a stable file avoids needless recompression churn and rsync
     # transfers on unchanged data. Browse (below) gets the real RCP pages only.
-    _write_search_index(index, stub_index, archived_cis)
+    aip_index = aip_search_rows(_load_aip_refs(), names, index)
+    print(f"  parallel imports linked to their reference RCP: {len(aip_index)}")
+    _write_search_index(index, stub_index + aip_index, archived_cis)
     write_static_assets(changelog)
 
     # Per-drug semantic search: the section vectors (dist/<slug>.vec.json) are now

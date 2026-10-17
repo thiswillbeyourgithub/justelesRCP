@@ -95,6 +95,14 @@
     a.appendChild(name);
     // Show the active substance (DCI) under the brand so the reader sees what they
     // searched / can learn the substance to search exhaustively.
+    // Parallel import (build.py aip_search_rows): no RCP of its own, the row opens
+    // its reference product's page (h.aip names it), so say so before the click.
+    if (h.aip) {
+      const aip = document.createElement("span");
+      aip.className = "result-sub result-aip";
+      aip.textContent = "Importation parallèle : RCP de " + h.aip;
+      a.appendChild(aip);
+    }
     if (h.sub) {
       const sub = document.createElement("span");
       sub.className = "result-sub";

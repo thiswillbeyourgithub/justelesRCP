@@ -221,6 +221,27 @@ def extract_ema_pdf(page_html: str) -> str:
     return (fr or ema or [""])[0]
 
 
+def extract_aip_ref(page_html: str, cis: str = "") -> str:
+    """CIS of the reference spécialité a parallel import (AIP) is imported from, or "".
+
+    An AIP's ANSM page has no RCP body; its ``p.text-aip`` notice reads "Ce médicament
+    est mis sur le marché en France en tant qu'importation parallèle du médicament
+    <a href="/medicament/64720167/extrait">VENTOLINE ...</a>". Only that notice is read,
+    never any other ``/medicament/`` link on the page, and a self-link is ignored."""
+    doc = lxml_html.fromstring(page_html)
+    for href in doc.xpath('//p[contains(concat(" ", normalize-space(@class), " "), " text-aip ")]//a/@href'):
+        m = re.fullmatch(r"/medicament/(\d{8})/extrait", href.strip())
+        if m and m.group(1) != cis:
+            return m.group(1)
+    return ""
+
+
+#: Facts read off the ANSM page that a re-fetch or a manifest merge must not lose
+#: when the other side lacks them: the EMA PDF link (also bulk-seeded by
+#: scrape-ema.py) and a parallel import's reference CIS.
+HARVESTED_KEYS = ("ema_pdf", "aip_ref")
+
+
 def load_manifest(path: Path | None = None) -> dict:
     """Load the scrape manifest, or an empty mapping when it is missing, empty,
     unreadable, or not a JSON object. ``path`` defaults to this scraper's own
@@ -398,14 +419,16 @@ def merge_manifests(base: dict, other: dict) -> int:
         t_mine, t_theirs = _fetch_time(mine), _fetch_time(theirs)
         if mine is None or (t_theirs and (t_mine is None or t_theirs > t_mine)):
             merged = dict(theirs)
-            link = (mine or {}).get("ema_pdf")
-            if link and not merged.get("ema_pdf"):
-                merged["ema_pdf"] = link
+            for key in HARVESTED_KEYS:
+                if (mine or {}).get(key) and not merged.get(key):
+                    merged[key] = mine[key]
             if merged != mine:
                 base[cis], changed = merged, changed + 1
-        elif theirs.get("ema_pdf") and not mine.get("ema_pdf"):
-            mine["ema_pdf"] = theirs["ema_pdf"]
-            changed += 1
+        else:
+            for key in HARVESTED_KEYS:
+                if theirs.get(key) and not mine.get(key):
+                    mine[key] = theirs[key]
+                    changed += 1
     return changed
 
 
@@ -437,7 +460,7 @@ def backfill_from_headers(manifest: dict, overlay_dir: Path | None = None) -> di
             counts["no_stamp"] += 1
             continue
         counts["redated" if entry.get("last_fetch") else "dated"] += 1
-        new = {k: v for k, v in entry.items() if k in ("ema_pdf",)}
+        new = {k: v for k, v in entry.items() if k in HARVESTED_KEYS}
         new.update({"last_fetch": stamp.isoformat(), "hash": digest, "status": "ok",
                     "date_source": "gzip header"})
         manifest[cis] = new
@@ -585,9 +608,13 @@ def scrape_one(client: httpx.Client, cis: str, gzip_overlay: bool,
     # Centrally-authorized (empty-RCP) pages link the real EMA PDF; capture it so
     # build.py's /eu/ page points straight at the doc. Only stored when known (real
     # ANSM RCPs carry no such link).
-    ema_pdf = extract_ema_pdf(page) or (prev or {}).get("ema_pdf", "")
-    if ema_pdf:
-        entry["ema_pdf"] = ema_pdf
+    # A parallel import (AIP) has no RCP either: its page names the reference
+    # spécialité whose RCP applies, which build.py links its search row to.
+    found = {"ema_pdf": extract_ema_pdf(page), "aip_ref": extract_aip_ref(page, cis)}
+    for key in HARVESTED_KEYS:
+        value = found[key] or (prev or {}).get(key, "")
+        if value:
+            entry[key] = value
     return rcp, entry
 
 
