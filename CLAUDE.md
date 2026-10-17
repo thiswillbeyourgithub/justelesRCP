@@ -136,11 +136,12 @@ Key facts that aren't obvious from a single file:
   above a substance-only hit, and each result shows its DCI under the name
   (`.result-sub`). A row for a drug delisted from BDPM carries `ret:1` (see the
   archived bullet) and `search.js` appends a `.result-retired` " [RETIRÉ]" to its name.
+  A **parallel import** (AIP, ~245 CIS, procedure "Autorisation d'importation parallèle") has no RCP and renders no page, but its ANSM page names the reference spécialité (`p.text-aip` notice); `scrape-rcp.py`'s `extract_aip_ref` stores that CIS as `aip_ref` in the manifest (kept across re-fetches and VPS merges with `ema_pdf`, via `HARVESTED_KEYS`), and `build.aip_search_rows` adds a row `{cis, name, slug: <reference's /rcp/ slug>, aip: <reference name>}` so searching the import opens the RCP that applies to it, labelled "Importation parallèle : RCP de …" (`.result-aip`) by `search.js`. No page of its own (it would duplicate the reference's text). AIPs are pageless so the refresh crawler never re-fetches them: refresh `aip_ref` with `scrape-rcp.py --force --only <cis>...`. Added by Claude Code.
   There is no search API. Full-text search over RCP *content* is
   intentionally NOT supported (that was the tradeoff for a zero-runtime static
-  architecture). Keep the `sub`/`ret` contract in sync across the search-index
+  architecture). Keep the `sub`/`ret`/`aip` contract in sync across the search-index
   enrichment (build.py), `search.js`, and `.result-sub`/`.result-name`/
-  `.result-retired` in `style.css`.
+  `.result-retired`/`.result-aip` in `style.css`.
   **Two views, one matcher: the dropdown and the shareable results page.** The
   as-you-type dropdown (`#results`, top 15) is the quick-pick list; the RESULTS PAGE
   (`#searchpage` in `src/index.html`, up to `PAGE_MAX` = 300 rows + an exact match
