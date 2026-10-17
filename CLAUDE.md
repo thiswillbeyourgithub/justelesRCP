@@ -1057,11 +1057,17 @@ Key facts that aren't obvious from a single file:
   manifest. A search on a never-crawled (baseline-only) page returns `crawling`: the
   service asks the refresh service (`REFRESH_TRIGGER_URL`) to crawl it first, then
   embeds it when the overlay lands (driven by the refresh service's `EMBED_NOTIFY_URL`
-  ping, with a periodic reconcile scan as backstop). A DELISTED drug is the other
-  never-embeddable case and answers `archived` instead (`_scraped_empty`: an overlay
-  file exists but is zero-byte, so the page is the 2022 archive copy we never embed);
-  without that branch the reader polled a crawl that could only re-confirm the deletion,
-  until the poll budget ran out. **A zero-byte overlay is dropped by
+  ping, with a periodic reconcile scan as backstop). A DELISTED drug (`_scraped_empty`: an overlay
+  file exists but is zero-byte, so the page is the 2022 archive copy, ~460 pages) is
+  embedded OFFLINE only: the embed container has no baseline CSV, so `embed-rcp.py`
+  (`--archived`, default on) bakes them from `build.iter_archived_raw` and `deploy.sh
+  --push-vectors` ships them. The service answers `fresh` for such a page when its pushed
+  `.vec.json` passes `build.archive_vec_is_current` (model/width/quant only, no
+  `src_hash` check since the 2022 text is frozen and the service cannot hash it;
+  `Embedder._archive_embedded`), else `archived`; without that `archived` branch the
+  reader polled a crawl that could only re-confirm the deletion, until the poll budget
+  ran out. The reconcile sweep never sees these pages, so it never re-embeds or deletes
+  them; after a model/width/quant change they must be re-baked locally and pushed again. **A zero-byte overlay is dropped by
   `build.iter_overlay_paths` itself** (the shared "which overlays exist" enumeration),
   so it is neither embedded nor counted: it used to be enumerated, and since its
   `.vec.json` can never be written, the reconcile sweep re-enqueued all ~351 of them on

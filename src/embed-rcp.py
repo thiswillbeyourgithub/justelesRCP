@@ -40,8 +40,10 @@ graceful "indisponible" note.
 
 It is deliberately thin: it reuses the SAME warm encoder (onnx_embed.Encoder, no
 torch) and the SAME one-page embed core (build.embed_page_to_vec) the service uses,
-iterating build.iter_overlay_raw() (every non-empty overlay in data/rcp + data/eu,
-NEVER the frozen 2022 baseline). It writes straight to the served
+iterating every non-empty overlay in data/rcp + data/eu (build.iter_overlay_paths)
+plus, unless --no-archived, the ARCHIVED pages (build.iter_archived_raw: delisted
+drugs, served from the frozen 2022 baseline, which the VPS embed service cannot read,
+so this is the only place they get vectors). It writes straight to the served
 dist/<rcp|eu>/<slug>.vec.json with the same content hash (build.raw_hash), so its
 vectors and the service's are byte-for-byte interchangeable and the shared staleness
 gate treats them as one. No manifest: staleness is the src_hash baked in each
@@ -52,6 +54,7 @@ Keep import-safe (``__main__`` guard) in case anything imports it later.
 
 from __future__ import annotations
 
+import functools
 import random
 from pathlib import Path
 
@@ -115,10 +118,15 @@ onnx_embed = svc_http.load_sibling("onnx_embed.py", "onnx_embed")  # warm ONNX e
                    "CPU. --no-gpu forces CPU.")
 @click.option("--batch-size", type=int, default=32, show_default=True,
               help="Passage encode batch size; raise (e.g. 128) to feed a GPU better.")
+@click.option("--archived/--no-archived", default=True, show_default=True,
+              help="Also embed the ARCHIVED pages (drugs delisted from BDPM, still "
+                   "served from the 2022 baseline CSV). The VPS has no CSV, so these "
+                   "vectors only exist if baked here and shipped with "
+                   "deploy.sh --push-vectors.")
 @click.option("--force", is_flag=True,
               help="Re-embed even if the content hash and model are unchanged.")
 def main(limit, do_all, only, eu, model_dir, out_dim, vec_quant, weights, intra_threads,
-         gpu, batch_size, force):
+         gpu, batch_size, archived, force):
     """Pre-bake dist/<rcp|eu>/<slug>.vec.json for crawled pages (warms the backlog)."""
     only_set = {c.strip() for c in only if c.strip()}
     if only_set:
@@ -184,23 +192,31 @@ def main(limit, do_all, only, eu, model_dir, out_dim, vec_quant, weights, intra_
     # (all-fast then all-slow). Interleaving long + short randomly keeps the running
     # per-page cost representative from early on, so the ETA is trustworthy sooner.
     pages = {subdir: build.dist_pages_index(subdir) for subdir, _ in build.OVERLAY_LANES}
-    paths = [(cis, path, subdir) for cis, path, subdir in build.iter_overlay_paths()
-             if (not only_set or cis in only_set) and (eu or subdir != "eu")]
+    # Each source is (cis, load, subdir): load() returns the raw HTML, read lazily for
+    # an overlay; an ARCHIVED page (delisted drug) brings its 2022 baseline text, which
+    # only this machine has (see build.iter_archived_raw).
+    sources = [(cis, functools.partial(build._read_overlay, path), subdir)
+               for cis, path, subdir in build.iter_overlay_paths()]
+    if archived:
+        sources += [(cis, functools.partial(str, raw), subdir)
+                    for cis, raw, subdir in build.iter_archived_raw()]
+    sources = [s for s in sources
+               if (not only_set or s[0] in only_set) and (eu or s[2] != "eu")]
     stale, fresh, no_page = [], 0, 0
-    for cis, path, subdir in tqdm(paths, unit="page", desc="scanning", smoothing=0.05):
+    for cis, load, subdir in tqdm(sources, unit="page", desc="scanning", smoothing=0.05):
         page = pages[subdir].get(cis)
         if page is None:
             # Overlay exists but the page isn't built yet: run `uv run build.py` first.
             no_page += 1
             continue
         if not force:
-            raw = build._read_overlay(path)
+            raw = load()
             meta = build.read_vec_meta(build.vec_path_for(page))
             if build.vec_is_current(meta, build.raw_hash(raw), model, encoder.dim,
                                     vec_quant):
                 fresh += 1
                 continue
-        stale.append((cis, path, subdir, page))
+        stale.append((cis, load, subdir, page))
     random.shuffle(stale)
     todo = stale if do_all else stale[:limit]
     logger.info("{} page(s) up to date, {} stale, {} not built yet; embedding {}{}",
@@ -209,9 +225,9 @@ def main(limit, do_all, only, eu, model_dir, out_dim, vec_quant, weights, intra_
 
     done = errors = 0
     bar = tqdm(todo, unit="page", desc="embedding", smoothing=0.05)
-    for cis, path, subdir, page in bar:
+    for cis, load, subdir, page in bar:
         try:
-            raw = build._read_overlay(path)
+            raw = load()
             build.embed_page_to_vec(cis, raw, subdir, encoder, model=model,
                                     quant=vec_quant, force=force, page=page)
             done += 1

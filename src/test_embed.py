@@ -1400,6 +1400,55 @@ def test_iter_rcp_raw_serves_delisted_baseline():
     print("ok  test_iter_rcp_raw_serves_delisted_baseline")
 
 
+def test_archived_page_is_baked_offline_and_served_as_fresh():
+    # A delisted drug (zero-byte overlay) still renders its 2022 baseline text, but
+    # iter_overlay_paths drops it, so it was never searchable. The offline pre-bake
+    # now embeds it from the baseline (iter_archived_raw), and the embed service, which
+    # has no CSV to hash, answers "fresh" for it on model/width/quant alone.
+    class _FakeEncoder:
+        query_prefix = "query: "
+        dim = 6
+
+        def encode_passages(self, texts):
+            return [_l2_normalise([0.1] * 6) for _ in texts]
+
+    body = ("<div id='textDocument'><h1 class='AmmAnnexeTitre1'>4. Indications</h1>"
+            "<p>Une phrase de contenu suffisamment longue pour tenir dans un chunk "
+            "unique et dépasser le seuil de fusion des petits paragraphes.</p></div>")
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        rcp = d / "rcp"; rcp.mkdir()
+        (d / "dist" / "rcp").mkdir(parents=True)
+        (d / "CIS_RCP.csv").write_text(
+            f"Code_CIS\tRCP_html\n11111111\t{body}\n22222222\t{body}\n",
+            encoding="utf-8")
+        (rcp / "22222222.html").write_text("")  # delisted: zero-byte sentinel
+        (d / "dist" / "rcp" / "22222222-drug.html").write_text("<html></html>")
+        saved = (build.CSV_PATH, build.RCP_OVERLAY_DIR, build.OVERLAY_LANES, build.DIST)
+        build.CSV_PATH, build.RCP_OVERLAY_DIR = d / "CIS_RCP.csv", rcp
+        build.OVERLAY_LANES, build.DIST = (("rcp", rcp),), d / "dist"
+        try:
+            es = _load_embed_service()
+            es.build = build
+            e = es.Embedder.__new__(es.Embedder)
+            e.model, e.encoder, e.quant = "m", _FakeEncoder(), "int8"
+            assert e.request_page("22222222") == {"status": "archived"}
+            archived = list(build.iter_archived_raw())
+            assert [(c, s) for c, _raw, s in archived] == [("22222222", "rcp")], archived
+            cis, raw, subdir = archived[0]
+            assert build.embed_page_to_vec(cis, raw, subdir, e.encoder, model="m",
+                                           quant="int8") == "ok"
+            assert e.request_page("22222222") == {"status": "fresh"}
+            e._running, e._pending, e._lock = None, {}, __import__("threading").Lock()
+            assert e.status_page("22222222")["embedded"] is True
+            e.model = "other"  # a model swap makes the pushed vectors stale again
+            assert e.request_page("22222222") == {"status": "archived"}
+        finally:
+            (build.CSV_PATH, build.RCP_OVERLAY_DIR, build.OVERLAY_LANES,
+             build.DIST) = saved
+    print("ok  test_archived_page_is_baked_offline_and_served_as_fresh")
+
+
 def test_present_cis_matches_iter_rcp_raw():
     # _present_cis (the backlink target set) must agree with what iter_rcp_raw
     # actually renders. It used to DROP a delisted drug (zero-byte overlay) even
@@ -2011,6 +2060,7 @@ if __name__ == "__main__":
     test_embed_page_to_vec_re_embeds_on_a_quantisation_change()
     test_rcp_archived_detects_zero_byte_overlay()
     test_iter_rcp_raw_serves_delisted_baseline()
+    test_archived_page_is_baked_offline_and_served_as_fresh()
     test_present_cis_matches_iter_rcp_raw()
     test_load_names_tolerates_stray_directory_and_parses_like_the_catalog()
     test_record_hash_changes_when_archived()

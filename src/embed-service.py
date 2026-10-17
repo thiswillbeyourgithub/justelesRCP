@@ -267,7 +267,7 @@ class Embedder:
         overlay (so a reader can search it right now)."""
         ov = self._overlay_for(cis)
         if ov is None:
-            return False
+            return self._archive_embedded(cis)
         raw, subdir = ov
         page = build.dist_page_for(cis, subdir)
         if page is None:
@@ -275,6 +275,18 @@ class Embedder:
         return build.vec_is_current(build.read_vec_meta(build.vec_path_for(page)),
                                     build.raw_hash(raw), self.model, self.encoder.dim,
                                     self.quant)
+
+    def _archive_embedded(self, cis: str) -> bool:
+        """An ARCHIVED page (delisted drug, 2022 text) is searchable when embed-rcp.py
+        pre-baked its vectors locally and deploy.sh --push-vectors shipped them: this
+        container has no baseline CSV, so it never embeds them itself and gates them on
+        model/width/quant only (build.archive_vec_is_current)."""
+        if not self._scraped_empty(cis):
+            return False
+        page = build.dist_page_for(cis, "rcp")
+        return page is not None and build.archive_vec_is_current(
+            build.read_vec_meta(build.vec_path_for(page)), self.model,
+            self.encoder.dim, self.quant)
 
     # -- queue -------------------------------------------------------------
     def _enqueue(self, cis: str, source: str, front: bool) -> str:
@@ -484,10 +496,12 @@ class Embedder:
         ov = self._overlay_for(cis)
         if ov is None:
             if self._scraped_empty(cis):
-                # Delisted drug: the page is a 2022 archive copy, which we never embed.
-                # Say so instead of triggering a crawl that can only re-confirm the
+                # Delisted drug: the page is a 2022 archive copy, which only the
+                # offline pre-bake can embed. Pushed vectors make it searchable; else
+                # say so instead of triggering a crawl that can only re-confirm the
                 # deletion and leaving the reader polling until the budget runs out.
-                return {"status": "archived"}
+                return {"status": "fresh" if self._archive_embedded(cis)
+                        else "archived"}
             # No overlay yet (baseline-only): ask refresh to crawl it; the resulting
             # overlay-write notify (or the reconcile sweep) then drives the embed.
             return {"status": self._trigger_crawl(cis)}

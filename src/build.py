@@ -52,7 +52,7 @@ from lxml import html as lxml_html
 
 import bdpm  # shared, pure-stdlib BDPM tokenising + frequency scoring
 
-__version__ = "0.61.1"  # single source of truth; bump patch/minor per change
+__version__ = "0.62.0"  # single source of truth; bump patch/minor per change
 
 # This script lives in ``src/`` (alongside the frontend templates it renders), so the
 # repo root is its parent's parent; data/, src/ and dist/ all hang off that root. In the
@@ -2504,6 +2504,28 @@ def iter_overlay_raw(paths=None):
         raw = _read_overlay(path)
         if raw.strip():
             yield cis, raw, subdir
+
+
+def iter_archived_raw():
+    """Yield ``(cis, raw, "rcp")`` for every ARCHIVED page (see ``rcp_archived``): a
+    drug delisted from BDPM whose page still renders the frozen 2022 baseline text.
+    ``iter_overlay_paths`` drops these (their overlay is the zero-byte sentinel), so
+    without this lane they were never searchable. Reads the baseline CSV, which only
+    the offline pre-bake (embed-rcp.py) has: the embed container does not mount it, so
+    on the VPS these vectors arrive via ``deploy.sh --push-vectors`` and are judged by
+    ``archive_vec_is_current``."""
+    for cis, raw, _asof in iter_rcp_raw():
+        if rcp_archived(cis):
+            yield cis, raw, "rcp"
+
+
+def archive_vec_is_current(meta: dict | None, model: str, dim: int,
+                           quant: str) -> bool:
+    """``vec_is_current`` for an ARCHIVED page, minus the ``src_hash`` check: the embed
+    service has no baseline CSV to hash, and that 2022 text is frozen, so a sidecar
+    embedded with the current model, width and quantisation is current. A model or
+    width change still makes it stale (re-bake with embed-rcp.py + push)."""
+    return bool(meta and meta.get("src_hash") and _meta_matches(meta, model, dim, quant))
 
 
 def vec_is_current(meta: dict | None, src_hash: str, model: str, dim: int,
