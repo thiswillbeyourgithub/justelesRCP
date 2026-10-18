@@ -672,9 +672,8 @@ def build_queue(
     # when no list is given): popular drugs get refreshed first.
     freq_path = frequency or (DEFAULT_FREQUENCY if DEFAULT_FREQUENCY.exists() else None)
     if freq_path:
-        signals = bdpm.substance_signals(catalog, COMPO_PATH, GENER_PATH)
-        single, multi, p25 = bdpm.load_frequency(freq_path)
-        scores, matched = bdpm.score_catalog(signals, single, multi, p25)
+        scores, matched, info = bdpm.frequency_scores(catalog, freq_path,
+                                                      COMPO_PATH, GENER_PATH)
         ordered = bdpm.order_by_score(catalog, scores)
         if not COMPO_PATH.exists():
             logger.warning(
@@ -684,7 +683,7 @@ def build_queue(
         logger.info(
             "frequency {}: {} single + {} multi terms, p25={} fallback; "
             "{}/{} CIS matched a term ({}%)",
-            freq_path.name, len(single), len(multi), p25,
+            freq_path.name, info["single"], info["multi"], info["p25"],
             len(matched), len(catalog), round(100 * len(matched) / len(catalog)),
         )
     else:

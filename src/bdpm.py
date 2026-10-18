@@ -256,6 +256,34 @@ def score_catalog(
     return scores, matched
 
 
+def frequency_scores(
+    catalog: list[tuple[str, str]],
+    freq_path: Path,
+    compo_path: Path | None = None,
+    gener_path: Path | None = None,
+) -> tuple[dict[str, float], set[str], dict]:
+    """``score_catalog`` from the files: the whole frequency pipeline (substance
+    signals, frequency list, p25 fallback) in one call, shared by the scrape queue
+    and the embed service's format-upgrade order. Returns ``(scores, matched,
+    info)``, ``info`` = ``{single, multi, p25}`` for logging."""
+    signals = substance_signals(catalog, compo_path, gener_path)
+    single, multi, p25 = load_frequency(freq_path)
+    scores, matched = score_catalog(signals, single, multi, p25)
+    return scores, matched, {"single": len(single), "multi": len(multi), "p25": p25}
+
+
+def read_marketed(path: Path) -> set[str]:
+    """CIS whose ``CIS_bdpm.txt`` row says "Commercialisée" (column 6), i.e. on sale
+    now; "Non commercialisée" ones (~15%) are authorised but not marketed."""
+    marketed: set[str] = set()
+    with path.open(encoding="latin-1") as fh:
+        for line in fh:
+            parts = line.split("\t")
+            if len(parts) > 6 and parts[6].strip() == "Commercialisée":
+                marketed.add(parts[0].strip())
+    return marketed
+
+
 def order_by_score(
     catalog: list[tuple[str, str]], scores: dict[str, float]
 ) -> list[str]:
