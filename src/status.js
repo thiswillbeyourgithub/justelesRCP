@@ -98,6 +98,7 @@
     content: "texte modifié depuis l'indexation",
     config: "modèle, largeur ou quantification différents",
     touch: "texte identique, seule la date du fichier est en retard",
+    format: "ancien découpage, toujours consultable, mise à niveau en cours",
     "no-page": "page pas encore construite",
     "no-overlay": "aucun texte exploré"
   };
@@ -374,6 +375,13 @@
       frag.appendChild(metric("Dernière vérification", "il y a " + dur(gap.scan_age_seconds)));
       frag.appendChild(el("div", "status-sep"));
     }
+    // Pages still searched with vectors from an older chunk format, re-indexed after
+    // every page that has none (see _CHUNK_FORMAT_LEGACY in build.py).
+    var up = s.format_upgrade;
+    if (up && up.remaining > 0)
+      frag.appendChild(note("Amélioration du découpage (version " + up.version + ") : " +
+        num(up.remaining) + " page(s) restent à réindexer. Elles restent consultables " +
+        "d'ici là, avec l'ancien découpage."));
 
     var b = s.backlog, p = s.pages;
     frag.appendChild(metric("File d'indexation",

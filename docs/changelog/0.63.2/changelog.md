@@ -1,5 +1,10 @@
 # 0.63.2 - 2026-10-18
 
+## Improvements
+
+- When the way pages are cut up for the semantic search improves, every page stays searchable with the previous version while the index is rebuilt in the background, starting with the most prescribed drugs and the pages readers actually search.
+  fr: Quand le découpage des pages pour la recherche sémantique s'améliore, toutes les pages restent consultables avec l'ancienne version pendant que l'index est reconstruit en arrière-plan, en commençant par les médicaments les plus prescrits et les pages réellement recherchées.
+
 ## Bug fixes
 
 - Some leaflets presented whole paragraphs as section titles, which cluttered the table of contents, hid those paragraphs from the semantic search and could crash the indexing service. They are now shown as normal text.

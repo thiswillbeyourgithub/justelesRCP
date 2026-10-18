@@ -286,6 +286,13 @@ services:
       # HTML to segment + embed each page's sections.
       - ../data/rcp:/app/data/rcp:ro
       - ../data/eu:/app/data/eu:ro
+      # Read-only, the same files the refresh service mounts: they only ORDER the
+      # chunk-format upgrade (prescription frequency, marketed or not; see
+      # _upgrade_order). Missing, the upgrade still runs, in uniform random order.
+      - ../data/CIS_bdpm.txt:/app/data/CIS_bdpm.txt:ro
+      - ../data/CIS_COMPO_bdpm.txt:/app/data/CIS_COMPO_bdpm.txt:ro
+      - ../data/CIS_GENER_bdpm.txt:/app/data/CIS_GENER_bdpm.txt:ro
+      - ../data/drugs_frequency.jsonl:/app/data/drugs_frequency.jsonl:ro
       # The ONLY writable locations: the two dist page dirs, where it writes each
       # page's <slug>.vec.json (+ .gz/.br) next to the .html and reads the .html
       # filenames to resolve slugs (build.page_cis_from_dist / _dist_page). No

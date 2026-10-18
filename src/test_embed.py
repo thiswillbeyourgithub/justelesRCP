@@ -2056,6 +2056,54 @@ def test_passage_batches_are_bounded_by_attention_cost():
     print("ok passage batches bounded by attention cost")
 
 
+def test_older_chunk_format_stays_served_and_upgrades_last():
+    """A chunk-format bump must not leave the catalog unsearchable for the weeks the VPS
+    needs to re-embed it: vectors of the same text under a _CHUNK_FORMAT_LEGACY format
+    are still served ("legacy"), and re-embedded only once nothing lacks vectors, in a
+    random order weighted by prescription frequency, unmarketed drugs last-ish, pages a
+    reader searched first."""
+    import random
+    import threading
+    from collections import OrderedDict, deque
+    raw = "<div id='textDocument'><p>bonjour</p></div>"
+    old = build._CHUNK_FORMAT_LEGACY[0]
+    cfg = ("m", 4, "binary")
+    meta = {"src_hash": build.raw_hash(raw, old), "model": "m", "dim": 4, "quant": "binary"}
+    assert build.vec_is_legacy(meta, raw, *cfg)
+    assert not build.vec_is_current(meta, build.raw_hash(raw), *cfg)
+    assert not build.vec_is_legacy(dict(meta, model="other"), raw, *cfg)   # model swap: no
+    assert not build.vec_is_legacy(dict(meta, src_hash=build.raw_hash(raw)), raw, *cfg)
+    assert not build.vec_is_legacy(dict(meta, src_hash=build.raw_hash(raw + "x", old)),
+                                   raw, *cfg)                              # text changed: no
+
+    es = _load_embed_service()
+    e = es.Embedder.__new__(es.Embedder)
+    e._lock, e._wake = threading.Lock(), threading.Event()
+    e._queue, e._pending, e._rerun = deque(), {}, {}
+    e._running, e.queue_max, e._failures = None, 500, OrderedDict()
+    e._upgrade, e._upgrade_seen = [], set()
+    # weighted order: a top-prescribed marketed drug vs a rare unmarketed one
+    saved = (es.bdpm.read_catalog, es.bdpm.frequency_scores, es.bdpm.read_marketed)
+    es.bdpm.read_catalog = lambda path: [("A", "a"), ("B", "b")]
+    es.bdpm.frequency_scores = lambda *a: ({"A": 10.0, "B": 0.0}, set(), {})
+    es.bdpm.read_marketed = lambda path: {"A"}
+    try:
+        random.seed(0)
+        firsts = sum(e._upgrade_order(["B", "A"])[0] == "A" for _ in range(2000))
+    finally:
+        es.bdpm.read_catalog, es.bdpm.frequency_scores, es.bdpm.read_marketed = saved
+    assert 1900 < firsts < 2000, firsts   # usually first, still random
+    # feeding: nothing while the queue holds work; then the searched page first, in batches
+    e._upgrade = ["P1", "P2", "P3", "P4"]
+    e._queue.append("X")
+    assert e._feed_upgrades() == 0 and e._upgrade == ["P1", "P2", "P3", "P4"]
+    e._queue.clear()
+    e._upgrade_seen.add("P3")
+    assert e._feed_upgrades() == es._UPGRADE_BATCH == 2
+    assert list(e._queue) == ["P3", "P1"] and e._upgrade == ["P2", "P4"]
+    print("ok  test_older_chunk_format_stays_served_and_upgrades_last")
+
+
 def test_crash_guard_counts_restarts_and_quarantines_a_killer_page():
     """The VPS embed container was OOM-killed on one page 344 times: each restart reset
     every in-memory counter, /status saw a young healthy service ("à jour", since a
@@ -2095,6 +2143,7 @@ def test_crash_guard_counts_restarts_and_quarantines_a_killer_page():
     e._lock = threading.Lock()
     e._last_scan, e.crash, e._running, e._running_since = {}, None, None, 0.0
     e.backlog, e.backlog_rate, e._started = True, 0.0, 0.0
+    e._upgrade = ["66544554"]  # one page still served from an older chunk format
     e.stats = lambda: {"enabled": True, "model": "m", "dim": 4, "quant": "binary",
                        "embedded": 0, "skipped": 0, "errors": 0, "chars": 0,
                        "mean_chars_per_s": 0, "embed_seconds": 0.0, "queries": 0,
@@ -2103,6 +2152,8 @@ def test_crash_guard_counts_restarts_and_quarantines_a_killer_page():
     summary = e.public_summary()
     assert summary["crawl_gap"] == {"scan_pending": True}, summary
     assert summary["health"]["restarts_24h"] == 0
+    assert summary["format_upgrade"] == {"remaining": 1,
+                                         "version": build._CHUNK_FORMAT_VERSION}, summary
     print("ok  test_crash_guard_counts_restarts_and_quarantines_a_killer_page")
 
 
@@ -2173,4 +2224,5 @@ if __name__ == "__main__":
     test_web_manifest_icons_ship()
     test_passage_batches_are_bounded_by_attention_cost()
     test_crash_guard_counts_restarts_and_quarantines_a_killer_page()
+    test_older_chunk_format_stays_served_and_upgrades_last()
     print("\nAll tests passed.")

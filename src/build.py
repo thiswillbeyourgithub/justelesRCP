@@ -1262,6 +1262,13 @@ _SEC_MAX_CHUNKS = 10000
 # source tagged AmmAnnexeTitre2-4 are demoted back to body text
 # (_demote_prose_headings), so they are chunked and no longer bloat the prefix.
 _CHUNK_FORMAT_VERSION = "8"
+# Older formats whose vectors stay SERVED until re-embedded: same overlay text, older
+# chunking, still a working search. A version bump re-embeds a whole catalog, weeks of
+# CPU on the VPS, so the embed service keeps answering from these vectors and upgrades
+# them in the background, after the pages that have no usable vectors at all (see
+# vec_is_legacy and the format upgrade in embed-service.py). Add the outgoing version
+# here on every bump, unless the old chunks are wrong enough to be worth the wait.
+_CHUNK_FORMAT_LEGACY = ("7",)
 
 
 def quantize_int8(values) -> list[int]:
@@ -1345,7 +1352,7 @@ def quantize_binary(values) -> bytes:
     return bytes(out)
 
 
-def raw_hash(raw: str) -> str:
+def raw_hash(raw: str, fmt: str = _CHUNK_FORMAT_VERSION) -> str:
     """Short content hash of an overlay's raw HTML, baked into its .vec.json as the
     self-describing staleness key (a re-crawl that produced identical bytes hashes the
     same -> no re-embed). SHARED by embed-service.py + embed-rcp.py so their staleness
@@ -1354,7 +1361,7 @@ def raw_hash(raw: str) -> str:
     _CHUNK_FORMAT_VERSION is mixed in so a change to how section_chunks segments a page
     (which leaves the raw overlay untouched) still changes the hash and busts every
     .vec.json, forcing a re-embed on the next re-bake / re-crawl."""
-    keyed = f"{_CHUNK_FORMAT_VERSION}\x00{raw}"
+    keyed = f"{fmt}\x00{raw}"
     return hashlib.sha256(keyed.encode("utf-8")).hexdigest()[:16]
 
 
@@ -2598,6 +2605,16 @@ def vec_is_current(meta: dict | None, src_hash: str, model: str, dim: int,
     # change (EMBED_OUT_DIM) or quantisation change (EMBED_VEC_QUANT).
     return bool(meta and meta.get("src_hash") == src_hash
                 and _meta_matches(meta, model, dim, quant))
+
+
+def vec_is_legacy(meta: dict | None, raw: str, model: str, dim: int,
+                  quant: str) -> bool:
+    """True when the vectors embed THIS overlay text with the current model, width and
+    quantisation, but under an older chunk format (``_CHUNK_FORMAT_LEGACY``): stale for
+    the sweep, still good enough to serve. ``vec_is_current`` stays the gate that says
+    "nothing to do"; a page passing this one is merely searchable meanwhile."""
+    return bool(meta and _meta_matches(meta, model, dim, quant)
+                and meta.get("src_hash") in {raw_hash(raw, f) for f in _CHUNK_FORMAT_LEGACY})
 
 
 def embed_page_to_vec(cis: str, raw: str, subdir: str, encoder, *,

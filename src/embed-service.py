@@ -65,6 +65,7 @@ from urllib.parse import parse_qs
 import click
 from loguru import logger
 
+import bdpm  # frequency scoring, for the format-upgrade order
 import svc_http  # shared JSON handler / server / logging / sibling loader
 
 build = svc_http.load_sibling("build.py", "build")          # segmentation + shared vec writer
@@ -109,6 +110,13 @@ _FAILURES_MAX = 200
 #: changes. One crash can be bad luck (a reader query's encode at the same moment);
 #: two on the same page is the page. See _CrashGuard.
 _CRASH_QUARANTINE = 2
+# Format upgrade (see build._CHUNK_FORMAT_LEGACY): pages whose vectors are still served
+# from an older chunk format are re-embedded only once nothing better is waiting, a few
+# at a time so a page that newly needs vectors never queues behind hundreds of them.
+# Their order is random, weighted by prescription frequency, a not-marketed drug
+# counting _UNMARKETED_WEIGHT of a marketed one; a page a reader searched jumps ahead.
+_UPGRADE_BATCH = 2
+_UNMARKETED_WEIGHT = 0.2
 #: Boot timestamps kept for the restart count /status shows (24 h window).
 _BOOTS_KEPT = 200
 
@@ -306,6 +314,10 @@ class Embedder:
         self._chunks_cache: "OrderedDict[tuple[str, str], dict]" = OrderedDict()
         self._backlog_cache: tuple[float, dict] | None = None
         self.detail_slots = threading.BoundedSemaphore(_DETAIL_SLOTS)
+        # Format upgrade queue (see _UPGRADE_BATCH): built by the boot's first scan,
+        # consumed by later ones; _upgrade_seen = upgrade pages a reader searched.
+        self._upgrade: list[str] = []
+        self._upgrade_seen: set[str] = set()
 
     # -- lifecycle ---------------------------------------------------------
     def start(self) -> None:
@@ -353,18 +365,28 @@ class Embedder:
         return False
 
     def _is_embedded(self, cis: str) -> bool:
-        """The page has a .vec.json whose baked src_hash + model match its CURRENT
-        overlay (so a reader can search it right now)."""
+        """The reader can search this page now: current vectors, or vectors from an
+        older chunk format awaiting the upgrade (see _vec_state)."""
+        return self._vec_state(cis) is not None
+
+    def _vec_state(self, cis: str) -> str | None:
+        """"current": the .vec.json's baked src_hash + model match the page's CURRENT
+        overlay; "legacy": same text, older chunk format (build.vec_is_legacy), still
+        served; None: nothing a reader can search."""
         ov = self._overlay_for(cis)
         if ov is None:
-            return self._archive_embedded(cis)
+            return "current" if self._archive_embedded(cis) else None
         raw, subdir = ov
         page = build.dist_page_for(cis, subdir)
         if page is None:
-            return False
-        return build.vec_is_current(build.read_vec_meta(build.vec_path_for(page)),
-                                    build.raw_hash(raw), self.model, self.encoder.dim,
-                                    self.quant)
+            return None
+        meta = build.read_vec_meta(build.vec_path_for(page))
+        if build.vec_is_current(meta, build.raw_hash(raw), self.model, self.encoder.dim,
+                                self.quant):
+            return "current"
+        if build.vec_is_legacy(meta, raw, self.model, self.encoder.dim, self.quant):
+            return "legacy"
+        return None
 
     def _archive_embedded(self, cis: str) -> bool:
         """An ARCHIVED page (delisted drug, 2022 text) is searchable when embed-rcp.py
@@ -540,6 +562,7 @@ class Embedder:
         stale = 0     # of those, how many lack a fresh .vec.json (the embed backlog)
         stale_cis: list[str] = []
         todo: list[str] = []  # stale pages to enqueue, shuffled below
+        legacy: list[str] = []  # first pass: served from an older chunk format
         quarantined = set(self.crash.quarantine_list()) if self.crash else set()  # which ones, for the /status backlog popup
         # ONE directory scan per lane, not a glob per CIS (see build.dist_pages_index):
         # the per-CIS glob cost ~10 minutes of CPU per pass on the full catalog.
@@ -553,6 +576,12 @@ class Embedder:
             vec = build.vec_path_for(page)
             if build.vec_is_fresh(vec, ov, self.model, check_model=check_model,
                                   dim=self.encoder.dim, quant=self.quant):
+                # Only the boot's first pass reads overlays to spot an older chunk
+                # format: an upgraded vec is rewritten, so the list only shrinks.
+                if check_model and build.vec_is_legacy(
+                        build.read_vec_meta(vec), build._read_overlay(ov), self.model,
+                        self.encoder.dim, self.quant):
+                    legacy.append(cis)
                 continue
             stale += 1
             if len(stale_cis) < _BACKLOG_LIST_MAX:
@@ -568,11 +597,54 @@ class Embedder:
         for cis in todo:
             if self._enqueue(cis, "sweep", front=False) == "queued":
                 queued += 1
+        if check_model:
+            self._upgrade = self._upgrade_order(legacy)
+            if legacy:
+                logger.info("format upgrade: {} page(s) served from an older chunk "
+                            "format, re-embedded once nothing else waits", len(legacy))
+        # Upgrades only once every page lacking usable vectors is embedded or has
+        # failed (a failing page must not hold the upgrade back forever), and only a
+        # few at a time, so a page that newly needs vectors never waits behind them.
+        if not any(c not in self._failures for c in todo):
+            queued += self._feed_upgrades()
         # Record for /api/sem/summary: total crawled pages vs how many still await an
         # embed, so the /status page can show whether embedding trails the crawl.
         self._last_scan = {"overlays": overlays, "stale": stale,
                            "stale_cis": stale_cis, "at": time.monotonic()}
         return queued
+
+    def _upgrade_order(self, legacy: list[str]) -> list[str]:
+        """Random order weighted by prescription frequency (bdpm.frequency_scores, the
+        scrape queue's scoring), a not-marketed drug weighing _UNMARKETED_WEIGHT of a
+        marketed one: each page draws key = u ** (1 / weight), highest first
+        (Efraimidis-Spirakis), so a weight-10 page usually but not always precedes a
+        weight-2 one. Without the BDPM files every weight is 1: uniform shuffle."""
+        weights = dict.fromkeys(legacy, 1.0)
+        try:
+            catalog = bdpm.read_catalog(build.BDPM_PATH)
+            scores, _, _ = bdpm.frequency_scores(catalog, build.FREQUENCY_PATH,
+                                                 build.COMPO_PATH, build.GENER_PATH)
+            marketed = bdpm.read_marketed(build.BDPM_PATH)
+            for cis in legacy:
+                weights[cis] = (1.0 + scores.get(cis, 0.0)) * (
+                    1.0 if cis in marketed else _UNMARKETED_WEIGHT)
+        except (OSError, ValueError) as exc:
+            logger.warning("format upgrade: no BDPM priority ({}), random order", exc)
+        return sorted(legacy, key=lambda c: random.random() ** (1.0 / weights[c]),
+                      reverse=True)
+
+    def _feed_upgrades(self) -> int:
+        """Enqueue the next format upgrades when the queue is empty: pages a reader
+        searched first, then _upgrade's weighted order."""
+        with self._lock:
+            if self._queue:
+                return 0
+            seen = [c for c in self._upgrade if c in self._upgrade_seen]
+            batch = (seen + [c for c in self._upgrade if c not in self._upgrade_seen])[
+                :_UPGRADE_BATCH]
+            self._upgrade = [c for c in self._upgrade if c not in batch]
+            self._upgrade_seen.difference_update(batch)
+        return sum(self._enqueue(c, "sweep", front=False) == "queued" for c in batch)
 
     def _reconcile_loop(self) -> None:
         # The FIRST pass also reads each mtime-fresh vec's baked model so a model swap
@@ -625,7 +697,11 @@ class Embedder:
         page = build.dist_page_for(cis, subdir)
         if page is None:
             return {"status": "unavailable"}
-        if self._is_embedded(cis):
+        state = self._vec_state(cis)
+        if state == "legacy":
+            with self._lock:  # a reader wants it: upgrade it ahead of the others
+                self._upgrade_seen.add(cis)
+        if state is not None:
             return {"status": "fresh"}
         # user-viewed and crawl-notify both jump the sweep (front); reader waits least.
         status = self._enqueue(cis, source, front=True)
@@ -780,6 +856,8 @@ class Embedder:
         elif build.vec_is_current(meta, src_hash, self.model, self.encoder.dim,
                                   self.quant):
             row["reason"] = "touch"
+        elif build.vec_is_legacy(meta, raw, self.model, self.encoder.dim, self.quant):
+            row["reason"] = "format"
         elif meta.get("src_hash") != src_hash:
             row["reason"] = "content"
         else:
@@ -914,6 +992,11 @@ class Embedder:
         # which is exactly what a service restarting every few minutes showed.
         if not last:
             summary["crawl_gap"] = {"scan_pending": True}
+        with self._lock:
+            upgrading = len(self._upgrade)
+        if upgrading:
+            summary["format_upgrade"] = {"remaining": upgrading,
+                                         "version": build._CHUNK_FORMAT_VERSION}
         if last:
             awaiting = last.get("stale", 0)
             crawled = last.get("overlays", 0)
