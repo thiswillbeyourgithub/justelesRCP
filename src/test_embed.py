@@ -2056,6 +2056,14 @@ def test_crash_guard_counts_restarts_and_quarantines_a_killer_page():
         g.begin("60000001", "x"); g.end()      # a page that finishes leaves no trace
         g = es._CrashGuard(path)
         assert "60000001" not in g.crashed
+        g.begin("66544554", "h3")              # docker stop / a deploy lands mid-page
+        es.EMBEDDER = type("E", (), {"crash": g})()
+        real_exit, es.os._exit = es.os._exit, lambda code: None
+        try:
+            es._clean_stop(15, None)
+        finally:
+            es.os._exit, es.EMBEDDER = real_exit, None
+        assert "66544554" not in es._CrashGuard(path).crashed   # not counted as a crash
         path.write_text("{not json")           # corrupt state never stops the service
         assert es._CrashGuard(path).restarts_since(3600) == 0
     # before the first scan of a boot, the summary says "unknown", not "0 behind"

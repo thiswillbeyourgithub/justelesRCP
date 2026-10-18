@@ -214,6 +214,16 @@ class _CrashGuard:
         return sorted(k for k, v in self.crashed.items()
                       if v.get("crashes", 0) >= _CRASH_QUARANTINE)
 
+def _clean_stop(signum, frame) -> None:
+    """SIGTERM (`docker stop`, a deploy recreating the container): clear the in-flight
+    page before exiting, else the next boot blames that page for a crash it did not
+    cause, and two deploys landing mid-page quarantine a healthy one. os._exit, not
+    sys.exit: the worker must not start (and mark) another page on the way out."""
+    if EMBEDDER is not None:
+        EMBEDDER.crash.end()
+    os._exit(0)
+
+
 class Embedder:
     """Owns the warm encoder + a single background page-embedding worker with a
     priority queue (on-demand/notify at the front, the reconcile sweep at the back)."""
@@ -1196,6 +1206,7 @@ def main(host, port, model_dir, out_dim, vec_quant, sem_floor, intra_threads,
     # Ignore SIGHUP so a stray `docker kill --signal=SIGHUP` (aimed at the refresh
     # container) can never take this one down; we have nothing to re-arm here.
     signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    signal.signal(signal.SIGTERM, _clean_stop)
 
     logger.info("embed service on {}:{} (model={}, dim={} {}, backlog={}, "
                 "reconcile={}s, min/max query chars={}/{}, sem-floor={})", host, port,
