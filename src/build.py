@@ -945,9 +945,36 @@ def _parse_clean(raw: str):
             node.set("style", ";".join(kept))
         else:
             del node.attrib["style"]
+    _demote_prose_headings(doc)
     _promote_numbered_titles(doc)
     _promote_subheads(doc)
     return doc
+
+
+# Prose tagged as a heading. Some ANSM pages put whole body paragraphs in an
+# AmmAnnexeTitre2/3/4 paragraph (IMATINIB BGR 66544554: "Un total de 26 patients
+# pédiatriques..." is a 100-word Titre3). It then showed as a Sommaire entry, its text
+# was in no chunk body, and every chunk under it carried it as heading-path prefix,
+# which the chunk size cap does not bound: up to 900 chars of prefix on a 500-char
+# body, so twice the tokens per batch and the embed container ran out of RAM. Real
+# subheadings stay under ~20 words; a line longer than _HEADING_MAX_WORDS, or a
+# finished sentence longer than _HEADING_SENTENCE_WORDS, is demoted to a body
+# paragraph. AmmAnnexeTitre1 is left alone: it carries the sec-N anchors.
+_HEADING_MAX_WORDS = 25
+_HEADING_SENTENCE_WORDS = 12
+_DEMOTABLE_TITRE_RE = re.compile(r"\bAmmAnnexeTitre[234]\b")
+
+
+def _demote_prose_headings(doc) -> None:
+    for p in doc.xpath("//*[contains(@class, 'AmmAnnexeTitre')]"):
+        cls = p.get("class", "")
+        if not _DEMOTABLE_TITRE_RE.search(cls):
+            continue
+        t = _norm_ws(p.text_content())
+        words = len(t.split())
+        if words > _HEADING_MAX_WORDS or (words > _HEADING_SENTENCE_WORDS
+                                          and t.endswith(".")):
+            p.set("class", _DEMOTABLE_TITRE_RE.sub("AmmCorpsTexte", cls))
 
 
 # A few baseline RCPs (2 in the 2022 dump) never use AmmAnnexeTitre1: their section
@@ -1231,8 +1258,10 @@ _SEC_MAX_CHUNKS = 10000
 # tiny chunks are merged into neighbours (_merge_small) instead of stranded;
 # "7" = unstyled subheading lines ("Absorption", "Élimination") are promoted to
 # headings (_promote_subheads), so they join the heading-path prefix instead of being
-# dropped as filler (1-2 words) or blended into the body.
-_CHUNK_FORMAT_VERSION = "7"
+# dropped as filler (1-2 words) or blended into the body; "8" = body paragraphs the
+# source tagged AmmAnnexeTitre2-4 are demoted back to body text
+# (_demote_prose_headings), so they are chunked and no longer bloat the prefix.
+_CHUNK_FORMAT_VERSION = "8"
 
 
 def quantize_int8(values) -> list[int]:

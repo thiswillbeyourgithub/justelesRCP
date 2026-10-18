@@ -188,6 +188,29 @@ def test_unstyled_subheads_promoted():
     print("ok  test_unstyled_subheads_promoted")
 
 
+def test_prose_tagged_as_heading_is_demoted():
+    # IMATINIB BGR (66544554) tags whole paragraphs AmmAnnexeTitre3: they listed in the
+    # Sommaire, and every chunk below carried ~900 chars of them as heading prefix
+    # (twice the tokens per batch, the embed container ran out of RAM). Long lines and
+    # finished sentences go back to body text; real subheadings, and Titre1, stay.
+    long_p = "Un total de 26 patients pediatriques " + "ont ete recrutes " * 30
+    sample = f"""<div id="textDocument">
+      <p class="AmmAnnexeTitre1">5. PROPRIETES PHARMACOLOGIQUES</p>
+      <p class="AmmAnnexeTitre2">5.1 Proprietes pharmacodynamiques</p>
+      <p class="AmmAnnexeTitre3">Population pediatrique</p>
+      <p class="AmmAnnexeTitre3">{long_p}</p>
+      <p class="AmmAnnexeTitre3">Les etudes de mutagenicite et de carcinogenicite a long terme n'ont pas ete effectuees.</p>
+      <p>Une phrase de prose qui suit les deux faux titres dans la section.</p>
+    </div>"""
+    _, _, toc, _ = build.clean_rcp(sample)
+    subs = toc[0][2][0][2]  # 5. > 5.1 > [...]
+    assert [t for _, t, _ in subs] == ["Population pediatrique"], subs
+    chunks = build.section_chunks(sample)
+    assert all(len(t.split("\n")[0]) < 120 for _, _, t in chunks), chunks
+    assert any("Un total de 26" in sn for _, sn, _ in chunks), chunks  # now searchable
+    print("ok  test_prose_tagged_as_heading_is_demoted")
+
+
 def test_eu_toc_keeps_ema_ids_and_nests_subheads():
     # A full /eu/ page's ToC nests the open (SmPC) group's numbered subsections and the
     # promoted subheadings, KEEPING ema_pdf's sec-N ids (the chunks anchor to them),
@@ -2092,6 +2115,7 @@ if __name__ == "__main__":
     test_heading_only_section_yields_no_chunk()
     test_heading_path_context_prefix()
     test_unstyled_subheads_promoted()
+    test_prose_tagged_as_heading_is_demoted()
     test_eu_toc_keeps_ema_ids_and_nests_subheads()
     test_merge_small_chunks()
     test_merged_chunk_snippet_spans_its_paragraph_run()
