@@ -6,7 +6,7 @@
 #   "httpx",
 #   "lxml",
 #   "brotli>=1.1",
-#   "pymupdf>=1.24",
+#   "pymupdf==1.28.2",
 # ]
 # ///
 """Fetch EMA product-information PDFs and convert them into ``/eu/`` overlays.

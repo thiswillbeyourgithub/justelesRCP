@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["httpx", "lxml", "brotli", "loguru", "click", "pymupdf>=1.24"]
+# dependencies = ["httpx", "lxml", "brotli", "loguru", "click", "pymupdf==1.28.2"]
 # ///
 """Tiny companion service: on-demand, single-CIS RCP refresh.
 

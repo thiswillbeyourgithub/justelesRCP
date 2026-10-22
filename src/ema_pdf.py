@@ -1,7 +1,7 @@
 # /// script
 # requires-python = ">=3.11"
 # dependencies = [
-#   "pymupdf>=1.24",
+#   "pymupdf==1.28.2",
 # ]
 # ///
 """Convert an EMA product-information PDF into a single clean HTML document.
@@ -36,7 +36,7 @@ Design goals mirroring the ANSM overlay pipeline:
 Pure conversion, no I/O and no network: ``convert(pdf_bytes)`` takes the raw PDF
 bytes and returns a dict. The fetcher (scrape-ema.py) and the refresh service own
 the download + caching; keeping this import-safe and side-effect-free lets both
-reuse it. PyMuPDF (fitz) is AGPL-3.0, matching this project's licence.
+reuse it. PyMuPDF is AGPL-3.0, matching this project's licence.
 """
 
 from __future__ import annotations
@@ -45,7 +45,7 @@ import base64
 import html
 import re
 
-import fitz  # PyMuPDF
+import pymupdf
 
 
 # Page ceiling for one product-information PDF. The largest real ones (multi-
@@ -109,14 +109,14 @@ def _pdf_date(raw: str | None) -> str:
     return f"{m.group(1)}-{m.group(2)}-{m.group(3)}" if m else ""
 
 
-def capture_date(doc: fitz.Document) -> str:
+def capture_date(doc: pymupdf.Document) -> str:
     """Our 'as of' date for an EMA doc: its ModDate (last revision), else the
     CreationDate. Both come from the PDF metadata (see pdfinfo)."""
     md = doc.metadata or {}
     return _pdf_date(md.get("modDate")) or _pdf_date(md.get("creationDate"))
 
 
-def _img_data_uri(doc: fitz.Document, xref: int) -> tuple[str, int] | None:
+def _img_data_uri(doc: pymupdf.Document, xref: int) -> tuple[str, int] | None:
     """Return ``(data_uri, display_width)`` for one image xref, or None if it is
     too small to be a real figure. Transcodes to a browser format and downscales.
 
@@ -135,16 +135,16 @@ def _img_data_uri(doc: fitz.Document, xref: int) -> tuple[str, int] | None:
     if w < _IMG_MIN_SIDE and h < _IMG_MIN_SIDE:
         return None  # pictogram / icon -> drop
     try:
-        pix = fitz.Pixmap(doc, xref)
+        pix = pymupdf.Pixmap(doc, xref)
         if pix.colorspace and pix.colorspace.name not in ("DeviceRGB", "DeviceGray"):
-            pix = fitz.Pixmap(fitz.csRGB, pix)  # normalise CMYK/other to browser RGB
+            pix = pymupdf.Pixmap(pymupdf.csRGB, pix)  # normalise CMYK/other to browser RGB
         # Re-attach the soft mask (a separate grayscale xref) so transparent regions stay
         # transparent in the emitted PNG. Same-dimension single-channel mask only; on any
         # size mismatch / read error keep the opaque base (the previous behaviour).
         smask_xref = info.get("smask", 0)
         if smask_xref and pix.alpha == 0:
             try:
-                pix = fitz.Pixmap(pix, fitz.Pixmap(doc, smask_xref))
+                pix = pymupdf.Pixmap(pix, pymupdf.Pixmap(doc, smask_xref))
             except Exception:
                 pass
         # Halve until within the width cap (shrink(n) reduces each side by 2**n).
@@ -235,14 +235,14 @@ def convert(pdf_bytes: bytes) -> dict:
     embedded once). ``html`` is "" for an empty/broken PDF. Raises ValueError on a
     PDF over ``MAX_PAGES`` (the input is untrusted: a huge or crafted PDF must not
     pin the CPU of the refresh service converting it); the doc is always closed."""
-    with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+    with pymupdf.open(stream=pdf_bytes, filetype="pdf") as doc:
         if doc.page_count > MAX_PAGES:
             raise ValueError(f"PDF has {doc.page_count} pages (max {MAX_PAGES})")
         return _convert_doc(doc)
 
 
 def _convert_doc(doc) -> dict:
-    """``convert``'s body, on an already-open, page-capped ``fitz`` document."""
+    """``convert``'s body, on an already-open, page-capped ``pymupdf`` document."""
     date = capture_date(doc)
     groups: list[dict] = []
     seen_xrefs: set[int] = set()

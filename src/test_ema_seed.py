@@ -6,7 +6,7 @@
 #   "httpx",
 #   "lxml",
 #   "brotli>=1.1",
-#   "pymupdf>=1.24",
+#   "pymupdf==1.28.2",
 # ]
 # ///
 """Unit tests for the EMA-JSON seeding helpers in scrape-ema.py.
@@ -45,6 +45,25 @@ MINI = (
     '{"id":"3","type":"product-information","medicine_name":"Onlyen",'
     '"document_url":"https://www.ema.europa.eu/en/onlyen-epar-product-information_en.pdf"}\n]}'
 )
+
+
+def test_pymupdf_is_pinned_to_the_refresh_images_version():
+    """Every PEP 723 header names the exact pymupdf the refresh image installs.
+
+    `>=1.24` resolved to 2.0 from 2026-10-19 in any fresh `uv run`, while the
+    image stayed on 1.28.2, and 2.0's ``Table.extract()`` drops the spaces
+    between words (justelesdocs measured it: "Maltraitancesexuelle"), which is
+    the call ``ema_pdf`` reads every table through. A local scrape and the
+    container would then write different text for the same PDF.
+    """
+    import re
+
+    src = Path(__file__).resolve().parent
+    docker = (src.parent / "docker" / "refresh.Dockerfile").read_text(encoding="utf-8")
+    image = re.search(r"pymupdf==(\S+)", docker).group(1)
+    for name in ["ema_pdf.py", "refresh-service.py", "scrape-ema.py", "test_ema_seed.py"]:
+        header = (src / name).read_text(encoding="utf-8").split("# ///\n", 1)[0]
+        assert f'"pymupdf=={image}"' in header, name
 
 
 def test_parse_tolerates_runon_records():
@@ -116,9 +135,9 @@ def test_convert_splits_paragraphs_bullets_and_drops_page_numbers():
     blank-line gap and each "•" item must open a new paragraph (they were all
     merged into one <p>), and a sentence running across the page break must stay
     one paragraph (it used to be cut at every page end)."""
-    import fitz
+    import pymupdf
     ema_pdf = sema.ema
-    doc = fitz.open()
+    doc = pymupdf.open()
     p1 = doc.new_page(width=595, height=842)
     p1.insert_text((71, 100), "Premier paragraphe, ligne un")
     p1.insert_text((71, 112.6), "et sa suite.")
@@ -293,7 +312,7 @@ def test_pdf_fetch_and_convert_are_size_capped():
     # streamed and abandoned past the byte cap, and convert() refuses a PDF over the
     # page cap before parsing it (previously both were unbounded).
     import httpx
-    import fitz
+    import pymupdf
     big = b"%PDF-1.7 " + b"x" * 5000
 
     def handler(req):
@@ -307,7 +326,7 @@ def test_pdf_fetch_and_convert_are_size_capped():
         except RuntimeError as exc:
             assert "over 1000 bytes" in str(exc), exc
         assert sema._fetch_pdf(client, "https://www.ema.europa.eu/a.pdf") == big
-    with fitz.open() as doc:
+    with pymupdf.open() as doc:
         for _ in range(3):
             doc.new_page()
         pdf = doc.tobytes()
@@ -610,6 +629,7 @@ def test_parallel_import_reference_is_harvested_and_kept():
 
 
 if __name__ == "__main__":
+    test_pymupdf_is_pinned_to_the_refresh_images_version()
     test_parse_tolerates_runon_records()
     test_pi_index_prefers_french_and_filters_type()
     test_match_brand_word_boundary()
