@@ -4,16 +4,16 @@
 # the read-only Caddy web server so the public server never needs write access:
 # this one gets only narrow writable mounts (data/rcp, dist/rcp, the scrape
 # manifest) and nothing else. Build context is the repo root (see compose).
-FROM python:3.12.15-slim
+FROM python:3.14.9-slim
 
 # These mirror the PEP 723 dependency header of refresh-service.py, which is the
 # source of truth for WHICH packages; if you change the deps there, change them here
-# too. The versions are pinned here (what uv resolved for Python 3.12 when pinned) so
+# too. The versions are pinned here (what uv resolved for Python 3.14 when pinned) so
 # a rebuild is reproducible. Installing
 # at build time means the read-only runtime container needs no package cache and
 # no network just to import them. pymupdf (fitz) is for the EMA /eu/ lane: the
 # service imports ema_pdf.py, which converts EMA product-information PDFs to HTML.
-RUN pip install --no-cache-dir httpx==0.28.1 lxml==6.1.3 brotli==1.2.0 loguru==0.7.3 \
+RUN pip install --no-cache-dir httpx==0.28.1 lxml==6.1.3 brotli==1.2.1 loguru==0.7.3 \
     click==8.5.0 pymupdf==1.28.2
 
 WORKDIR /app

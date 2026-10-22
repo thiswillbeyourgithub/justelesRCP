@@ -1635,7 +1635,8 @@ Restart is not needed (Caddy reads the mounted dir live), but a
   you did not bake). Both are gitignored deploy.sh modes; either way, do NOT re-add
   `*.vec.json` to the rsync mirror. The Dockerfile bakes `src/build.py` / `src/bdpm.py` /
   `src/onnx_embed.py` / `src/embed-service.py` / `src/svc_http.py` / `src/rcp.html` (COPYd into `/app/src/`)
-  and pip-installs `onnxruntime` + `tokenizers` (pinned: onnxruntime 1.30.0; the
+  and pip-installs `onnxruntime` + `tokenizers` (pinned: onnxruntime 1.31.0, whose int8 CPU vectors were
+  bit-identical to 1.30.0's on 2026-10-22, so the bump re-embedded nothing; the
   PEP 723 headers of `embed-service.py`/`onnx_embed.py` pin the same version, and
   `embed-rcp.py`'s `onnxruntime-gpu` MUST match it, so pre-baked and served vectors
   come from the same runtime: bump all of them together)

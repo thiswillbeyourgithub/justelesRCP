@@ -1,7 +1,7 @@
 # /// script
 # requires-python = ">=3.11"
 # dependencies = [
-#   "onnxruntime==1.30.0",  # same as docker/embed.Dockerfile and embed-rcp.py's -gpu
+#   "onnxruntime==1.31.0",  # same as docker/embed.Dockerfile and embed-rcp.py's -gpu
 #   "tokenizers",
 #   "numpy",
 #   "lxml>=5.0",
