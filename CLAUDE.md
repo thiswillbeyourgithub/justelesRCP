@@ -1518,9 +1518,11 @@ Restart is not needed (Caddy reads the mounted dir live), but a
   which caps the aggregate) and its per-CIS min-interval floor; keep all three.
   The `order rate_limit before reverse_proxy` global option is required (the plugin
   directive is non-standard). `web.Dockerfile` pins both the Caddy release
-  (`CADDY_VERSION`, 2.11.6) and the plugin (`caddy-ratelimit@v0.1.0`), so a rebuild is
-  reproducible; bump them together on purpose. The refresh/embed images pin their
-  Python base (`python:3.12.15-slim`) and their direct pip deps the same way. **The `web` image is ONLY that binary**:
+  (`CADDY_VERSION`, 2.11.7) and the plugin (`caddy-ratelimit`, at a commit past v0.1.0
+  for `ipv6_prefix 64`: every zone counts an IPv6 visitor per /64), so a rebuild is
+  reproducible; bump them together on purpose. A web image predating that commit
+  refuses the Caddyfile, so the first deploy after it needs `--rebuild-web`. The refresh/embed images pin their
+  Python base (`python:3.14.9-slim`) and their direct pip deps the same way. **The `web` image is ONLY that binary**:
   the Caddyfile, `entrypoint.sh` and `../dist` are all bind mounts, so a Caddyfile
   change needs a `restart`/`up --force-recreate`, NOT a rebuild. Rebuild it (`up
   --build web`, or `deploy.sh --rebuild-web`) only after a `web.Dockerfile` change or

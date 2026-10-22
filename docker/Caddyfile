@@ -30,6 +30,9 @@
 	rate_limit {
 		zone {args[0]} {
 			key {http.request.client_ip}
+			# One bucket per IPv6 /64, the block a single subscriber is handed: per
+			# address, the limit is as many buckets as the visitor cares to pick.
+			ipv6_prefix 64
 			events {args[1]}
 			window {args[2]}
 		}

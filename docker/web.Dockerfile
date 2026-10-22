@@ -27,11 +27,14 @@
 # Both the Caddy release and the plugin are pinned, so a rebuild is reproducible and
 # never picks up a new upstream builder image on its own; bump them together on
 # purpose (the plugin tag list: https://proxy.golang.org/github.com/mholt/caddy-ratelimit/@v/list).
-ARG CADDY_VERSION=2.11.6
+ARG CADDY_VERSION=2.11.7
 
 FROM caddy:${CADDY_VERSION}-builder-alpine AS builder
+# A commit, not a tag: v0.1.0 is still the plugin's only tag, and `ipv6_prefix`
+# (which docker/Caddyfile uses) came after it, in 2026-05. Move to the next tag
+# once there is one.
 RUN xcaddy build \
-	--with github.com/mholt/caddy-ratelimit@v0.1.0
+	--with github.com/mholt/caddy-ratelimit@5625512f24f6f59d6f64fb3aafe5eecff0b286db
 
 FROM caddy:${CADDY_VERSION}-alpine
 # Replace the stock binary with the plugin-enabled one; same path, so the base
