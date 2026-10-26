@@ -4,7 +4,7 @@
 # the read-only Caddy web server so the public server never needs write access:
 # this one gets only narrow writable mounts (data/rcp, dist/rcp, the scrape
 # manifest) and nothing else. Build context is the repo root (see compose).
-FROM python:3.14.9-slim
+FROM python:3.15.0-slim
 
 # These mirror the PEP 723 dependency header of refresh-service.py, which is the
 # source of truth for WHICH packages; if you change the deps there, change them here
