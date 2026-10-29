@@ -49,10 +49,26 @@
   var last = window.scrollY;
   var holdUntilIdle = false; // a programmatic scroll is running: keep the chrome hidden
   var idleTimer = 0;
-  // The hold ends once the page has been still for `ms`.
+  // The hold ends when the scroll does ("scrollend"). A smooth scroll can pause for
+  // several hundred ms between scroll events on a busy device, so where the browser
+  // has scrollend the idle timer is only a backstop (a jump that needed no scroll fires
+  // no scrollend); without it (older Safari), a short silence has to do.
+  var HAS_SCROLLEND = "onscrollend" in window;
+  var IDLE_MS = HAS_SCROLLEND ? 1500 : 250;
+  function release() {
+    clearTimeout(idleTimer);
+    holdUntilIdle = false;
+    last = window.scrollY;
+  }
   function releaseAfter(ms) {
     clearTimeout(idleTimer);
-    idleTimer = setTimeout(function () { holdUntilIdle = false; last = window.scrollY; }, ms);
+    idleTimer = setTimeout(release, ms);
+  }
+  if (HAS_SCROLLEND) {
+    // Chrome also fires scrollend when a new smooth scroll replaces a running one, so
+    // only release if nothing moves for a moment after it (a scroll event in between
+    // re-arms the long timer in onScroll).
+    window.addEventListener("scrollend", function () { if (holdUntilIdle) releaseAfter(150); });
   }
 
   function hidden() { return body.classList.contains("chrome-hidden"); }
@@ -72,9 +88,15 @@
     return !(toc && toc.open) && !window.__TOUR_ACTIVE__ && (hidden() || stuck());
   }
 
+  var dockH = dock.offsetHeight;
   function onScroll() {
     var y = window.scrollY;
-    if (holdUntilIdle) { last = y; releaseAfter(150); return; }
+    if (holdUntilIdle) { last = y; releaseAfter(IDLE_MS); return; }
+    // When the dock grows or shrinks (a status line in the search box comes and goes),
+    // the browser shifts the page to keep the text in place. That shift is not the
+    // reader scrolling, so resync instead of reacting to it.
+    var h = dock.offsetHeight;
+    if (h !== dockH) { dockH = h; last = y; return; }
     if (Math.abs(y - last) < SLACK) return;
     setHidden(y > last && canHide());
     last = y;
@@ -95,7 +117,7 @@
       if (window.__TOUR_ACTIVE__ || !(hidden() || stuck())) return;
       setHidden(true);
       holdUntilIdle = true;
-      releaseAfter(400); // a smooth scroll can take a moment to start
+      releaseAfter(Math.max(IDLE_MS, 400)); // a smooth scroll can take a moment to start
     },
     // Viewport y where `el` (a panel of the dock) sits once the dock is stuck, in the
     // chrome's current state. The search box uses it to scroll itself there and to size
