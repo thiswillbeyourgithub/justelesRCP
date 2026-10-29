@@ -320,6 +320,72 @@ def test_merged_chunk_snippet_spans_its_paragraph_run():
     print("ok  test_merged_chunk_snippet_spans_its_paragraph_run")
 
 
+def test_flat_table_snippet_resolves_to_its_rows():
+    """A chunk cut from a table kept FLAT (not header-led) must resolve to its rows.
+
+    Regression for AMOXICILLINE VIATRIS: the side-effects table opens with a one-cell
+    title row, so _linearize_table refuses it and section_chunks embeds its flat text.
+    The snippet ("Langue noire chevelue Fréquence indéterminée ...") then spans several
+    <td>s, no single cell holds its first 40 chars, and locate() fell back to the
+    section heading, scrolling the reader to "4. DONNEES CLINIQUES" far from the
+    passage. locateAcross() (rcp-semsearch.js) matches against the single-space join
+    of the leaf cells instead; this re-implements it over the rendered cells.
+    """
+    # A long side-effects table (no closing periods, so its flat text is word-windowed
+    # and a later chunk starts mid-table, exactly like the real page). Cells are
+    # newline-separated as in real ANSM HTML.
+    socs = ["Affections gastro-intestinales", "Affections hépatobiliaires",
+            "Affections de la peau et du tissu sous-cutané", "Affections du rein"]
+    effects = ["Diarrhée", "Nausées", "Vomissements", "Candidose cutanéo-muqueuse",
+               "Colite associée aux antibiotiques", "Langue noire chevelue",
+               "Syndrome d'entérocolite induite par les médicaments", "Hépatite",
+               "Ictère cholestatique", "Éruption cutanée", "Urticaire", "Prurit",
+               "Néphrite interstitielle", "Cristallurie", "Angio-oedème", "Purpura"]
+    rows = [[socs[i % len(socs)], e, "Fréquence indéterminée"] for i, e in enumerate(effects)]
+    table = [["Effets indésirables"]] + rows
+    sample = (
+        '<div id="textDocument">\n'
+        '<p class="AmmAnnexeTitre1">4. DONNEES CLINIQUES</p>\n'
+        '<table>\n<tr><td colspan="3"><p>Effets indésirables</p></td></tr>\n'
+        + "".join("<tr>\n" + "".join(f"<td><p>{c}</p></td>\n" for c in r) + "</tr>\n" for r in rows)
+        + "</table></div>"
+    )
+    cells = [(r, build._norm_ws(c).lower()) for r, row in enumerate(table) for c in row]
+    starts, joined = [], ""
+    for _, t in cells:
+        if joined and t:
+            joined += " "
+        starts.append(len(joined))
+        joined += t
+
+    def resolve(snippet):  # locateAcross() over the rendered cells -> row indices
+        at = joined.find(snippet[:40])
+        if at == -1:
+            return None
+        end, run = at + len(snippet), []
+        for k, (row, _t) in enumerate(cells):
+            nxt = starts[k + 1] if k + 1 < len(cells) else len(joined) + 1
+            if nxt <= at:
+                continue
+            if starts[k] >= end:
+                break
+            if row not in run:
+                run.append(row)
+        return run
+
+    chunks = build.section_chunks(sample)
+    mid = [build._norm_ws(c[1]).lower() for c in chunks]
+    mid = [s for s in mid if not any(s[:40] in t for _, t in cells)]
+    # The bug's precondition: some chunk's head spans cells (no single cell holds it).
+    assert mid, chunks
+    for snippet in mid:
+        run = resolve(snippet)
+        assert run, (snippet, joined)
+        # The run opens on the row holding the snippet's first word, not on the heading.
+        assert any(snippet.split()[0] in t for r, t in cells if r == run[0]), (snippet, run)
+    print("ok  test_flat_table_snippet_resolves_to_its_rows")
+
+
 def test_dsfr_backtotop_chrome_stripped():
     # Fresh ANSM scrapes carry DSFR back-to-top links + tooltip spans whose visible
     # text is "Redirection vers le haut de page". They must not pollute the chunks.
@@ -2174,6 +2240,7 @@ if __name__ == "__main__":
     test_eu_toc_keeps_ema_ids_and_nests_subheads()
     test_merge_small_chunks()
     test_merged_chunk_snippet_spans_its_paragraph_run()
+    test_flat_table_snippet_resolves_to_its_rows()
     test_dsfr_backtotop_chrome_stripped()
     test_filler_paragraphs_dropped()
     test_empty_and_untitled()

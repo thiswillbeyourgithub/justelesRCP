@@ -741,8 +741,39 @@
         }
         return run;
       }
+      const across = locateAcross(blocks, needle, hay.length);
+      if (across) return across;
     }
     return [head]; // fallback: scroll to the section title
+  }
+
+  // A chunk built from a table kept as flat text (not header-led, e.g. an ANSM
+  // side-effects table) reads "Langue noire chevelue Fréquence indéterminée ...":
+  // its head spans several cells, so no single block holds the needle. Match it
+  // against the single-space join of the LEAF blocks (a <td> wrapping a <p> counts
+  // once), then resolve the covered cells to their table rows.
+  function locateAcross(blocks, needle, span) {
+    const leaves = blocks.filter((b) => !b.querySelector("p, li, td, th, dd, dt, caption"));
+    const starts = [];
+    let joined = "";
+    for (const b of leaves) {
+      const t = norm(b.textContent);
+      if (joined && t) joined += " ";
+      starts.push(joined.length);
+      joined += t;
+    }
+    const at = joined.indexOf(needle);
+    if (at === -1) return null;
+    const end = at + span;
+    const run = [];
+    for (let i = 0; i < leaves.length && run.length < MAX_RUN_BLOCKS; i++) {
+      const next = i + 1 < leaves.length ? starts[i + 1] : joined.length + 1;
+      if (next <= at) continue; // ends before the snippet starts
+      if (starts[i] >= end) break; // starts after it ends
+      const el = leaves[i].closest("tr") || leaves[i];
+      if (!run.includes(el)) run.push(el);
+    }
+    return run.length ? run : null;
   }
 
   // The leaf-ish block elements belonging to a section: the heading's following
