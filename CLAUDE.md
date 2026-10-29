@@ -142,6 +142,7 @@ Key facts that aren't obvious from a single file:
   architecture). Keep the `sub`/`ret`/`aip` contract in sync across the search-index
   enrichment (build.py), `search.js`, and `.result-sub`/`.result-name`/
   `.result-retired`/`.result-aip` in `style.css`.
+  **Matching and grouping (client-side only, no index change).** Every query word must appear in the name or the `sub` string, in any order ("olanzapine injectable" finds ZYPADHERA). Presentations whose names differ ONLY by standalone numbers (`dosageKey`; a number glued to letters like "B12" is part of the name) fold into ONE row titled by `describeGroup` ("ZYPADHERA 210/300/405 mg, ...", or "10 mg/5 ml | 20 mg/10 ml" when several numbers vary), with a "N présentations" toggle (`.results-group`, `.result-count`) that unfolds its rows (`.results-variants`); AIP rows never group. A group ranks at its best member, so `search()` always scans the whole index (~40 ms worst case on one-letter queries). The dropdown shows 15 GROUPS and an "Afficher plus de résultats…" row (`.results-more`) adds 15 per press; `PAGE_MAX` also counts groups, while the page title counts drugs. Arrow keys walk only the visible links (`visibleLinks`). Added by Claude Code.
   **Two views, one matcher: the dropdown and the shareable results page.** The
   as-you-type dropdown (`#results`, top 15) is the quick-pick list; the RESULTS PAGE
   (`#searchpage` in `src/index.html`, up to `PAGE_MAX` = 300 rows + an exact match
