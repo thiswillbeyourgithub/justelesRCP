@@ -331,26 +331,22 @@ a:not([href]):hover { text-decoration: none; }
 /* --- The dock: Sommaire + semantic search, one sticky block (src/dock.js) ---
    The ONLY sticky element of the reading column. Its two panels (.toc from build.py,
    .semsearch appended by rcp-semsearch.js) never stick on their own, so their offsets
-   cannot drift apart. dock.js measures the real heights into two variables instead of
-   hardcoding rems:
-     --bar-h      height of the top bar, where the dock sticks;
-     --dock-lift  distance from the dock's top to the search box (= the Sommaire).
-   Scrolling down sets body.chrome-hidden: the top bar AND the dock slide up by one
-   transform each, so only the search box stays on screen, at the very top; scrolling
-   up slides them back. Transforms never move the layout, so the page cannot jump. */
+   cannot drift apart. dock.js writes three variables instead of hardcoded rems:
+     --bar-h       height of the top bar;
+     --chrome-off  how far the chrome has scrolled away, from 0 (all shown) up to the
+                   top bar plus the Sommaire (only the search box left on screen);
+     --dock-peek   what stays on screen once it is all away (the search box).
+   --chrome-off follows the scroll pixel for pixel (down: grows, up: shrinks), so the
+   top bar and the Sommaire move exactly like the page text, no animation to drift.
+   The dock's sticky top uses it rather than a transform: while the dock is still in
+   the page flow the value changes nothing, and once stuck it rides up with the bar. */
+.topbar { transform: translateY(calc(-1 * min(var(--chrome-off, 0px), var(--bar-h, 0px)))); }
 .rcp-dock {
-  position: sticky; top: var(--bar-h, 3.2rem); z-index: 5;
+  position: sticky; top: calc(var(--bar-h, 3.2rem) - var(--chrome-off, 0px)); z-index: 5;
   display: flex; flex-direction: column; gap: .5rem;
   margin: 1rem 0 1.5rem; padding: .4rem 0; background: var(--bg);
 }
 .rcp-dock:empty { display: none; }
-.topbar, .rcp-dock { transition: transform .25s ease; }
-.chrome-hidden .topbar { transform: translateY(-100%); }
-.chrome-hidden .rcp-dock {
-  transform: translateY(calc(-1 * (var(--bar-h, 3.2rem) + var(--dock-lift, 0px))));
-}
-.chrome-hidden .rcp-dock > .toc { visibility: hidden; transition: visibility 0s .25s; }
-@media (prefers-reduced-motion: reduce) { .topbar, .rcp-dock { transition: none; } }
 
 /* The two panels share one look: tinted purple (the accent) so a glance tells their
    content (ToC, search results) apart from the RCP text itself, and the same summary

@@ -238,17 +238,22 @@ Key facts that aren't obvious from a single file:
   **The dock (`.rcp-dock`, `src/dock.js`) is the ONE sticky block** of a drug page:
   `src/rcp.html` wraps `{{TOC}}` in `<div class="rcp-dock">`, and `rcp-semsearch.js`
   appends the search box into it as its last panel, so the two never compute offsets
-  against each other. `dock.js` alone owns how the chrome moves: it measures the top bar
-  (`--bar-h`), the height that slides away above the search box (`--dock-lift`, the
-  dock's top padding excluded so a gap stays) and what stays (`--dock-peek`, used by the
-  headings' `scroll-margin-top`) into CSS variables; scrolling DOWN (once the dock is
-  stuck, the Sommaire closed, no tour) adds `body.chrome-hidden`, which slides the top bar
-  and the Sommaire up with transforms (`.rcp-dock` section of `style.css`), scrolling UP
-  removes it, and every change fires a `jlrcp-dock` window event (the search box re-fits
-  its results list on it). `window.jlrcpDock` is its API: `holdHidden()` (call it BEFORE
-  scrolling the page yourself: a jump to a passage or a Sommaire link is not the reader
-  scrolling up, so the chrome stays hidden until the page is still) and `restTop(el)`
-  (where a dock panel rests in the current state; `scrollBoxToTop`/`fitResults` use it).
+  against each other. `dock.js` alone owns how the chrome moves, through ONE number,
+  `--chrome-off`: how many pixels of the chrome have scrolled away. Every scroll adds its
+  delta (down grows it, up shrinks it), clamped to `[0, top bar + Sommaire]`, so the top
+  bar (`transform`) and the dock (its sticky `top: calc(var(--bar-h) - var(--chrome-off))`)
+  move pixel for pixel with the page, like text, until only the search box is left. No
+  animation and no shown/hidden state: an earlier version toggled a class with a CSS
+  transition plus timers, and it drifted, snapped and popped back. It is pinned at 0
+  while the Sommaire is open or the tour runs, and a scroll caused by the dock changing
+  height (the browser keeping the text still) is ignored. It also publishes `--bar-h` and
+  `--dock-peek` (what stays on screen, the headings' `scroll-margin-top`) and fires a
+  `jlrcp-dock` window event on every change (the search box re-fits its results list).
+  `window.jlrcpDock` is its API: `holdHidden()` (call it BEFORE scrolling the page
+  yourself: a jump to a passage or a Sommaire link is not the reader scrolling up, so the
+  chrome stays away until the scroll ends: `scrollend` then 150 ms of stillness, since
+  Chrome also fires `scrollend` when one smooth scroll replaces another) and `restTop(el)`
+  (where a dock panel rests at the current offset; `scrollBoxToTop`/`fitResults` use it).
   With the box collapsed after a search, its prev/next navigator sits centered under the
   summary. Never give `.toc` or `.semsearch` their own `position: sticky` again: that was
   the source of the overlap bugs this replaced. Added by Claude Code. CRITICAL id
