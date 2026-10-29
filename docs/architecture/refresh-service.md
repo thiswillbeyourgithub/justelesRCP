@@ -3,7 +3,7 @@
 Moved verbatim out of `CLAUDE.md` (with Claude Code) to keep that file short. Read this before touching this area, and keep it up to date when you change it.
 
 - **The on-demand refresh service is one of two runtime components** (the other is
-  the embed service, further below) (`refresh-service.py`,
+  the embed service, see [semantic-search.md](semantic-search.md)) (`refresh-service.py`,
   a `uv` PEP 723 script; opt-in, off by default). The site is otherwise fully
   static, but each RCP page has a "Rafraîchir maintenant" button and a >1-year
   auto-refresh (both in `src/app-init.js`) that `POST /api/refresh/<cis>`. Caddy
@@ -17,7 +17,7 @@ Moved verbatim out of `CLAUDE.md` (with Claude Code) to keep that file short. Re
   It also calls `build_xref_index(names, page_cis)` once at startup and passes the
   result into `build._init_worker`, so a refreshed page keeps the SAME cross-drug
   backlinks a full build makes (that index needs the COMPO/GENER/frequency files,
-  mounted read-only, see the hardening notes; absent them it degrades to no
+  mounted read-only, see the hardening notes in [deployment.md](deployment.md); absent them it degrades to no
   backlinks). Its `page_cis` comes from `build.page_cis_from_dist()` (a glob of the
   mounted `dist/rcp` pages), not the CSV (which this container does not mount), so
   its links target only pages that exist, same as the full build.
@@ -45,7 +45,7 @@ Moved verbatim out of `CLAUDE.md` (with Claude Code) to keep that file short. Re
   by its own thread, so `_wait_rate(since, rate)` needs no lock. `_process` is
   throttle-free (each worker waits on its lane's rate before calling `_handle`, which
   wraps `_process` with the shared error/pending bookkeeping). Endpoints: `GET /api/health`, `GET /api/plain/<rcp|eu>/<file>.br`
-  (decompressed br-only page for a client without brotli, see the precompression bullet), `GET /api/status/<cis>`
+  (decompressed br-only page for a client without brotli, see the precompression bullet in [serving-and-seo.md](serving-and-seo.md)), `GET /api/status/<cis>`
   (`{asof, pending, archived}`), `GET /api/stats` (crawl counters + `crawl` gauge), `POST
   /api/refresh/<cis>[?src=user|auto]` (returns `{status: fresh|queued|busy, asof, archived}`; a CIS with no `/rcp/` or `/eu/` page gets `{status: unknown}` + HTTP 404 on both this and `/api/status/<cis>`, checked by `_known` before any budget accounting, so the API cannot be driven to fetch arbitrary CIS). It is
   same-origin, so the strict `connect-src 'self'` CSP covers the button's fetches.
@@ -155,7 +155,7 @@ Moved verbatim out of `CLAUDE.md` (with Claude Code) to keep that file short. Re
   crawl order (`_build_eu_order()`) is the frequency-ordered set of centrally-
   authorized CIS whose **authorization GROUP** has an `ema_pdf` link harvested in
   the ANSM manifest OR a `data/eu` overlay: because every strength/pack of one
-  product shares a single EMA PDF (see the authorization-group bullet below), a
+  product shares a single EMA PDF (see the authorization-group bullet in [eu-pages.md](eu-pages.md)), a
   scraped SIBLING seeds the whole group, so all its presentations crawl and each
   grows its OWN overlay on first fetch (self-healing). The on-demand `_eu_url(cis)`
   delegates to `build.resolve_eu`, so it resolves this CIS's link, else a sibling's

@@ -264,7 +264,7 @@ Moved verbatim out of `CLAUDE.md` (with Claude Code) to keep that file short. Re
   auto-expanding `<details>` (Chrome does), and JS cannot read the directive back
   (`location.hash` hides it). It is injected right AFTER the ToC (so
   the reading column reads pills -> Sommaire -> search) as the last panel of the sticky
-  dock (see the ToC bullet: `src/dock.js` owns every offset), so a reader can search a
+  dock (see the ToC bullet in [drug-page.md](drug-page.md): `src/dock.js` owns every offset), so a reader can search a
   long RCP without scrolling back up, and its results list scrolls internally so the
   stuck panel never outgrows the screen. **Opening it is tuned for a
   phone**, where the box is typically tapped half-way down the screen and the panel would

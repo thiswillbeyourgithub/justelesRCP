@@ -28,17 +28,17 @@ diverge where the data genuinely forces it (e.g. the EMA source button targets
 the direct PDF, and a bare `/eu/` stub has no freshness card). If a requested
 change truly should hit only one type, the request will say so explicitly.
 
-**Ending a message about deploying:** whenever a reply tells the user that a change needs deploying (or how), its LAST line must be the exact command to run, with the right `deploy.sh` arguments, e.g. "Deploy with `git push && ./deploy.sh`". Pick the mode from what changed: plain `./deploy.sh` (full build, needed whenever `src/rcp.html`, `build.py` or a script tag on drug pages changed), `--quick` (only static assets, home/a-propos/status, JS/CSS not affecting the drug-page shell; it refuses otherwise), `--rebuild` (also re-crawl the whole catalog after a render change), `--rebuild-web` (after a `docker/web.Dockerfile` change), `--re-embed` / `--push-vectors` (after a chunking or model change, see the embed bullets). Say so explicitly even when it seems obvious. Added by Claude Code.
+**Ending a message about deploying:** whenever a reply tells the user that a change needs deploying (or how), its LAST line must be the exact command to run, with the right `deploy.sh` arguments, e.g. "Deploy with `git push && ./deploy.sh`". Pick the mode from what changed: plain `./deploy.sh` (full build, needed whenever `src/rcp.html`, `build.py` or a script tag on drug pages changed), `--quick` (only static assets, home/a-propos/status, JS/CSS not affecting the drug-page shell; it refuses otherwise), `--rebuild` (also re-crawl the whole catalog after a render change), `--rebuild-web` (after a `docker/web.Dockerfile` change), `--re-embed` / `--push-vectors` (after a chunking or model change, see the embed bullets in [docs/architecture/semantic-search.md](docs/architecture/semantic-search.md)). Say so explicitly even when it seems obvious. Added by Claude Code.
 
 **Versioning:** the project version is `__version__` in `build.py` (single
 source of truth, printed at build start). There are no git tags; bump it
 patch/minor per change. A bump MUST come with that version's user-facing release
 notes in `docs/changelog/<version>/changelog.md` (same commit): the build refuses
-to run without them, see the release-notes bullet below. The version is NOT baked into page HTML: `build.py`
+to run without them, see the release-notes bullet in [docs/architecture/release-notes-and-status.md](docs/architecture/release-notes-and-status.md). The version is NOT baked into page HTML: `build.py`
 writes `dist/app-version.js` (`window.__APP_VERSION__`) and `src/app-init.js`
 injects it into every `[data-app-version]` slot (RCP sidebar, About page, home
 and browse footers). This keeps page content independent of the version so a
-version-only bump does not invalidate the incremental-build cache (below).
+version-only bump does not invalidate the incremental-build cache (see [docs/architecture/build-and-rendering.md](docs/architecture/build-and-rendering.md)).
 
 ## Architecture (the important part)
 
@@ -242,7 +242,7 @@ docker compose -f docker/docker-compose.yml up --build # after changing Caddyfil
 
 To rebuild after a data refresh: re-run `scripts/download-data.sh` then `uv run src/build.py`;
 the build is incremental (only changed drugs are re-rendered; see the
-`.build-manifest.json` note above), so a rebuild on unchanged data is fast.
+`.build-manifest.json` note in [docs/architecture/build-and-rendering.md](docs/architecture/build-and-rendering.md)), so a rebuild on unchanged data is fast.
 Restart is not needed (Caddy reads the mounted dir live), but a
 `docker compose -f docker/docker-compose.yml restart web` is harmless.
 

@@ -84,7 +84,7 @@ Moved verbatim out of `CLAUDE.md` (with Claude Code) to keep that file short. Re
   from each service's existing `stats()` (single source of truth, no counter
   duplication) but OMIT the host-internal figures (raw queue internals, RSS/peak/model
   RAM) that the DETAILED `/api/stats` + `/api/sem/stats` keep for the operator and that
-  Caddy blocks at the edge (see the hardening note). The summary routes are NOT blocked:
+  Caddy blocks at the edge (see the hardening note in [deployment.md](deployment.md)). The summary routes are NOT blocked:
   they fall through to the `/api/*` + `/api/sem/*` proxies and are rate-limited like any
   API call; the query POST is same-origin so `connect-src 'self'` covers the page's
   fetches. It is CSP-safe (same-origin script, no inline handlers/eval; bar widths set

@@ -22,7 +22,7 @@ Moved verbatim out of `CLAUDE.md` (with Claude Code) to keep that file short. Re
   The **public** `/status` page instead consumes the curated `/api/summary` +
   `/api/sem/summary` endpoints (progress %, counts, ETA, uptime; NO host internals),
   which fall through to the wildcard proxies and are rate-limited like any other API
-  call (see the /status bullet in the architecture section). These edge limits COMPLEMENT
+  call (see the /status bullet in [release-notes-and-status.md](release-notes-and-status.md)). These edge limits COMPLEMENT
   the refresh service's global hourly scrape ceiling (`REFRESH_DEMAND_HOURLY_MAX`,
   which caps the aggregate) and its per-CIS min-interval floor; keep all three.
   The `order rate_limit before reverse_proxy` global option is required (the plugin

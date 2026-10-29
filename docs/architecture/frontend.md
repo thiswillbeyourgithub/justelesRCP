@@ -65,7 +65,7 @@ Moved verbatim out of `CLAUDE.md` (with Claude Code) to keep that file short. Re
   at rest instead of chasing the target across a moving page.
   Triggers: auto on first landing visit (`localStorage['jlrcp_tour_seen']`, but NOT
   when the URL carries a `q`/`query` search term: a reader following a shared results
-  link must not get a modal over it, see the results-page bullet), `?tour=1`
+  link must not get a modal over it, see the results-page bullet in [search.md](search.md)), `?tour=1`
   on the landing page (always), or `?tour=rcp` directly on the quetiapine page. It
   drives the closure-encapsulated semantic search purely via the DOM (set `.open`, set
   `.semsearch-input.value` + dispatch `input`, then click the `.semsearch-go` button to

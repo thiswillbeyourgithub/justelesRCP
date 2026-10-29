@@ -40,7 +40,7 @@ Moved verbatim out of `CLAUDE.md` (with Claude Code) to keep that file short. Re
   everything. Keep the contract in sync across `build_xref_index`/`_linkify`/
   `_xref_html`, the `{{XREF}}` slot in `src/rcp.html`, and `.drug-xref` /
   `.drug-xref-list` in `style.css`. The refresh service builds the same index at
-  startup so a refreshed page keeps its backlinks (see the runtime bullet).
+  startup so a refreshed page keeps its backlinks (see the runtime bullet in [refresh-service.md](refresh-service.md)).
 - **The ANSM HTML keeps its `Amm*` CSS class hooks** (e.g. `AmmAnnexeTitre1`,
   `AmmDenomination`). `clean_rcp()` strips decoration (BackToTop images,
   inline `font-*` styles, scripts) but preserves those classes; `style.css`
@@ -109,11 +109,11 @@ Moved verbatim out of `CLAUDE.md` (with Claude Code) to keep that file short. Re
   *zero-byte* overlay means "scraped, no RCP": the drug was delisted from BDPM. If
   the frozen 2022 baseline cell still has the RCP, `iter_rcp_raw` KEEPS serving that
   text as an ARCHIVED page rather than dropping it to a 404, see the archived bullet
-  below; only when the baseline is empty too is the page truly skipped).
+  in [refresh-service.md](refresh-service.md); only when the baseline is empty too is the page truly skipped).
   On a page with no RCP body (an EMA-centrally-authorized drug), `extract_ema_pdf`
   also harvests the real EMA `product-information` `_fr.pdf` href the ANSM page
   links to and stores it in the manifest as `ema_pdf`; `build_stubs` uses it to
-  point the `/eu/` stub straight at the document (see the EU-stub bullet). Nothing
+  point the `/eu/` stub straight at the document (see the EU-stub bullet in [eu-pages.md](eu-pages.md)). Nothing
   is fetched from the EMA: the href is read off the already-fetched ANSM page.
   Ordering is frequency-first: `--frequency` (default `data/drugs_frequency.jsonl`)
   is a JSONL of `{term, score}` (drug/substance name -> priority) matched to each
