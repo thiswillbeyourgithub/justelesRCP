@@ -59,7 +59,7 @@ container mirrors the repo (same `parent.parent` anchoring; data/dist mounted at
 under `scripts/` (invoke them as `./scripts/download-*.sh`, they anchor the repo root via
 `cd "$(dirname "$0")/.."`); the two gitignored helpers (`reset-scrape-data.sh` and
 `deploy.sh`) stay at the repo root. Note: elsewhere in
-this file the scripts are still referred to by their bare name (`build.py`, etc.);
+this file and in docs/architecture/ the scripts are still referred to by their bare name (`build.py`, etc.);
 they all live under `src/`. When editing, keep this in sync with `docker/*.Dockerfile`
 (the `COPY src/*.py ./src/` lines + `CMD ["python", "src/<svc>.py", ...]`) and
 `deploy.sh`'s `BAKED_SOURCES`.
@@ -99,7 +99,7 @@ dist/browse/<letter>.html    alphabetical drug list per letter ('#' -> num.html)
 dist/sitemap.xml robots.txt  SEO: sitemap of every crawlable URL (home, /a-propos,
                              browse, every /rcp/ + full /eu/) + robots.txt pointing at
                              it. Every page also bakes a canonical link + Open Graph +
-                             JSON-LD (see the SEO bullet). Origin = SITE_URL constant
+                             JSON-LD (see docs/architecture/serving-and-seo.md). Origin = SITE_URL constant
 dist/index.html a-propos.html style.css search.js
 dist/status.html status.js  noindex live ops dashboard (crawl/embed/query stats via
                             the curated /api/summary + /api/sem/summary endpoints)
@@ -115,8 +115,8 @@ dist/eu/<cis>-<slug>.vec.json    per-drug semantic search, written DIRECTLY by
 dist/.build-manifest.json    incremental-build cache (per-CIS input hashes)
 + a .br precompressed sibling for every other text file (Caddy serves it; no .gz);
   dist/rcp + dist/eu pages and .vec.json are stored as the .br ONLY (no plain copy)
-dist/eu/img/<hash>.png|jpg|gif   /eu/ page figures, one file per distinct image (see the
-dist/rcp/img/<hash>.png|jpg|gif  EMA conversion bullet; /rcp/ ones come from scrape-rcp's
+dist/eu/img/<hash>.png|jpg|gif   /eu/ page figures, one file per distinct image (see
+dist/rcp/img/<hash>.png|jpg|gif  docs/architecture/eu-pages.md; /rcp/ ones come from scrape-rcp's
                              inline_images), not precompressed
 ```
 
@@ -154,7 +154,7 @@ uv run src/scrape-rcp.py --limit 60   # OPTIONAL manual/one-time bulk scrape int
                                   # RCP_SCRAPE_RATE_SECONDS (base gap between fetches);
                                   # logs a progress bar + ETA and the trigger (user/timer)
                                   # --missing-images re-scrapes only the overlays whose figures
-                                  #  are not inlined yet (see the EMA conversion bullet)
+                                  #  are not inlined yet (see docs/architecture/eu-pages.md)
 uv run src/scrape-ema.py --limit 60   # OPTIONAL bulk scrape of EMA product-information PDFs into
                                   # data/eu/ overlays (converted to HTML by ema_pdf.py). Reads the
                                   # ema_pdf links scrape-rcp.py harvested; own manifest
@@ -225,7 +225,7 @@ uv run src/embed-service.py   # optional: warm SERVER-SIDE embedder on :8461 (be
                           #  (256) + EMBED_QUERY_CACHE_TTL_SECONDS (60, bounds query-data retention; 0=off),
                           #  EMBED_MODEL_DIR, EMBED_OUT_DIM (MRL width, 1024; change re-embeds all),
                           #  EMBED_BATCH_SIZE (8, bounds a page batch's peak RAM) + EMBED_CPU_ARENA
-                          #  (0: return each batch's memory to the system, see the memory note),
+                          #  (0: return each batch's memory to the system, see docs/architecture/deployment.md),
                           #  EMBED_VEC_QUANT (passage quant, int8|binary; change re-embeds all),
                           #  REFRESH_TRIGGER_URL (baseline auto-crawl), EMBED_LOG_LEVEL;
                           # GET /api/sem/stats (INTERNAL, blocked at the edge) + GET
