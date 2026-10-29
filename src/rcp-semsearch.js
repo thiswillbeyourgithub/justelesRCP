@@ -170,14 +170,36 @@
   const prevBtn = document.createElement("button");
   prevBtn.type = "button";
   prevBtn.className = "semsearch-prev";
-  prevBtn.textContent = "‹ Précédent";
+  // The words sit in their own span so the collapsed-box variant (below) can show
+  // the bare arrows.
+  prevBtn.append("‹", navLabel(" Précédent"));
   const counter = document.createElement("span");
   counter.className = "semsearch-counter";
   const nextBtn = document.createElement("button");
   nextBtn.type = "button";
   nextBtn.className = "semsearch-next";
-  nextBtn.textContent = "Suivant ›";
+  nextBtn.append(navLabel("Suivant "), "›");
+  prevBtn.setAttribute("aria-label", "Passage précédent");
+  nextBtn.setAttribute("aria-label", "Passage suivant");
   nav.append(prevBtn, counter, nextBtn);
+  function navLabel(text) {
+    const s = document.createElement("span");
+    s.className = "semsearch-navlabel";
+    s.textContent = text;
+    return s;
+  }
+  // ONE navigator, moved between the panel (box open) and the <summary> (box
+  // collapsed): everything else in a <details> is hidden while collapsed, and after a
+  // result click collapses the box the reader still wants to step through the hits.
+  // Its clicks never toggle the box (it may sit inside the summary).
+  nav.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+  });
+  function placeNav() {
+    if (box.open) panel.insertBefore(nav, results);
+    else summary.append(nav);
+  }
   const results = document.createElement("ol");
   results.className = "semsearch-results";
   panel.append(inputRow, status, nav, results);
@@ -1008,6 +1030,7 @@
 
   let warmed = false;
   box.addEventListener("toggle", () => {
+    placeNav();
     // A fresh open is a new search session for the "used" event (see rank()).
     if (!box.open) { usageTracked = false; return; }
     // Warm the readiness path the first time the reader opens the box (never on load).

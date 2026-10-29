@@ -509,6 +509,15 @@ a:not([href]):hover { text-decoration: none; }
 /* Prev/next navigator across the ranked passages. */
 .semsearch-nav { display: flex; align-items: center; gap: .5rem; margin: .6rem .2rem .2rem; }
 .semsearch-nav[hidden] { display: none; }
+/* Box collapsed after a search: the navigator moves into the summary line
+   (rcp-semsearch.js placeNav), as compact bare arrows on its right. */
+.semsearch:not([open]) .semsearch-nav {
+  display: inline-flex; float: right; margin: -.2rem 0 0; gap: .3rem; font-weight: 400;
+}
+.semsearch:not([open]) .semsearch-nav[hidden] { display: none; }
+.semsearch:not([open]) .semsearch-navlabel { display: none; }
+.semsearch:not([open]) .semsearch-prev,
+.semsearch:not([open]) .semsearch-next { padding: .15rem .65rem; font-size: 1.1rem; line-height: 1.2; }
 .semsearch-prev, .semsearch-next {
   font: inherit; cursor: pointer; padding: .3rem .7rem;
   border: 1px solid var(--line); border-radius: .4rem; background: var(--bg); color: var(--fg);
