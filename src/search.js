@@ -118,13 +118,45 @@
     return li;
   }
 
+  // The dropdown grows by DROPDOWN_MAX rows per "Afficher plus" press, for a drug sold
+  // in many strengths/forms whose exact name the reader does not remember. A new query
+  // starts again from DROPDOWN_MAX.
+  let shown = DROPDOWN_MAX;
+
   function render() {
-    const { hits } = search(q.value, DROPDOWN_MAX, false);
-    active = -1;
+    const { hits, total } = search(q.value, shown, false);
     results.innerHTML = "";
     for (const h of hits) results.appendChild(resultItem(h));
+    // `total` stops counting early (see search()), but it does exceed `shown`
+    // whenever at least one more match exists, which is all this button needs.
+    if (total > hits.length) {
+      const li = document.createElement("li");
+      const more = document.createElement("a");
+      more.href = "#";
+      more.className = "results-more";
+      more.textContent = "Afficher plus de résultats…";
+      li.appendChild(more);
+      results.appendChild(li);
+    }
     results.classList.toggle("open", hits.length > 0);
   }
+
+  function showMore() {
+    const first = shown; // index of the first new row, where arrow navigation resumes
+    shown += DROPDOWN_MAX;
+    render();
+    const items = [...results.querySelectorAll("a")];
+    if (active >= 0) {
+      active = Math.min(first, items.length - 1);
+      items[active].classList.add("active");
+    }
+  }
+
+  results.addEventListener("click", (e) => {
+    if (!e.target.closest(".results-more")) return;
+    e.preventDefault();
+    showMore();
+  });
 
   function renderPage() {
     pageList.innerHTML = "";
@@ -194,7 +226,11 @@
     showPage(term, false);
   });
 
-  q.addEventListener("input", render);
+  q.addEventListener("input", () => {
+    shown = DROPDOWN_MAX;
+    active = -1;
+    render();
+  });
   q.addEventListener("keydown", (e) => {
     const items = [...results.querySelectorAll("a")];
     if (e.key === "ArrowDown") {

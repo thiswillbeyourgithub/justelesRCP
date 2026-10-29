@@ -109,6 +109,8 @@ a:not([href]):hover { text-decoration: none; }
 .results li + li { border-top: 1px solid var(--line); }
 .results a { display: block; padding: .65rem 1rem; color: var(--fg); }
 .results a:hover, .results a.active { background: var(--card); text-decoration: none; }
+/* "Afficher plus de résultats…" row at the bottom of the dropdown (search.js). */
+.results a.results-more { color: var(--accent); font-weight: 600; text-align: center; }
 .result-name { display: block; }
 /* Active substance (DCI) under the brand name: muted, smaller; text-transform none so
    the BDPM uppercase substance is shown as-is. */
