@@ -331,6 +331,13 @@ a:not([href]):hover { text-decoration: none; }
   margin: 1rem 0 0; border: 1px solid var(--line); border-radius: .6rem;
   background: var(--card); padding: .2rem .7rem .6rem;
 }
+/* Scrolling down slides the stuck Sommaire away (src/toc.js toggles body.toc-hidden)
+   behind the top bar (z-index 10), and the search box rides up into its slot; scrolling
+   up brings both back. Saves ~4rem of a phone screen while reading. */
+.toc, .semsearch { transition: transform .2s ease, opacity .2s ease, top .2s ease; }
+.toc-hidden .toc { transform: translateY(-100%); opacity: 0; pointer-events: none; }
+.toc-hidden .semsearch { top: 3.2rem; }
+@media (prefers-reduced-motion: reduce) { .toc, .semsearch { transition: none; } }
 .toc > summary {
   /* Native disclosure triangle (▸/▾) as the collapse affordance, for consistency
      with the search box's summary; ☰ stays as the topic glyph, mirroring the
