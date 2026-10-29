@@ -671,6 +671,7 @@
         cosine: s.cosine,
         lexical: s.lexical,
         els: els,
+        linear: !!els.linear,
       });
     }
     renderHits();
@@ -741,10 +742,49 @@
         }
         return run;
       }
-      const across = locateAcross(blocks, needle, hay.length);
+      const across = locateAcross(blocks, needle, hay.length) || locateRow(blocks, hay);
       if (across) return across;
     }
     return [head]; // fallback: scroll to the section title
+  }
+
+  // A header-led table is embedded one row per chunk, LINEARISED by build.py's
+  // _linearize_table ("Très fréquent: Troubles du métabolisme ...; Fréquent: ..."),
+  // a string that never appears on the page. Rebuild each row of the section's tables
+  // the same way (first <tr> = header, its direct cells only, empty cells skipped,
+  // "header: value" pairs joined by "; ") and match the snippet against that. The run
+  // is flagged `linear` so displayText keeps the snippet, whose headers say which
+  // column each value came from.
+  function locateRow(blocks, hay) {
+    const tables = [];
+    for (const b of blocks) {
+      const t = b.closest("table");
+      if (t && !tables.includes(t)) tables.push(t);
+    }
+    const cells = (tr) => Array.from(tr.children)
+      .filter((c) => c.tagName === "TD" || c.tagName === "TH")
+      .map((c) => collapseWs(c.textContent));
+    for (const table of tables) {
+      const rows = table.querySelectorAll("tr");
+      if (rows.length < 2) continue;
+      const header = cells(rows[0]);
+      if (header.length < 2 || !header.some(Boolean)) continue;
+      for (let r = 1; r < rows.length; r++) {
+        const pairs = [];
+        cells(rows[r]).forEach((v, i) => {
+          if (!v) return;
+          const h = header[i] || "";
+          pairs.push(h ? h + ": " + v : v);
+        });
+        const line = norm(pairs.join("; "));
+        if (line && (line.indexOf(hay) === 0 || hay.indexOf(line) === 0)) {
+          const run = [rows[r]];
+          run.linear = true;
+          return run;
+        }
+      }
+    }
+    return null;
   }
 
   // A chunk built from a table kept as flat text (not header-led, e.g. an ANSM
@@ -830,12 +870,13 @@
   // of the run (chunks are small, so we show them whole rather than a truncated
   // excerpt). Showing only the first block would hide most of what was embedded, which
   // is exactly the bug locate() now fixes. When locate() fell back to the section
-  // heading (a linearised table-row / non-contiguous chunk has no paragraph run, so the
-  // single element IS the heading and carries the sec-N id), there is nothing sensible
-  // to expand, so use the stored snippet.
+  // heading (a non-contiguous chunk has no paragraph run, so the single element IS the
+  // heading and carries the sec-N id), there is nothing sensible to expand, so use the
+  // stored snippet. A linearised table row (locateRow) keeps the snippet too: it names
+  // each value's column header, which the bare row text would drop.
   function displayText(hit) {
     const first = hit.els[0];
-    if (first && first.id !== hit.sec) {
+    if (first && first.id !== hit.sec && !hit.linear) {
       const full = collapseWs(hit.els.map((el) => el.textContent).join(" "));
       if (full) return full;
     }

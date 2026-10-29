@@ -386,6 +386,47 @@ def test_flat_table_snippet_resolves_to_its_rows():
     print("ok  test_flat_table_snippet_resolves_to_its_rows")
 
 
+def test_linearised_row_snippet_resolves_to_its_row():
+    """A header-led table row's chunk must resolve to that <tr>, not to the heading.
+
+    Regression for ZYPADHERA: _linearize_table embeds each row as "header: value; ..."
+    ("Très fréquent: Troubles du métabolisme et de la nutrition; ..."), a string that
+    is nowhere on the page, so locate() fell back to the section heading. locateRow()
+    (rcp-semsearch.js) rebuilds each rendered row the same way and matches the snippet
+    against it; this re-implements that rebuild over the rendered cells and checks
+    every row chunk lands on its own row.
+    """
+    header = ["Très fréquent", "Fréquent", "Peu fréquent"]
+    rows = [
+        ["Troubles du métabolisme et de la nutrition", "Prise de poids", ""],
+        ["Affections du système nerveux", "Somnolence, sensations vertigineuses", "Convulsions"],
+        ["Affections vasculaires", "", "Hypotension orthostatique, bradycardie"],
+    ]
+    sample = (
+        '<div id="textDocument">\n'
+        '<p class="AmmAnnexeTitre1">4. DONNÉES CLINIQUES</p>\n'
+        "<table>\n<tr>" + "".join(f"<th>{h}</th>" for h in header) + "</tr>\n"
+        + "".join("<tr>" + "".join(f"<td><p>{c}</p></td>" for c in r) + "</tr>\n" for r in rows)
+        + "</table></div>"
+    )
+
+    def rebuilt(cells):  # locateRow()'s mirror of _linearize_table, per rendered row
+        pairs = [f"{h}: {v}" if h else v
+                 for h, v in zip(header, (build._norm_ws(c) for c in cells)) if v]
+        return build._norm_ws("; ".join(pairs)).lower()
+
+    lines = [rebuilt(r) for r in rows]
+    chunks = build.section_chunks(sample)
+    row_chunks = [build._norm_ws(c[1]).lower() for c in chunks if ": " in c[1]]
+    assert len(row_chunks) == len(rows), chunks
+    assert row_chunks[0].startswith("très fréquent: troubles du métabolisme"), row_chunks
+    for i, hay in enumerate(row_chunks):
+        found = [j for j, line in enumerate(lines)
+                 if line.startswith(hay) or hay.startswith(line)]
+        assert found == [i], (hay, lines)
+    print("ok  test_linearised_row_snippet_resolves_to_its_row")
+
+
 def test_dsfr_backtotop_chrome_stripped():
     # Fresh ANSM scrapes carry DSFR back-to-top links + tooltip spans whose visible
     # text is "Redirection vers le haut de page". They must not pollute the chunks.
@@ -2241,6 +2282,7 @@ if __name__ == "__main__":
     test_merge_small_chunks()
     test_merged_chunk_snippet_spans_its_paragraph_run()
     test_flat_table_snippet_resolves_to_its_rows()
+    test_linearised_row_snippet_resolves_to_its_row()
     test_dsfr_backtotop_chrome_stripped()
     test_filler_paragraphs_dropped()
     test_empty_and_untitled()

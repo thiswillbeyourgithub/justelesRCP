@@ -1160,7 +1160,7 @@ Key facts that aren't obvious from a single file:
   the snippet's first 40 chars and then WALKS FORWARD consuming the snippet block by
   block (a block wholly inside it is consumed and the walk continues; the block the
   TRUNCATED `_SEC_SNIPPET_CHARS` tail lands in ends the run; `MAX_RUN_BLOCKS` bounds it),
-  returning `[el, ...]` (or `[heading]` for a table-row/non-contiguous chunk). That walk
+  returning `[el, ...]` (a snippet whose head spans table cells is matched against the joined cells by `locateAcross` and resolves to their `<tr>`s; a linearised "header: value; ..." table-row chunk is matched by `locateRow`, which rebuilds each rendered row the way `_linearize_table` does, and keeps its snippet as display text; only a chunk neither finds falls back to `[heading]`). That walk
   only works because build.py joins a chunk body with SINGLE spaces (`_norm_ws(" ".join
   (...))`); `test_merged_chunk_snippet_spans_its_paragraph_run` pins both halves. Resolving
   to ONE block was a real bug: on VERATRAN, "Fraction de liaison aux protéines" ranked #1
