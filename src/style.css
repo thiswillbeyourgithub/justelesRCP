@@ -459,6 +459,13 @@ a:not([href]):hover { text-decoration: none; }
   margin: 0 0 1.5rem; border: 1px solid var(--line); border-radius: .6rem;
   background: var(--card); padding: .2rem .7rem .5rem;
 }
+/* The Sommaire and the semantic-search box are tinted purple (the accent), so a
+   glance tells their panels (ToC, search results) apart from the RCP text itself.
+   After both base rules so it overrides their --card background. */
+.toc, .semsearch {
+  background: color-mix(in srgb, var(--accent) 13%, var(--card));
+  border-color: rgb(var(--accent-rgb) / .6);
+}
 .semsearch > summary {
   cursor: pointer; font-weight: 600; padding: .5rem .3rem; list-style-position: inside;
 }
