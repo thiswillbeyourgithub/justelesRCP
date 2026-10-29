@@ -28,6 +28,8 @@ diverge where the data genuinely forces it (e.g. the EMA source button targets
 the direct PDF, and a bare `/eu/` stub has no freshness card). If a requested
 change truly should hit only one type, the request will say so explicitly.
 
+**Ending a message about deploying:** whenever a reply tells the user that a change needs deploying (or how), its LAST line must be the exact command to run, with the right `deploy.sh` arguments, e.g. "Deploy with `git push && ./deploy.sh`". Pick the mode from what changed: plain `./deploy.sh` (full build, needed whenever `src/rcp.html`, `build.py` or a script tag on drug pages changed), `--quick` (only static assets, home/a-propos/status, JS/CSS not affecting the drug-page shell; it refuses otherwise), `--rebuild` (also re-crawl the whole catalog after a render change), `--rebuild-web` (after a `docker/web.Dockerfile` change), `--re-embed` / `--push-vectors` (after a chunking or model change, see the embed bullets). Say so explicitly even when it seems obvious. Added by Claude Code.
+
 **Versioning:** the project version is `__version__` in `build.py` (single
 source of truth, printed at build start). There are no git tags; bump it
 patch/minor per change. A bump MUST come with that version's user-facing release
