@@ -111,6 +111,13 @@ a:not([href]):hover { text-decoration: none; }
 .results a:hover, .results a.active { background: var(--card); text-decoration: none; }
 /* "Afficher plus de résultats…" row at the bottom of the dropdown (search.js). */
 .results a.results-more { color: var(--accent); font-weight: 600; text-align: center; }
+/* Dosage group (search.js groupItem): "N présentations" under the merged name, with a
+   fold marker, then the presentations' own rows indented once unfolded. */
+.result-count { display: block; font-size: .78rem; color: var(--accent); margin-top: .1rem; }
+.result-count::before { content: "\25B8\00a0"; }
+.results-group[aria-expanded="true"] .result-count::before { content: "\25BE\00a0"; }
+.results-variants { list-style: none; margin: 0; padding: 0 0 0 1.2rem; border-top: 1px solid var(--line); }
+.results-variants li + li { border-top: 1px solid var(--line); }
 .result-name { display: block; }
 /* Active substance (DCI) under the brand name: muted, smaller; text-transform none so
    the BDPM uppercase substance is shown as-is. */
