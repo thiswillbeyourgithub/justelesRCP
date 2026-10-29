@@ -256,7 +256,14 @@ Key facts that aren't obvious from a single file:
   (where a dock panel rests at the current offset; `scrollBoxToTop`/`fitResults` use it).
   With the box collapsed after a search, its prev/next navigator sits centered under the
   summary. Never give `.toc` or `.semsearch` their own `position: sticky` again: that was
-  the source of the overlap bugs this replaced. Added by Claude Code. CRITICAL id
+  the source of the overlap bugs this replaced. **Wide screens (>= 82rem)** use the side
+  margins instead: `style.css`'s wide media query sets `--dock-wide: 1` (the ONE breakpoint,
+  read by `dock.js` as `isWide`/`jlrcpDock.wide()`), the Sommaire becomes a fixed,
+  always-open column on the left, and the search box moves to a fixed right column once
+  `renderHits` has tagged it `.semsearch-used` (an unused box stays in the dock at the top
+  of the text); a result click does not collapse it there. Both columns follow the top bar
+  through `--chrome-off`, only the bar scrolls away (`lift` is 0) and `restTop` returns a
+  fixed panel's live rect. Added by Claude Code. CRITICAL id
   contract: **only top-level headings get the 0-based `sec-N` ids**; deeper
   headings get a SEPARATE `sub-N` namespace, so the `sec-N` anchors that
   `section_chunks` / the semantic-search `.vec.json` share NEVER shift when
@@ -1177,7 +1184,11 @@ Key facts that aren't obvious from a single file:
   the ONLY scroll path; `rank()` never scrolls). Clicking a result ALSO collapses the
   whole `.semsearch` box first (so the hit in the drug text is unobstructed and the
   smooth scroll lands on a settled layout); prev/next call `setCurrent` directly and
-  keep the box open. **Selecting a hit makes it shareable**: `setCurrent` ends with
+  keep the box open (on wide screens a click keeps it open too, it sits in the right
+  margin). Under the field, `PRESETS` (four example questions: food and bioavailability,
+  injection sites, children's dosing, pregnancy) render as `.semsearch-preset` buttons in
+  `.semsearch-presets`; a tap fills the field and searches, and they hide while results
+  are shown (`renderHits`/`clearHits`). Added by Claude Code. **Selecting a hit makes it shareable**: `setCurrent` ends with
   `shareHit`, which `history.replaceState`s the URL to a browser-native text fragment
   `#<sec-N>:~:text=<first words>,<last words>` (`FRAGMENT_WORDS` per side, a short lone
   paragraph quoted whole, words split on ASCII whitespace only so the no-break spaces of
