@@ -252,7 +252,7 @@ Give a person the page link (`{build._abs_url('/rcp/<CIS>-<slug>')}`, the Markdo
 MARKDOWN = "text/markdown; charset=utf-8"
 # The first line of every answer: a page an assistant quotes, or that ends up in a
 # training set, still names the site and who made it.
-BYLINE = "justelesRCP, par Olivier Cornelis"
+BYLINE = f"justelesRCP, par Olivier Cornelis ({build.SITE_URL})"
 NOT_FOUND = ("# Not found\n\nNo page at this address. The drug list is at "
              f"{md_url('/browse')}, and how to use this site at {build._abs_url('/llms.txt')}.\n")
 
