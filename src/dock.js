@@ -37,6 +37,10 @@
   var barH = 0;
   var lift = 0; // how much of the dock scrolls away: everything above the search box
   function measure() {
+    // Fully scrolled away stays fully away: crossing the wide breakpoint mid-page
+    // changes the maximum (bar alone vs bar + Sommaire), and keeping the old number
+    // would bring part of the Sommaire back over the text until the next scroll.
+    var away = off > 0 && off >= max();
     syncWide();
     barH = bar ? bar.offsetHeight : 0;
     // The dock's own top padding stays, as a gap between the screen edge and the box.
@@ -46,7 +50,10 @@
     else lift = box && box !== toc ? box.offsetTop - pad : dock.offsetHeight;
     root.style.setProperty("--bar-h", barH + "px");
     root.style.setProperty("--dock-peek", dock.offsetHeight - lift + "px");
-    setOff(off); // re-clamp to the new maximum
+    // Re-clamp to the new maximum. Outside our own jumps (holdHidden pushes the chrome
+    // away BEFORE scrolling), never hide more than the page has scrolled.
+    var v = away && !pinned() ? max() : off;
+    setOff(held ? v : Math.min(v, window.scrollY));
   }
   function max() { return barH + lift; }
 
