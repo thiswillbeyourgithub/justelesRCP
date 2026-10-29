@@ -28,7 +28,7 @@
 #   * or install cuDNN 9 for CUDA 12 system-wide (e.g. apt: libcudnn9-cuda-12).
 # They're kept OUT of the deps above on purpose: a pure-CPU run must not pull ~1.5 GB of
 # CUDA wheels, and a bad pin must not break the working CPU fallback.
-"""Optional OFFLINE pre-bake of per-drug semantic-search vectors (see CLAUDE.md).
+"""Optional OFFLINE pre-bake of per-drug semantic-search vectors (see docs/architecture/semantic-search.md).
 
 The per-drug "Rechercher dans ce RCP" box is served by the runtime embed service
 (embed-service.py), which keeps the encoder warm and (re-)embeds each page as it is

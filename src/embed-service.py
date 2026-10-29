@@ -10,7 +10,7 @@
 #   "click",
 # ]
 # ///
-"""Warm server-side embedder for per-drug semantic search (see CLAUDE.md / the plan).
+"""Warm server-side embedder for per-drug semantic search (see docs/architecture/semantic-search.md / the plan).
 
 This is the companion of refresh-service.py: a small, hardened, read-only container
 that keeps ONE ONNX encoder resident (onnx_embed.Encoder) and does two jobs behind

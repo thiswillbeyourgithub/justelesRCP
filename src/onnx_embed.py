@@ -6,7 +6,7 @@
 #   "numpy",
 # ]
 # ///
-"""Warm, self-hosted ONNX sentence encoder (see CLAUDE.md / the semantic-search plan).
+"""Warm, self-hosted ONNX sentence encoder (see docs/architecture/semantic-search.md / the semantic-search plan).
 
 This is the SINGLE encoder shared by the two server-side consumers of per-drug
 semantic search:

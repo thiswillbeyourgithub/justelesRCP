@@ -87,7 +87,7 @@ tourne. La recherche en langage naturel et le rafraîchissement à la demande so
 deux petits services compagnons optionnels et durcis, séparés du serveur web.
 
 Pour l'exécuter vous-même ou pour l'architecture détaillée, voir
-[CLAUDE.md](CLAUDE.md).
+[CLAUDE.md](CLAUDE.md) et le dossier [docs/architecture/](docs/architecture/).
 
 ## Source des données et licence
 

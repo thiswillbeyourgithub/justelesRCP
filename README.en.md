@@ -82,7 +82,7 @@ All rendering is precomputed: nothing dynamic runs when serving the pages.
 Natural-language search and on-demand refresh are two optional, hardened
 companion services kept separate from the web server.
 
-To run it yourself or for the detailed architecture, see [CLAUDE.md](CLAUDE.md).
+To run it yourself or for the detailed architecture, see [CLAUDE.md](CLAUDE.md) and the [docs/architecture/](docs/architecture/) folder.
 
 ## Data source and licence
 
