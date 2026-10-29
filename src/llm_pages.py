@@ -218,7 +218,8 @@ def letter_markdown(groups: dict[str, list[tuple[str, str]]], key: str) -> str |
 def llms_txt(groups: dict[str, list[tuple[str, str]]]) -> str:
     """The guide an assistant reads first (https://llmstxt.org)."""
     count = sum(len(v) for v in groups.values())
-    return f"""# justelesRCP
+    # The llmstxt.org format wants the name as the H1, so the byline is the H1.
+    return f"""# {BYLINE}
 
 > The official French summaries of product characteristics (RCP, résumés des caractéristiques du produit) of {count} drugs, from the ANSM's public drug database (BDPM) and, for centrally authorised drugs, from the EMA, as fast, ad-free pages. Each page is the official text, reformatted; nothing is written by an AI.
 
@@ -249,6 +250,9 @@ Give a person the page link (`{build._abs_url('/rcp/<CIS>-<slug>')}`, the Markdo
 
 
 MARKDOWN = "text/markdown; charset=utf-8"
+# The first line of every answer: a page an assistant quotes, or that ends up in a
+# training set, still names the site and who made it.
+BYLINE = "justelesRCP, par Olivier Cornelis"
 NOT_FOUND = ("# Not found\n\nNo page at this address. The drug list is at "
              f"{md_url('/browse')}, and how to use this site at {build._abs_url('/llms.txt')}.\n")
 
@@ -262,7 +266,9 @@ def route(path: str) -> tuple[int, str, str] | None:
     if not path.startswith("/api/md/"):
         return None
     if path in ("/api/md/browse", "/api/md/browse/"):
-        return 200, letters_markdown(cached_drug_index()), MARKDOWN
-    m = MD_LETTER_RE.fullmatch(path)
-    body = letter_markdown(cached_drug_index(), m[1]) if m else served_markdown(path)
-    return (200, body, MARKDOWN) if body is not None else (404, NOT_FOUND, MARKDOWN)
+        body = letters_markdown(cached_drug_index())
+    else:
+        m = MD_LETTER_RE.fullmatch(path)
+        body = letter_markdown(cached_drug_index(), m[1]) if m else served_markdown(path)
+    code, body = (200, body) if body is not None else (404, NOT_FOUND)
+    return code, f"{BYLINE}\n\n{body}", MARKDOWN

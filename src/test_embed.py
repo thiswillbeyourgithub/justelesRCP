@@ -1039,6 +1039,10 @@ def test_markdown_routes_answer_pages_letters_and_llms_txt():
             assert "- D: " in llm_pages.route("/api/md/browse")[1]
             code, body, ctype = llm_pages.route("/api/llms.txt")
             assert code == 200 and ctype.startswith("text/plain") and "of 1 drugs" in body
+            # Every answer, a 404 included, starts by naming the site and its author.
+            assert body.startswith(f"# {llm_pages.BYLINE}\n")
+            for p in (f"/api/md/rcp/{row['slug']}", "/api/md/browse", "/api/md/browse/d", "/api/md/rcp/nope"):
+                assert llm_pages.route(p)[1].startswith(f"{llm_pages.BYLINE}\n\n# "), p
             # Strict paths: a traversal, an unknown letter or slug is a 404, never a read.
             for bad in ("/api/md/rcp/../../etc/passwd", "/api/md/browse/zz",
                         "/api/md/rcp/12345678-nope", "/api/md/browse/q"):
