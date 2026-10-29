@@ -104,7 +104,7 @@ dist/status.html status.js  noindex live ops dashboard (crawl/embed/query stats 
 dist/logo.svg               site logo (SVG favicon on every page + README header)
 dist/og.png                 raster social card for og:image / twitter:image (1200x630)
 dist/manifest.webmanifest icon-192.png icon-512.png apple-touch-icon.png  makes the site installable as an app
-dist/app-config.js app-init.js dev-banner.js toc.js app-version.js rcp-semsearch.js  (runtime client assets)
+dist/app-config.js app-init.js dev-banner.js dock.js app-version.js rcp-semsearch.js  (runtime client assets)
 dist/rcp/<cis>-<slug>.vec.json   OPTIONAL per-page section vectors for server-side
 dist/eu/<cis>-<slug>.vec.json    per-drug semantic search, written DIRECTLY by
                              embed-service.py (runtime) or embed-rcp.py (offline
@@ -231,10 +231,27 @@ Key facts that aren't obvious from a single file:
   and returns a NESTED `(id, title, children)` tree; `render_record()` emits a
   `<details class="toc">` of jump links (plus the version slot) into `{{TOC}}` via
   the shared, recursive `_toc_html`/`_toc_ol_html`. It renders in the reading column
-  (inside `main`, after `{{ASOF}}`, above the search box) as a sticky collapsible
+  (inside `main`, after `{{ASOF}}`, above the search box) as a collapsible
   `<details>` block on ALL viewports: there is no longer a desktop left sidebar
   (`.rcp-layout` is a single centered column now; see `.rcp-layout`/`.toc` in
-  `style.css`, whose `.toc nav ol ol` indents the nested level). CRITICAL id
+  `style.css`, whose `.toc nav ol ol` indents the nested level).
+  **The dock (`.rcp-dock`, `src/dock.js`) is the ONE sticky block** of a drug page:
+  `src/rcp.html` wraps `{{TOC}}` in `<div class="rcp-dock">`, and `rcp-semsearch.js`
+  appends the search box into it as its last panel, so the two never compute offsets
+  against each other. `dock.js` alone owns how the chrome moves: it measures the top bar
+  (`--bar-h`), the height that slides away above the search box (`--dock-lift`, the
+  dock's top padding excluded so a gap stays) and what stays (`--dock-peek`, used by the
+  headings' `scroll-margin-top`) into CSS variables; scrolling DOWN (once the dock is
+  stuck, the Sommaire closed, no tour) adds `body.chrome-hidden`, which slides the top bar
+  and the Sommaire up with transforms (`.rcp-dock` section of `style.css`), scrolling UP
+  removes it, and every change fires a `jlrcp-dock` window event (the search box re-fits
+  its results list on it). `window.jlrcpDock` is its API: `holdHidden()` (call it BEFORE
+  scrolling the page yourself: a jump to a passage or a Sommaire link is not the reader
+  scrolling up, so the chrome stays hidden until the page is still) and `restTop(el)`
+  (where a dock panel rests in the current state; `scrollBoxToTop`/`fitResults` use it).
+  With the box collapsed after a search, its prev/next navigator sits centered under the
+  summary. Never give `.toc` or `.semsearch` their own `position: sticky` again: that was
+  the source of the overlap bugs this replaced. Added by Claude Code. CRITICAL id
   contract: **only top-level headings get the 0-based `sec-N` ids**; deeper
   headings get a SEPARATE `sub-N` namespace, so the `sec-N` anchors that
   `section_chunks` / the semantic-search `.vec.json` share NEVER shift when
@@ -262,7 +279,7 @@ Key facts that aren't obvious from a single file:
   so it needs a rebuild + re-embed (`_CHUNK_FORMAT_VERSION` 7), never a re-scrape. It
   cannot catch run-in headings glued to their paragraph on the same line. The reverse quirk is handled too: some ANSM pages tag whole body paragraphs `AmmAnnexeTitre2`-`4` (IMATINIB BGR 66544554 has 100-word "titles"), which listed them in the Sommaire, kept them out of every chunk body and inflated every chunk prefix under them past the chunk size cap (up to 900 chars, enough to OOM the embed container). `_demote_prose_headings` (first in `_parse_clean`, before the promotions) turns a Titre2-4 longer than `_HEADING_MAX_WORDS` (25) words, or a finished sentence over `_HEADING_SENTENCE_WORDS` (12), back into `AmmCorpsTexte` (~0.9% of heading tags; `_CHUNK_FORMAT_VERSION` 8). Titre1 is never demoted (sec-N anchors). Test: `test_prose_tagged_as_heading_is_demoted`. Added by Claude Code. Keep
   the contract in sync across `_build_toc`/`_toc_html`/`_toc_ol_html`/`_eu_toc`/
-  `_eu_prepare`/`_promote_subheads`/`_is_subhead`/`_TOC_DEPTH` (build.py), the `{{TOC}}` slot in `src/rcp.html`, `src/toc.js`, and
+  `_eu_prepare`/`_promote_subheads`/`_is_subhead`/`_TOC_DEPTH` (build.py), the `{{TOC}}` slot + `.rcp-dock` in `src/rcp.html`, `src/dock.js`, and
   `.toc` in `style.css`.
 - **ANSM HTML quirks handled at render time** (all in `_parse_clean` or `style.css`,
   so a rebuild fixes them, no re-scrape): (1) Word bookmarks wrap whole paragraphs
@@ -1165,20 +1182,19 @@ Key facts that aren't obvious from a single file:
   Known limit: a hit inside a collapsed `/eu/` annex group relies on the browser
   auto-expanding `<details>` (Chrome does), and JS cannot read the directive back
   (`location.hash` hides it). It is injected right AFTER the ToC (so
-  the reading column reads pills -> Sommaire -> search) and is `position: sticky` (like
-  the ToC), so a reader can search a long RCP without scrolling back up; its offset
-  (`top: 7.2rem` on all viewports now the sidebar is gone) stacks under the sticky top
-  bar + collapsed Sommaire bar (`.semsearch` in `style.css`), and its results list scrolls
-  internally so the stuck panel never outgrows the screen. **Opening it is tuned for a
+  the reading column reads pills -> Sommaire -> search) as the last panel of the sticky
+  dock (see the ToC bullet: `src/dock.js` owns every offset), so a reader can search a
+  long RCP without scrolling back up, and its results list scrolls internally so the
+  stuck panel never outgrows the screen. **Opening it is tuned for a
   phone**, where the box is typically tapped half-way down the screen and the panel would
   otherwise sit in the bottom sliver: (1) `scrollBoxToTop()` scrolls the page by the box's
-  distance to its OWN sticky offset (read off `getComputedStyle`, not hardcoded), so the
+  distance to its resting place (`jlrcpDock.restTop`, not hardcoded), so the
   box settles at the top of the usable area and the screen below it becomes reading room
   (a no-op when it is already stuck); (2) `fitResults()` replaces the static
   `max-height: 60dvh` CSS cap with the space ACTUALLY left under the panel's chrome, via
-  CSSOM (CSP-safe), measured from the sticky offset (not the live rect, which is still
+  CSSOM (CSP-safe), measured from that resting place (not the live rect, which is still
   moving during the open scroll) and off `visualViewport` (which is what shrinks when the
-  mobile keyboard opens); it re-runs on `resize`/`visualViewport resize` and at the end of
+  mobile keyboard opens); it re-runs on `resize`/`visualViewport resize`/`jlrcp-dock` and at the end of
   `renderHits`/`clearHits` (the nav row entering/leaving changes the chrome height); (3)
   the field is FOCUSED on open, but ONLY when `hits` is empty: with results on screen the
   reader most likely reopened the box to re-read them, and a focus would throw the keyboard

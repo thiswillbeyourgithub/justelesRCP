@@ -2705,10 +2705,9 @@ def _toc_html(toc: list[TocEntry]) -> str:
     exposes no sections (nothing to navigate). Shared by RCP and /eu/ pages."""
     if not toc:
         return ""
-    # No `open`: ships collapsed so on phones it doesn't bury the top of the
-    # document. On wide screens style.css reveals the content regardless of the
-    # open state (permanent sidebar); src/toc.js snaps it shut after a section
-    # link is tapped on phones.
+    # No `open`: ships collapsed so it doesn't bury the top of the document. It
+    # sits in the template's sticky .rcp-dock; src/dock.js snaps it shut after a
+    # section link is tapped.
     return (
         '<details class="toc">'
         "<summary>Sommaire</summary>"
@@ -3948,7 +3947,7 @@ def write_static_assets(changelog: dict) -> None:
         "util.js",  # shared client helpers (window.jlrcp); first deferred script on every page
         "app-init.js",
         "dev-banner.js",
-        "toc.js",
+        "dock.js",
         "rcp-semsearch.js",
         "theme.js",  # light/dark/auto theme toggle; loaded synchronously in every page head
         "tour.js",  # guided product tour (landing + one drug page); loaded by index.html + rcp.html

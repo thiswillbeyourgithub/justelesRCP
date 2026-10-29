@@ -328,32 +328,50 @@ a:not([href]):hover { text-decoration: none; }
    are now in-flow blocks inside .rcp (no desktop sidebar grid). .foot centers to the
    same --maxw via its own base rule below. */
 
-/* Table of contents: a collapsible "Sommaire" block in the reading column on all
-   viewports (tap the summary to fold it away). Sits under the reference pills, above
-   the search box. */
-.toc {
-  /* Sticky: sits just under the sticky top bar so, once collapsed, it rides along
-     and lets you jump sections without scrolling back up. Internal scroll when the
-     (open) list is taller than the screen. */
-  position: sticky; top: 3.2rem; z-index: 5;
-  max-height: calc(100vh - 3.6rem); overflow-y: auto;
-  margin: 1rem 0 0; border: 1px solid var(--line); border-radius: .6rem;
-  background: var(--card); padding: .2rem .7rem .6rem;
+/* --- The dock: Sommaire + semantic search, one sticky block (src/dock.js) ---
+   The ONLY sticky element of the reading column. Its two panels (.toc from build.py,
+   .semsearch appended by rcp-semsearch.js) never stick on their own, so their offsets
+   cannot drift apart. dock.js measures the real heights into two variables instead of
+   hardcoding rems:
+     --bar-h      height of the top bar, where the dock sticks;
+     --dock-lift  distance from the dock's top to the search box (= the Sommaire).
+   Scrolling down sets body.chrome-hidden: the top bar AND the dock slide up by one
+   transform each, so only the search box stays on screen, at the very top; scrolling
+   up slides them back. Transforms never move the layout, so the page cannot jump. */
+.rcp-dock {
+  position: sticky; top: var(--bar-h, 3.2rem); z-index: 5;
+  display: flex; flex-direction: column; gap: .5rem;
+  margin: 1rem 0 1.5rem; padding: .4rem 0; background: var(--bg);
 }
-/* Scrolling down slides the stuck Sommaire away (src/toc.js toggles body.toc-hidden)
-   behind the top bar (z-index 10), and the search box rides up into its slot; scrolling
-   up brings both back. Saves ~4rem of a phone screen while reading. */
-.toc, .semsearch { transition: transform .2s ease, opacity .2s ease, top .2s ease; }
-.toc-hidden .toc { transform: translateY(-100%); opacity: 0; pointer-events: none; }
-.toc-hidden .semsearch { top: 3.2rem; }
-@media (prefers-reduced-motion: reduce) { .toc, .semsearch { transition: none; } }
-.toc > summary {
-  /* Native disclosure triangle (▸/▾) as the collapse affordance, for consistency
-     with the search box's summary; ☰ stays as the topic glyph, mirroring the
-     search's 🔎. list-style-position: inside keeps the marker in the padding box. */
-  cursor: pointer; font-weight: 700; padding: .7rem .2rem; list-style-position: inside;
+.rcp-dock:empty { display: none; }
+.topbar, .rcp-dock { transition: transform .25s ease; }
+.chrome-hidden .topbar { transform: translateY(-100%); }
+.chrome-hidden .rcp-dock {
+  transform: translateY(calc(-1 * (var(--bar-h, 3.2rem) + var(--dock-lift, 0px))));
 }
-.toc > summary::-webkit-details-marker { display: none; }
+.chrome-hidden .rcp-dock > .toc { visibility: hidden; transition: visibility 0s .25s; }
+@media (prefers-reduced-motion: reduce) { .topbar, .rcp-dock { transition: none; } }
+
+/* The two panels share one look: tinted purple (the accent) so a glance tells their
+   content (ToC, search results) apart from the RCP text itself, and the same summary
+   bar height. Panel-specific bits follow in .toc / .semsearch. */
+.toc, .semsearch {
+  margin: 0; padding: 0 .7rem; border: 1px solid rgb(var(--accent-rgb) / .6);
+  border-radius: .6rem; background: color-mix(in srgb, var(--accent) 13%, var(--card));
+}
+.toc > summary, .semsearch > summary {
+  /* Native disclosure triangle (▸/▾) as the collapse affordance, ☰ / 🔎 as the topic
+     glyphs. list-style-position: inside keeps the marker in the padding box. */
+  cursor: pointer; padding: .5rem .2rem; list-style-position: inside;
+}
+.toc > summary::-webkit-details-marker,
+.semsearch > summary::-webkit-details-marker { display: none; }
+
+/* Table of contents ("Sommaire"). Internal scroll when the open list is taller than
+   the room left under the top bar. */
+.toc { max-height: calc(100dvh - var(--bar-h, 3.2rem) - 1rem); overflow-y: auto; }
+.toc > summary { font-weight: 700; }
+.toc[open] { padding-bottom: .6rem; }
 .toc > summary::before { content: "\2630\00a0"; opacity: .6; font-weight: 400; }
 .toc nav ol { list-style: none; margin: 0; padding: 0; }
 .toc nav li a {
@@ -457,29 +475,13 @@ a:not([href]):hover { text-decoration: none; }
    reader for a natural-language question and highlights the closest passages with a
    prev/next navigator. Built in JS and shaped like the .toc panel; the query is
    encoded server-side (embed-service.py), so nothing heavy loads in the browser. */
-.semsearch {
-  /* Sticky like the Sommaire, so a reader can search / step through hits without
-     scrolling back to the top of a long RCP. It rides just under the sticky Sommaire
-     bar (which sticks at top:3.2rem and is ~3.9rem tall collapsed), so 7.2rem clears
-     it and the two ride as a clean two-bar stack, on every viewport. Its results list
-     scrolls internally (below), so the stuck panel never outgrows the screen. z-index
-     below the ToC (5) and the top bar (10). */
-  position: sticky; top: 7.2rem; z-index: 4;
-  margin: 0 0 1.5rem; border: 1px solid var(--line); border-radius: .6rem;
-  background: var(--card); padding: .2rem .7rem .5rem;
-}
-/* The Sommaire and the semantic-search box are tinted purple (the accent), so a
-   glance tells their panels (ToC, search results) apart from the RCP text itself.
-   After both base rules so it overrides their --card background. */
-.toc, .semsearch {
-  background: color-mix(in srgb, var(--accent) 13%, var(--card));
-  border-color: rgb(var(--accent-rgb) / .6);
-}
-.semsearch > summary {
-  cursor: pointer; font-weight: 600; padding: .5rem .3rem; list-style-position: inside;
-}
-.semsearch > summary::-webkit-details-marker { display: none; }
+/* Lives in the dock (above), which makes it sticky and gives it its panel look. Its
+   results list scrolls internally (below), so the stuck panel never outgrows the
+   screen. */
+.semsearch > summary { font-weight: 600; }
+.semsearch[open] { padding-bottom: .5rem; }
 .semsearch > summary::before { content: "\1F50E\00a0"; opacity: .7; }
+@media (max-width: 30rem) { .semsearch-tail { display: none; } }
 /* "?" help badge in the summary (a small round pill). Clicking it toggles
    .semsearch-help-text via the JS, NOT the <details> (preventDefault there). */
 .semsearch-help {
@@ -516,15 +518,10 @@ a:not([href]):hover { text-decoration: none; }
 /* Prev/next navigator across the ranked passages. */
 .semsearch-nav { display: flex; align-items: center; gap: .5rem; margin: .6rem .2rem .2rem; }
 .semsearch-nav[hidden] { display: none; }
-/* Box collapsed after a search: the navigator moves into the summary line
-   (rcp-semsearch.js placeNav), as compact bare arrows on its right. */
-.semsearch:not([open]) .semsearch-nav {
-  display: inline-flex; float: right; margin: -.2rem 0 0; gap: .3rem; font-weight: 400;
-}
-.semsearch:not([open]) .semsearch-nav[hidden] { display: none; }
-.semsearch:not([open]) .semsearch-navlabel { display: none; }
-.semsearch:not([open]) .semsearch-prev,
-.semsearch:not([open]) .semsearch-next { padding: .15rem .65rem; font-size: 1.1rem; line-height: 1.2; }
+/* Box collapsed after a search: the navigator moves into the summary (rcp-semsearch.js
+   placeNav) and sits as a centered row along the bottom of the collapsed box. */
+.semsearch:not([open]) .semsearch-nav { justify-content: center; margin: .2rem 0 .1rem; font-weight: 400; }
+.semsearch:not([open]) .semsearch-counter { margin: 0 .3rem; }
 .semsearch-prev, .semsearch-next {
   font: inherit; cursor: pointer; padding: .3rem .7rem;
   border: 1px solid var(--line); border-radius: .4rem; background: var(--bg); color: var(--fg);
@@ -614,8 +611,9 @@ a:not([href]):hover { text-decoration: none; }
 .drug-xref-list ul { margin: .6rem 0 .3rem; padding-left: 1.2rem; }
 .drug-xref-list li { margin: .2rem 0; }
 .drug-xref-note { margin: .5rem 0 0; font-size: .8rem; color: var(--muted); }
-/* Section titles are ToC jump targets: keep them clear of the sticky bar. */
-.rcp .AmmAnnexeTitre1[id] { scroll-margin-top: 4rem; }
+/* Section titles are ToC jump targets: keep them clear of the search box that stays
+   stuck at the top (--dock-peek, from dock.js), on top of html's scroll-padding-top. */
+.rcp .AmmAnnexeTitre1[id] { scroll-margin-top: var(--dock-peek, 0px); }
 .rcp p { margin: .5rem 0; }
 /* ANSM class hooks kept from the source document */
 .rcp .AmmAnnexeTitre1 {

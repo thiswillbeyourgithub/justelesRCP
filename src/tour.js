@@ -524,8 +524,8 @@
     });
   }
 
-  // The ToC and the search box are BOTH position:sticky at the same top offset, so an
-  // open ToC collides with / hides the search box. Every semantic step closes the ToC and
+  // The ToC and the search box share one sticky dock (src/dock.js), so an open ToC
+  // pushes the search box off screen. Every semantic step closes the ToC and
   // opens the search box, so it works whether reached forward or via "Precedent".
   function openSemBox() {
     closeDetails(".toc");

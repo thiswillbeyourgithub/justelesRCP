@@ -109,7 +109,11 @@
   box.className = "semsearch";
   const summary = document.createElement("summary");
   const summaryText = document.createElement("span");
-  summaryText.textContent = "Recherche sémantique dans ce RCP";
+  // The tail drops on a phone (style.css) so the title and its "?" share one line.
+  const summaryTail = document.createElement("span");
+  summaryTail.className = "semsearch-tail";
+  summaryTail.textContent = " dans ce RCP";
+  summaryText.append("Recherche sémantique", summaryTail);
   // A "?" that makes clear this is a MEANING-based search, not a keyword field. It
   // hover-tooltips (title) AND toggles a visible one-liner on tap (works on touch,
   // where native tooltips never show). preventDefault + stopPropagation so clicking
@@ -204,15 +208,11 @@
   results.className = "semsearch-results";
   panel.append(inputRow, status, nav, results);
   box.append(summary, panel);
-  // Sit right AFTER the Sommaire (ToC), so the vertical order reads
-  // pills -> Sommaire -> search. Pages with no headings have no `.toc`: fall back
-  // to just after the freshness card, else after the CIS line, else prepend.
-  const anchor =
-    main.querySelector(".toc") ||
-    document.querySelector("[data-rcp-asof]") ||
-    main.querySelector(".cis");
-  if (anchor && anchor.parentNode) anchor.after(box);
-  else main.prepend(box);
+  // Last panel of the sticky dock (src/dock.js), right under the Sommaire. The dock
+  // makes it sticky and slides the chrome above it away while reading; `dock` is its
+  // API (absent only on a page built before the dock existed).
+  const dock = window.jlrcpDock;
+  (main.querySelector(".rcp-dock") || main).append(box);
 
   // --- state ----------------------------------------------------------------
   let phase = "idle"; // idle | preparing | ready | error
@@ -888,6 +888,8 @@
         if (p.tagName === "DETAILS") p.open = true;
         p = p.parentElement;
       }
+      // Our own scroll, even when it goes up: the Sommaire must not come back for it.
+      if (dock) dock.holdHidden();
       target.scrollIntoView({ block: "center", behavior: "smooth" });
     }
     shareHit(hits[current]);
@@ -980,16 +982,16 @@
   // --- opening the box ------------------------------------------------------
   // On a phone the box is usually opened half-way down the screen, which leaves the
   // panel (and the results below it) squeezed into the bottom sliver of the viewport.
-  // The box is position:sticky, so its resting place is exactly its own `top` offset:
-  // scroll the page so it settles there and the whole screen below it becomes reading
-  // room. Already stuck (or within a pixel of it) means nothing to do.
+  // The dock is sticky, so the box has a resting place (dock.restTop): scroll the page
+  // so it settles there and the whole screen below it becomes reading room. Already
+  // stuck (or within a pixel of it) means nothing to do.
   function scrollBoxToTop() {
-    const delta = box.getBoundingClientRect().top - stickyTop();
+    const delta = box.getBoundingClientRect().top - restTop();
     if (Math.abs(delta) > 1) window.scrollBy({ top: delta, behavior: "smooth" });
   }
 
-  function stickyTop() {
-    return parseFloat(getComputedStyle(box).top) || 0;
+  function restTop() {
+    return dock ? dock.restTop(box) : 0;
   }
 
   // The results list is bounded so the sticky panel never outgrows the screen; the CSS
@@ -1007,10 +1009,11 @@
     if (!viewH) return;
     // Height of everything above the list inside the box (summary, field, status, nav).
     const chrome = results.getBoundingClientRect().top - box.getBoundingClientRect().top;
-    const avail = viewH - stickyTop() - chrome - RESULTS_GAP_PX;
+    const avail = viewH - restTop() - chrome - RESULTS_GAP_PX;
     results.style.maxHeight = Math.max(RESULTS_MIN_PX, Math.round(avail)) + "px";
   }
   window.addEventListener("resize", fitResults);
+  window.addEventListener("jlrcp-dock", fitResults); // the chrome slid in or out
   if (window.visualViewport) window.visualViewport.addEventListener("resize", fitResults);
 
   // Put the cursor in the field on opening, so the reader can type straight away. It is
