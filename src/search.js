@@ -50,25 +50,30 @@
   // matching drugs. `full` scans the whole index (the results page needs an exact
   // count); the dropdown stops early since it only shows the first few.
   function search(term, limit, full) {
-    const t = normalize(term).trim();
+    const t = normalize(term).trim().replace(/\s+/g, " ");
     if (!t) return { hits: [], total: 0 };
+    // Every word must appear in the brand name OR the active substance (DCI), in any
+    // order: a lone substance (e.g. "acetylcysteine") surfaces every brand carrying it,
+    // and "olanzapine injectable" finds ZYPADHERA (substance OLANZAPINE, name "...
+    // suspension injectable ..."), which no single substring of either field matches.
+    const words = t.split(" ");
+    const hasAll = (s) => words.every((w) => s.includes(w));
     const found = [];
     let total = 0;
-    // Match the brand name OR the active substance (DCI), so a search on the substance
-    // (e.g. "acetylcysteine") surfaces every brand carrying it, not just names.
     for (let i = 0; i < norm.length; i++) {
-      if (!norm[i].includes(t) && !normSub[i].includes(t)) continue;
+      if (!hasAll(norm[i] + " " + normSub[i])) continue;
       total++;
       found.push(i);
       if (!full && found.length >= limit * 4) break;
     }
-    // Name matches first (a brand hit beats a substance-only hit), then name-prefix,
-    // then shorter names. Sorting indices lets the comparator reuse the already
-    // normalized `norm` strings instead of re-folding each name per comparison.
+    // The whole term in the name first, then every word in the name (a brand hit beats
+    // a substance-only hit), then name-prefix, then shorter names. Sorting indices lets
+    // the comparator reuse the already normalized `norm` strings instead of re-folding
+    // each name per comparison.
+    const tier = (i) => (norm[i].includes(t) ? 0 : hasAll(norm[i]) ? 1 : 2);
     found.sort((a, b) => {
-      const am = norm[a].includes(t) ? 0 : 1, bm = norm[b].includes(t) ? 0 : 1;
       const ap = norm[a].startsWith(t) ? 0 : 1, bp = norm[b].startsWith(t) ? 0 : 1;
-      return am - bm || ap - bp || index[a].name.length - index[b].name.length;
+      return tier(a) - tier(b) || ap - bp || index[a].name.length - index[b].name.length;
     });
     return { hits: found.slice(0, limit).map((i) => index[i]), total };
   }
