@@ -805,6 +805,9 @@
   }
 
   function renderHits() {
+    // A search has run: on a wide screen the box now moves to the right margin
+    // (.semsearch-used in style.css) and stays there for the rest of the visit.
+    box.classList.add("semsearch-used");
     results.replaceChildren();
     // A new ranking means the reader edited the query: start the list back at the top
     // (renderHits runs only on rank(), never on prev/next stepping, so this scrolls the
@@ -848,7 +851,8 @@
       // in the drug text is unobstructed. Prev/next nav call setCurrent() directly (they
       // must keep the box open to stay usable), so only a result CLICK collapses it.
       a.addEventListener("click", () => {
-        box.open = false;
+        // In the right margin the open box covers nothing, so it stays open there.
+        if (!(dock && dock.wide())) box.open = false;
         setCurrent(i, true);
       });
       li.append(a);

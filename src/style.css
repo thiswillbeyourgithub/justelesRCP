@@ -593,6 +593,28 @@ a:not([href]):hover { text-decoration: none; }
 }
 /* The passage the reader is currently on: ring its badge so "you are here" stands out. */
 .semsearch-current[data-semrank]::after { outline: 2px solid var(--bg); box-shadow: 0 1px 5px rgba(0, 0, 0, .45); }
+
+/* --- Wide screens: the side margins become columns -------------------------------
+   The Sommaire moves to the left margin (always open), and the search box, once a
+   search has run (.semsearch-used, set by rcp-semsearch.js), to the right one; an
+   unused box stays at the top of the text. --dock-wide is how dock.js learns the
+   breakpoint, so it lives here only. Both columns are fixed to the viewport and follow
+   the top bar as it scrolls away (--chrome-off). 82rem leaves each margin ~18rem. */
+@media (min-width: 82rem) {
+  :root { --dock-wide: 1; }
+  .rcp-dock > .toc, .rcp-dock > .semsearch-used {
+    position: fixed;
+    top: calc(var(--bar-h, 3.2rem) - var(--chrome-off, 0px) + 1rem);
+    width: calc((100vw - var(--maxw)) / 2 - 3rem);
+    max-height: calc(100dvh - var(--bar-h, 3.2rem) + var(--chrome-off, 0px) - 2rem);
+    box-sizing: border-box;
+  }
+  .rcp-dock > .toc { left: 1.5rem; overflow-y: auto; }
+  .rcp-dock > .toc > summary { cursor: default; list-style: none; }
+  .rcp-dock > .semsearch-used { right: 1.5rem; overflow: hidden; }
+  /* Nothing of the dock is left in the text column once the box has moved too. */
+  .rcp-dock:has(> .semsearch-used) { margin: 0; padding: 0; }
+}
 /* Cross-drug backlinks: inline links to other drugs' pages injected into the RCP
    body by build.py (_linkify), and the "Médicaments liés" list at the foot
    (_xref_html). Inline links get a dotted underline so a reader can tell they

@@ -19,15 +19,31 @@
   var bar = document.querySelector(".topbar");
   var toc = dock.querySelector("details.toc");
 
+  // --- wide screens -------------------------------------------------------------
+  // style.css owns the breakpoint: its wide media query sets --dock-wide: 1, puts the
+  // Sommaire in the left margin (always open) and a used search box in the right one.
+  var isWide = false;
+  function wide() {
+    return getComputedStyle(root).getPropertyValue("--dock-wide").trim() === "1";
+  }
+  function syncWide() {
+    var w = wide();
+    if (w === isWide) return;
+    isWide = w;
+    if (toc) toc.open = w; // a side column is open; in the dock it starts collapsed
+  }
+
   // --- measurements ----------------------------------------------------------
   var barH = 0;
   var lift = 0; // how much of the dock scrolls away: everything above the search box
   function measure() {
+    syncWide();
     barH = bar ? bar.offsetHeight : 0;
     // The dock's own top padding stays, as a gap between the screen edge and the box.
     var box = dock.lastElementChild;
     var pad = parseFloat(getComputedStyle(dock).paddingTop) || 0;
-    lift = box && box !== toc ? box.offsetTop - pad : dock.offsetHeight;
+    if (isWide) lift = 0; // the Sommaire is in its side column: only the top bar goes
+    else lift = box && box !== toc ? box.offsetTop - pad : dock.offsetHeight;
     root.style.setProperty("--bar-h", barH + "px");
     root.style.setProperty("--dock-peek", dock.offsetHeight - lift + "px");
     setOff(off); // re-clamp to the new maximum
@@ -43,8 +59,9 @@
     root.style.setProperty("--chrome-off", off + "px");
     window.dispatchEvent(new Event("jlrcp-dock")); // the search box re-fits its results
   }
-  // The open Sommaire and the guided tour need everything in view.
-  function pinned() { return (toc && toc.open) || window.__TOUR_ACTIVE__; }
+  // The open Sommaire (in the dock, not its side column) and the guided tour need
+  // everything in view.
+  function pinned() { return (!isWide && toc && toc.open) || window.__TOUR_ACTIVE__; }
 
   var last = window.scrollY;
   var held = false; // our own scroll is running: keep the chrome away until it ends
@@ -71,12 +88,11 @@
   window.addEventListener("scrollend", function () { if (held) holdFor(150); });
 
   measure();
+  window.addEventListener("resize", measure); // crossing the wide breakpoint
   if (window.ResizeObserver) {
     var ro = new ResizeObserver(measure);
     ro.observe(dock);
     if (bar) ro.observe(bar);
-  } else {
-    window.addEventListener("resize", measure);
   }
 
   // --- API for the search box -------------------------------------------------
@@ -93,17 +109,24 @@
     // current offset. The search box uses it to scroll itself there and to size its
     // results list.
     restTop: function (el) {
+      // In a side column (position: fixed) the live rect IS where it rests.
+      if (getComputedStyle(el).position === "fixed") return el.getBoundingClientRect().top;
       return barH - off + el.offsetTop; // the dock is the panels' offsetParent (sticky)
     },
+    // True when the Sommaire and a used search box sit in the side margins.
+    wide: function () { return isWide; },
   };
 
   // --- Sommaire ---------------------------------------------------------------
   if (toc) {
     toc.addEventListener("click", function (ev) {
       if (!ev.target.closest("nav a")) return;
-      toc.open = false; // the open list would cover the section just jumped to
+      if (!isWide) toc.open = false; // the open list would cover the section jumped to
       window.jlrcpDock.holdHidden();
     });
-    toc.addEventListener("toggle", function () { if (toc.open) setOff(0); });
+    toc.addEventListener("toggle", function () {
+      if (isWide) toc.open = true; // the side column has no collapsed state
+      else if (toc.open) setOff(0);
+    });
   }
 })();
