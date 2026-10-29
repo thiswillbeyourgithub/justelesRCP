@@ -253,6 +253,7 @@ Full notes: [docs/architecture/deployment.md](docs/architecture/deployment.md). 
 - Caddy listens on :8459 plain HTTP behind your own TLS proxy. The `web` image is a custom xcaddy build with the rate-limit plugin; rebuild it only after a `docker/web.Dockerfile` change (`--rebuild-web`).
 - The detailed `/api/stats` + `/api/sem/stats` stay blocked at the edge; new service routes go through the `(api_limits)` Caddyfile snippet.
 - Every container is `read_only`, `cap_drop: ALL`, `no-new-privileges` (the `x-hardened` anchor) with a RAM ceiling; `web` keeps `cap_add: [NET_BIND_SERVICE]`. Need a writable path? Add a tmpfs, never drop read-only.
+- Strict CSP (`script-src 'self'` + the optional umami origin): no external scripts, fonts or CDNs, no inline scripts or handlers, no eval; set styles via classes or CSSOM.
 - `docker/.env` reaches containers via `env_file` only; no `environment:` block.
 - Single-file bind mounts (both scrape manifests, `CIS_bdpm.txt`, the backlink files) must exist as files before `up`.
 - Never re-add `*.vec.json` to the deploy rsync mirror (the embed service writes them on the VPS).
