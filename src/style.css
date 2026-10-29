@@ -594,6 +594,17 @@ a:not([href]):hover { text-decoration: none; }
 /* The passage the reader is currently on: ring its badge so "you are here" stands out. */
 .semsearch-current[data-semrank]::after { outline: 2px solid var(--bg); box-shadow: 0 1px 5px rgba(0, 0, 0, .45); }
 
+/* Preset questions under the search field (rcp-semsearch.js PRESETS): one tap fills
+   the field and searches. Hidden while results are on screen. */
+.semsearch-presets { display: flex; flex-wrap: wrap; gap: .35rem; margin: .5rem 0 0; }
+.semsearch-presets[hidden] { display: none; }
+.semsearch-preset {
+  font: inherit; font-size: .8rem; cursor: pointer; text-align: left;
+  padding: .25rem .6rem; border: 1px solid rgb(var(--accent-rgb) / .45);
+  border-radius: .9rem; background: var(--bg); color: var(--fg);
+}
+.semsearch-preset:hover { border-color: var(--accent); color: var(--accent); }
+
 /* --- Wide screens: the side margins become columns -------------------------------
    The Sommaire moves to the left margin (always open), and the search box, once a
    search has run (.semsearch-used, set by rcp-semsearch.js), to the right one; an

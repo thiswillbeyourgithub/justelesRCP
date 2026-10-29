@@ -166,6 +166,29 @@
   const inputRow = document.createElement("div");
   inputRow.className = "semsearch-inputrow";
   inputRow.append(input, searchBtn);
+  // Ready-made questions under the field: one tap fills it and searches. They show
+  // what kind of question works (a sentence, not keywords), so they hide while results
+  // are on screen and come back when the field is cleared.
+  const PRESETS = [
+    "Quel est l'impact de la nourriture sur la biodisponibilité ?",
+    "Quels sont les sites d'injection possibles ?",
+    "Quelles sont les posologies recommandées chez l'enfant ?",
+    "Quelles sont les précautions chez la femme enceinte ?",
+  ];
+  const presets = document.createElement("div");
+  presets.className = "semsearch-presets";
+  for (const q of PRESETS) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "semsearch-preset";
+    b.textContent = q;
+    b.addEventListener("click", () => {
+      input.value = q;
+      onQueryEdited();
+      triggerSearch();
+    });
+    presets.append(b);
+  }
   const status = document.createElement("p");
   status.className = "semsearch-status";
   const nav = document.createElement("div");
@@ -206,7 +229,7 @@
   }
   const results = document.createElement("ol");
   results.className = "semsearch-results";
-  panel.append(inputRow, status, nav, results);
+  panel.append(inputRow, presets, status, nav, results);
   box.append(summary, panel);
   // Last panel of the sticky dock (src/dock.js), right under the Sommaire. The dock
   // makes it sticky and slides the chrome above it away while reading; `dock` is its
@@ -768,6 +791,7 @@
     current = -1;
     results.replaceChildren();
     nav.hidden = true;
+    presets.hidden = false;
     fitResults(); // the nav row just left/entered the panel: re-measure the list
   }
 
@@ -808,6 +832,7 @@
     // A search has run: on a wide screen the box now moves to the right margin
     // (.semsearch-used in style.css) and stays there for the rest of the visit.
     box.classList.add("semsearch-used");
+    presets.hidden = hits.length > 0;
     results.replaceChildren();
     // A new ranking means the reader edited the query: start the list back at the top
     // (renderHits runs only on rank(), never on prev/next stepping, so this scrolls the
