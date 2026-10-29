@@ -124,7 +124,7 @@ Docker lives under `docker/` (compose, Caddyfile, entrypoint.sh, env.example).
 Run compose with `-f docker/docker-compose.yml`; paths inside are relative to it
 (`../dist` is the web root).
 
-Key facts that aren't obvious from a single file:
+Key facts that aren't obvious from a single file. Each area's full notes (the contracts, the "keep in sync across" lists, the history of past bugs) live in `docs/architecture/<area>.md`: read the relevant one before changing that area. When you add or change a feature, document it THERE, and only add to this file a short pointer or an invariant that every session must know. This file used to be ~1700 lines; keep it short.
 
 - **Search and browse** ([docs/architecture/search.md](docs/architecture/search.md)): A-Z browse pages are static and crawlable; search is 100% client-side over `search-index.json` (row flags `sub`/`ret`/`aip`/`eu`); the dropdown and the shareable `/?q=` results page share `search()`/`resultItem()`. No search API and no full-text search over RCP content, by design.
 - **Build pipeline and RCP rendering** ([docs/architecture/build-and-rendering.md](docs/architecture/build-and-rendering.md)): names from `CIS_bdpm.txt`; cross-drug backlinks (`bdpm.py` is shared with the scraper and must stay pure stdlib; links only target CIS that render a page); the `Amm*` class hooks shared with `style.css`; the 2022 mojibake repair and the ANSM HTML quirks fixed in `_parse_clean`; the incremental build (`_global_key`, `_record_hash`, failed renders keep their old page); ANSM overlays from `scrape-rcp.py` win over the frozen 2022 CSV, and a zero-byte overlay means delisted (archived page).
