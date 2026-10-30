@@ -786,8 +786,11 @@
       const run = runAt(blocks, first + d, last + d, s.row);
       if (!run) continue;
       // Space-free text, matched by substring: the chunk's text glues adjacent cells
-      // ("lymphatiqueTrès") where the page has two blocks.
-      const text = run.text.map(blockText).join("").replace(/\s+/g, "").toLowerCase();
+      // ("lymphatiqueTrès") where the page has two blocks. Lowercased BEFORE the spaces
+      // go: JS lowercases a word-final Greek "Σ" to "ς" only while it still ends a
+      // word, so "ΕΛΛΑΣ Α.Ε." (an EMA notice's contact list) gives the snippet word
+      // "ελλας" but, spaces removed first, "ελλασα.ε." on the page.
+      const text = run.text.map(blockText).join("").toLowerCase().replace(/\s+/g, "");
       if (want.every((w) => text.indexOf(w) !== -1)) return run.els;
     }
     return null;
