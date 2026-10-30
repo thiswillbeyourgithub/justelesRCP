@@ -202,7 +202,7 @@ def main(limit, do_all, only, eu, model_dir, out_dim, vec_quant, weights, intra_
                     for cis, raw, subdir in build.iter_archived_raw()]
     sources = [s for s in sources
                if (not only_set or s[0] in only_set) and (eu or s[2] != "eu")]
-    stale, fresh, no_page = [], 0, 0
+    stale, fresh, no_page, located = [], 0, 0, 0
     for cis, load, subdir in tqdm(sources, unit="page", desc="scanning", smoothing=0.05):
         page = pages[subdir].get(cis)
         if page is None:
@@ -211,16 +211,22 @@ def main(limit, do_all, only, eu, model_dir, out_dim, vec_quant, weights, intra_
             continue
         if not force:
             raw = load()
-            meta = build.read_vec_meta(build.vec_path_for(page))
+            vec = build.vec_path_for(page)
+            meta = build.read_vec_meta(vec)
             if build.vec_is_current(meta, build.raw_hash(raw), model, encoder.dim,
                                     vec_quant):
                 fresh += 1
+                # Vectors from before chunk locations existed get them here: a
+                # re-segmentation, no encode.
+                if (meta.get("loc") != build.VEC_LOC_VERSION
+                        and build.vec_add_locations(vec, raw, cis)):
+                    located += 1
                 continue
         stale.append((cis, load, subdir, page))
     random.shuffle(stale)
     todo = stale if do_all else stale[:limit]
-    logger.info("{} page(s) up to date, {} stale, {} not built yet; embedding {}{}",
-                fresh, len(stale), no_page, len(todo),
+    logger.info("{} page(s) up to date ({} given chunk locations), {} stale, {} not "
+                "built yet; embedding {}{}", fresh, located, len(stale), no_page, len(todo),
                 "" if len(todo) == len(stale) else " this run (--all for every one)")
 
     done = errors = 0

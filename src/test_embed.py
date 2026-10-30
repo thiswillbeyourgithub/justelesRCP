@@ -8,6 +8,7 @@
 #   "tokenizers",
 #   "loguru",
 #   "click",
+#   "html5lib",
 # ]
 # ///
 """Unit tests for the pure semantic-search helpers in build.py.
@@ -37,6 +38,7 @@ import tempfile
 from pathlib import Path
 
 import build
+import svc_http
 
 SAMPLE = """<html><body><div id="textDocument">
   <p class="AmmAnnexeTitre1">1. DENOMINATION DU MEDICAMENT</p>
@@ -427,6 +429,99 @@ def test_linearised_row_snippet_resolves_to_its_row():
     print("ok  test_linearised_row_snippet_resolves_to_its_row")
 
 
+def _located_page():
+    """A page exercising every way a chunk's text stops being contiguous on the page:
+    a merged paragraph run with a filler ("2 ans") dropped from its middle, a
+    header-led table (linearised rows, also the side-effects table of section 5 whose
+    first row reads as a header), and a <p> wrapping
+    a <table>, which a browser closes before the table (one extra, empty block that
+    shifts every later block of the section)."""
+    long = "La stabilité physico-chimique de la solution reconstituée a été démontrée. "
+    return (
+        '<div id="textDocument">\n'
+        '<p class="AmmAnnexeTitre1" id="sec-0">4. DONNÉES CLINIQUES</p>\n'
+        "<p>Flacon non ouvert conservé à l'abri de la lumière dans son emballage.</p>\n"
+        "<p>2 ans</p>\n"
+        f"<p>{long * 3}</p>\n"
+        "<table><tr><th>Très fréquent</th><th>Fréquent</th></tr>\n"
+        "<tr><td><p>Troubles du métabolisme et de la nutrition</p></td>"
+        "<td><p>Prise de poids importante</p></td></tr>\n"
+        "<tr><td><p>Affections du système nerveux</p></td>"
+        "<td><p>Somnolence, sensations vertigineuses</p></td></tr></table>\n"
+        '<p align="center"><span><div><table><tr><td><p>Risque relatif, 0,936 '
+        "(IC 95 %, 0,887-0,988)</p></td></tr></table></div></span></p>\n"
+        "<p>Paragraphe après le tableau imbriqué, assez long pour faire un passage "
+        "à lui seul et vérifier que le décalage est rattrapé.</p>\n"
+        '<p class="AmmAnnexeTitre1" id="sec-1">5. PROPRIÉTÉS PHARMACOLOGIQUES</p>\n'
+        "<table><tr><td>Langue noire chevelue</td><td>Fréquence indéterminée</td></tr>"
+        "<tr><td>Coloration des dents</td><td>Fréquence indéterminée</td></tr></table>\n"
+        "</div>"
+    )
+
+
+def test_chunk_locations_land_on_their_blocks():
+    """Every chunk records the blocks it was cut from, and those blocks hold its text
+    on the page as a browser parses it (html5lib), replaying locateByBlocks().
+
+    Regression for the AMOXICILLINE and ZYPADHERA hits that scrolled to the section
+    heading: the browser used to FIND each chunk by its text, which fails whenever that
+    text is not contiguous on the page (about 19% of chunks on a 300-page audit). Here
+    the filler-dropped run, the linearised rows and the paragraph after
+    the browser-repaired <p><table> must all land, the last one only after the shift.
+    """
+    audit = svc_http.load_sibling("audit-locate.py", "audit_locate")
+    raw = _located_page()
+    doc = audit._parse(raw)
+    chunks = build.section_chunks(raw, located=True)
+    assert [c[:3] for c in chunks] == build.section_chunks(raw), \
+        "located=True must not change the chunks themselves"
+    reasons = {}
+    for sec, snippet, _t, loc in chunks:
+        assert loc is not None, (sec, snippet)
+        reasons[snippet[:30]] = audit.check(doc, sec, snippet, loc[:2], loc[2])
+    assert set(reasons.values()) <= {"ok", "shifted"}, reasons
+    # The filler sits between the two paragraphs of ONE chunk: its run spans all three.
+    head = next(c for c in chunks if c[1].startswith("Flacon non ouvert"))
+    assert head[3][1] - head[3][0] == 2 and "2 ans" not in head[1], head
+    rows = [c for c in chunks if c[3][2] and c[0] == "sec-0"]
+    assert [c[1].split(";")[0] for c in rows] == [
+        "Très fréquent: Troubles du métabolisme et de la nutrition",
+        "Très fréquent: Affections du système nerveux"], rows
+    assert "shifted" in reasons.values(), reasons
+    print("ok  test_chunk_locations_land_on_their_blocks")
+
+
+def test_vec_add_locations_backfills_without_reencoding():
+    """A sidecar embedded before chunk locations existed gets them in place (vectors
+    untouched), and only when re-segmenting reproduces its chunks one for one."""
+    raw = _located_page()
+    chunks = build.section_chunks(raw, located=True)
+    vecs = [_l2_normalise([0.1 * (i + 1)] * 6) for i in range(len(chunks))]
+    src = build.raw_hash(raw)
+    fresh = build.vec_payload(chunks, vecs, "m", "q: ", src, quant="int8")
+    assert fresh["loc"] == build.VEC_LOC_VERSION
+    assert all("b" in c for c in fresh["chunks"]), fresh["chunks"]
+    assert sum(c.get("r", 0) for c in fresh["chunks"]) == 3, fresh["chunks"]
+    old = build.vec_payload([c[:3] for c in chunks], vecs, "m", "q: ", src,
+                            quant="int8")
+    assert "loc" not in old and not any("b" in c for c in old["chunks"]), old
+    with tempfile.TemporaryDirectory() as d:
+        vec = Path(d) / "12345678-x.vec.json"
+        build.write_vec_json(vec, old)
+        assert build.read_vec_meta(vec)["loc"] is None
+        assert build.vec_add_locations(vec, raw, "12345678")
+        assert json.loads(build.read_served(vec)) == fresh
+        assert not build.vec_add_locations(vec, raw, "12345678"), "already current"
+        # Different text (stale src_hash) or different chunks: refuse, never guess.
+        build.write_vec_json(vec, old)
+        assert not build.vec_add_locations(vec, raw + "<p>x</p>", "12345678")
+        tampered = json.loads(json.dumps(old))
+        tampered["chunks"][0]["snippet"] = "autre chose"
+        build.write_vec_json(vec, tampered)
+        assert not build.vec_add_locations(vec, raw, "12345678")
+    print("ok  test_vec_add_locations_backfills_without_reencoding")
+
+
 def test_dsfr_backtotop_chrome_stripped():
     # Fresh ANSM scrapes carry DSFR back-to-top links + tooltip spans whose visible
     # text is "Redirection vers le haut de page". They must not pollute the chunks.
@@ -772,7 +867,7 @@ def test_write_read_vec_meta_roundtrip():
         meta = build.read_vec_meta(vec)
         assert meta == {"src_hash": "feedface1234",
                         "model": "Xenova/multilingual-e5-small", "dim": 6,
-                        "quant": "int8"}, meta
+                        "quant": "int8", "loc": None}, meta
         # A file baked BEFORE the binary format existed has no "quant" key at all. It
         # must read back as int8 (which is what it is), not as None, or the freshness
         # gate would call the whole legacy catalog stale and re-embed it for nothing.
@@ -2283,6 +2378,8 @@ if __name__ == "__main__":
     test_merged_chunk_snippet_spans_its_paragraph_run()
     test_flat_table_snippet_resolves_to_its_rows()
     test_linearised_row_snippet_resolves_to_its_row()
+    test_chunk_locations_land_on_their_blocks()
+    test_vec_add_locations_backfills_without_reencoding()
     test_dsfr_backtotop_chrome_stripped()
     test_filler_paragraphs_dropped()
     test_empty_and_untitled()

@@ -577,11 +577,16 @@ class Embedder:
             if build.vec_is_fresh(vec, ov, self.model, check_model=check_model,
                                   dim=self.encoder.dim, quant=self.quant):
                 # Only the boot's first pass reads overlays to spot an older chunk
-                # format: an upgraded vec is rewritten, so the list only shrinks.
-                if check_model and build.vec_is_legacy(
-                        build.read_vec_meta(vec), build._read_overlay(ov), self.model,
-                        self.encoder.dim, self.quant):
-                    legacy.append(cis)
+                # format: an upgraded vec is rewritten, so the list only shrinks. A vec
+                # predating chunk locations (VEC_LOC_VERSION) rides the same lane: its
+                # job takes embed_page_to_vec's fresh path, which adds them without
+                # encoding anything. The cheap meta check goes first (no overlay read).
+                if check_model:
+                    meta = build.read_vec_meta(vec)
+                    if (meta or {}).get("loc") != build.VEC_LOC_VERSION or build.vec_is_legacy(
+                            meta, build._read_overlay(ov), self.model,
+                            self.encoder.dim, self.quant):
+                        legacy.append(cis)
                 continue
             stale += 1
             if len(stale_cis) < _BACKLOG_LIST_MAX:
@@ -601,7 +606,8 @@ class Embedder:
             self._upgrade = self._upgrade_order(legacy)
             if legacy:
                 logger.info("format upgrade: {} page(s) served from an older chunk "
-                            "format, re-embedded once nothing else waits", len(legacy))
+                            "format or without chunk locations, upgraded once nothing "
+                            "else waits", len(legacy))
         # Upgrades only once every page lacking usable vectors is embedded or has
         # failed (a failing page must not hold the upgrade back forever), and only a
         # few at a time, so a page that newly needs vectors never waits behind them.

@@ -30,7 +30,6 @@ Run:  uv run build.py         (reads ./data, writes ./dist)
 from __future__ import annotations
 
 import base64
-import copy
 import csv
 import gzip
 import hashlib
@@ -1506,16 +1505,18 @@ def _is_filler_paragraph(text: str) -> bool:
 _TABLE_MAX_ROWS = 60  # cap a runaway table so one drug can't blow the chunk budget
 
 
-def _linearize_table(tbl) -> list[str]:
+def _linearize_table(tbl) -> list[tuple[str, object]]:
     """Turn a data table into one self-contained line per body row, each cell
     prefixed with its column header ("Population: Adulte; Dose: 500 mg"), so a row
     stays meaningful (and retrievable) instead of being flattened into the section
     blob and split mid-row by _char_windows. Naive text_content() on a posology
     table loses the row/column association entirely.
 
-    Returns [] when the element is NOT a header-led data table (fewer than 2 rows,
-    single column, or empty/layout header), so the caller falls back to flat text.
-    Pure lxml; the first <tr> is taken as the header row (thead or not)."""
+    Returns ``[(line, tr), ...]``, each line with the ``<tr>`` it came from (the
+    chunk's on-page location, see _BlockIndex), or [] when the element is NOT a
+    header-led data table (fewer than 2 rows, single column, or empty/layout header),
+    so the caller falls back to flat text. Pure lxml; the first <tr> is taken as the
+    header row (thead or not)."""
     rows = tbl.xpath(".//tr")
     if len(rows) < 2:
         return []
@@ -1526,7 +1527,7 @@ def _linearize_table(tbl) -> list[str]:
     header = _cells(rows[0])
     if len(header) < 2 or not any(header):
         return []  # not a header-led data table -> caller keeps it flat
-    lines: list[str] = []
+    lines: list[tuple[str, object]] = []
     for tr in rows[1:]:
         vals = _cells(tr)
         if not any(vals):
@@ -1538,13 +1539,13 @@ def _linearize_table(tbl) -> list[str]:
             head = header[i] if i < len(header) else ""
             pairs.append(f"{head}: {v}" if head else v)
         if pairs:
-            lines.append("; ".join(pairs))
+            lines.append(("; ".join(pairs), tr))
         if len(lines) >= _TABLE_MAX_ROWS:
             break
     return lines
 
 
-def section_chunks(raw: str, cis: str = "") -> list[tuple[str, str, str]]:
+def section_chunks(raw: str, cis: str = "", *, located: bool = False) -> list[tuple]:
     """Segment one RCP into per-section embedding chunks aligned with ``sec-N``.
 
     Returns ``[(sec_id, snippet, chunk_text), ...]`` where ``sec_id`` is the SAME
@@ -1562,6 +1563,11 @@ def section_chunks(raw: str, cis: str = "") -> list[tuple[str, str, str]]:
     stdlib+lxml, no ML dependency; imported by embed-rcp.py. Each section's body is
     gathered from the heading's following siblings up to the next top-level heading,
     segmented per subheading, and split into ~_SEC_CHUNK_CHARS windows.
+
+    ``located=True`` appends a 4th element, the chunk's location on the rendered page:
+    ``(first, last, is_row)`` block numbers within its section (see _BlockIndex), or
+    None when no block holds its text. The .vec.json stores it so the reader's browser
+    highlights those blocks instead of searching for the text.
     """
     try:
         doc = _parse_clean(raw)
@@ -1580,16 +1586,16 @@ def section_chunks(raw: str, cis: str = "") -> list[tuple[str, str, str]]:
     # never embedded), keeping this independent of the sidebar ToC's _TOC_DEPTH.
     if not any(h.get("id") for h in headings):
         _build_toc(inner, depth=1)  # assigns id="sec-N"; empty-title headings get none
-    chunks: list[tuple[str, str, str]] = []
+    chunks: list[tuple[str, str, str, tuple[int, int, bool] | None]] = []
     seen: set[str] = set()  # body text already emitted on THIS page (dedup, see _add)
 
-    def _add(sec_id: str, context: str, body: str) -> bool:
-        """Append one (sec_id, snippet, chunk_text); return False once the per-page cap
-        is hit (caller stops). ``chunk_text`` is the heading-path ``context`` prefixed
-        onto the ``body`` (what gets embedded); ``snippet`` is the body ALONE (what the
-        client displays / matches against the DOM via locate()), so the path never
-        breaks passage resolution. A body shorter than _SEC_MIN_CHARS is dropped rather
-        than kept as a near-empty chunk (a bare heading path is not content).
+    def _add(sec_id: str, context: str, body: str, loc) -> bool:
+        """Append one (sec_id, snippet, chunk_text, loc); return False once the per-page
+        cap is hit (caller stops). ``chunk_text`` is the heading-path ``context``
+        prefixed onto the ``body`` (what gets embedded); ``snippet`` is the body ALONE
+        (what the client displays), so the path never breaks passage resolution. A body
+        shorter than _SEC_MIN_CHARS is dropped rather than kept as a near-empty chunk (a
+        bare heading path is not content).
 
         Dedup is on the BODY text (not the path+body): an EMA notice that repeats a
         section verbatim per presentation (or ANSM boilerplate) embeds the identical
@@ -1604,29 +1610,48 @@ def section_chunks(raw: str, cis: str = "") -> list[tuple[str, str, str]]:
         seen.add(body)
         chunk_text = f"{context}\n{body}" if context else body
         snippet = body[:_SEC_SNIPPET_CHARS]
-        chunks.append((sec_id, snippet, chunk_text))
+        chunks.append((sec_id, snippet, chunk_text, loc))
         return len(chunks) < _SEC_MAX_CHUNKS
 
-    def _flush(sec_id: str, context: str,
-               narrative: list[str], table_rows: list[str]) -> bool:
+    def _flush(sec_id: str, context: str, narrative: list[list[tuple[str, int | None]]],
+               table_rows: list[tuple[str, tuple[int, int] | None]],
+               blocks: _BlockIndex) -> bool:
         """Emit chunks for one heading-path segment (the body accumulated under a given
         top-heading > subheading context); return False once the cap is hit. Prose is
         grouped on whole sentences then small chunks merged (so a section left empty by
         filler dropping simply yields nothing); table rows are kept intact, each a
-        self-contained linearised row, only a pathological giant row being windowed."""
-        body_all = _norm_ws(
-            " ".join(p for p in narrative if not _is_filler_paragraph(p))
-        )
+        self-contained linearised row, only a pathological giant row being windowed.
+
+        ``narrative`` holds each piece as owned text segments (_BlockIndex.owned), so
+        the body is built with the block every character came from, and each chunk's
+        location is the range of blocks its characters span."""
+        kept: list[tuple[str, int | None]] = []
+        for piece in narrative:
+            if _is_filler_paragraph("".join(t for t, _ in piece)):
+                continue
+            if kept:
+                kept.append((" ", None))
+            kept.extend(piece)
+        body_all, owners = _norm_owned(kept)
         merged = _merge_small(
             _sentence_chunks(body_all, _SEC_CHUNK_CHARS),
             _SEC_MERGE_MIN_CHARS, _SEC_MERGE_CEIL_CHARS,
         )
+        cursor = 0
         for body in merged:
-            if not _add(sec_id, context, body):
+            at = body_all.find(body, cursor)
+            loc = None
+            if at != -1:
+                cursor = at + len(body)
+                span = [o for o in owners[at:cursor] if o is not None]
+                if span:
+                    loc = (min(span), max(span), False)
+            if not _add(sec_id, context, body, loc):
                 return False
-        for row in table_rows:
+        for row, span in table_rows:
+            loc = (span[0], span[1], True) if span else None
             for part in _hard_windows(row, _SEC_CHUNK_CHARS) or [row]:
-                if not _add(sec_id, context, part):
+                if not _add(sec_id, context, part, loc):
                     return False
         return True
 
@@ -1634,10 +1659,17 @@ def section_chunks(raw: str, cis: str = "") -> list[tuple[str, str, str]]:
         sec_id = h_el.get("id")
         if not sec_id:  # empty-title heading skipped by _build_toc
             continue
+        blocks = _BlockIndex(h_el)
         top_title = _norm_ws(h_el.text_content())
         sub_path: dict[int, str] = {}  # nesting level -> current subheading title
-        narrative: list[str] = []
-        table_rows: list[str] = []  # each a self-contained linearised table row
+        narrative: list[list[tuple[str, int | None]]] = []
+        table_rows: list[tuple[str, tuple[int, int] | None]] = []  # linearised rows
+
+        def _rows(tbl) -> bool:
+            rows = _linearize_table(tbl)
+            table_rows.extend((line, blocks.span(tr)) for line, tr in rows)
+            return bool(rows)
+
         capped = False
         for sib in h_el.itersiblings():
             level = _titre_level(sib.get("class") or "")
@@ -1647,7 +1679,7 @@ def section_chunks(raw: str, cis: str = "") -> list[tuple[str, str, str]]:
                 # A subheading: flush the body gathered under the CURRENT context, then
                 # switch context to this heading (its text becomes the prefix, not body).
                 if not _flush(sec_id, _heading_context(top_title, sub_path),
-                              narrative, table_rows):
+                              narrative, table_rows, blocks):
                     capped = True
                     break
                 narrative, table_rows = [], []
@@ -1656,36 +1688,113 @@ def section_chunks(raw: str, cis: str = "") -> list[tuple[str, str, str]]:
                 sub_path[level] = _norm_ws(sib.text_content())
                 continue
             if sib.tag == "table":
-                rows = _linearize_table(sib)
-                if rows:
-                    table_rows.extend(rows)
-                else:
-                    narrative.append(sib.text_content())
+                if not _rows(sib):
+                    narrative.append(blocks.owned(sib))
                 continue
             nested = list(sib.iter("table"))
             if not nested:
-                narrative.append(sib.text_content())
+                narrative.append(blocks.owned(sib))
                 continue
             # A block wrapping table(s): linearise data tables row-by-row, keep any
-            # non-data table flat, and take the block's narrative WITHOUT the tables
-            # (a deepcopy with them stripped) so table text is never counted twice.
+            # non-data table flat, and take the block's narrative WITHOUT the tables so
+            # table text is never counted twice.
             for tbl in nested:
-                rows = _linearize_table(tbl)
-                if rows:
-                    table_rows.extend(rows)
-                else:
-                    narrative.append(tbl.text_content())
-            clone = copy.deepcopy(sib)
-            for t in list(clone.iter("table")):
-                if t.getparent() is not None:
-                    t.getparent().remove(t)
-            narrative.append(clone.text_content())
+                if not _rows(tbl):
+                    narrative.append(blocks.owned(tbl))
+            narrative.append(blocks.owned(sib, skip_tables=True))
         if capped:
-            return chunks
+            break
         if not _flush(sec_id, _heading_context(top_title, sub_path),
-                      narrative, table_rows):
-            return chunks
-    return chunks
+                      narrative, table_rows, blocks):
+            break
+    return chunks if located else [c[:3] for c in chunks]
+
+
+# Version of the block numbering a chunk's location ("b" in the .vec.json) refers to:
+# _BlockIndex here and sectionBlocks()/collectLeaves() in src/rcp-semsearch.js MUST
+# number a section's blocks identically. Bump it with any change to either, so the
+# embed service rewrites every sidecar's locations (no re-encode, see
+# vec_add_locations).
+VEC_LOC_VERSION = 1
+_LOC_LEAF = frozenset({"p", "li", "td", "th", "dd", "dt", "caption"})
+
+
+class _BlockIndex:
+    """The DOM blocks of one section, numbered exactly as the browser numbers them.
+
+    A search hit is shown by highlighting blocks of the rendered page, so each chunk
+    records WHICH blocks it was cut from (its location) instead of leaving the browser
+    to find its text: text search failed whenever a chunk's text is not contiguous on
+    the page (a linearised table row, a run of cells, a filler paragraph dropped from
+    the middle). The numbering mirrors sectionBlocks()/collectLeaves() in
+    rcp-semsearch.js: the heading's following element siblings up to the next
+    top-level heading, each contributing itself when it is a leaf block
+    (``_LOC_LEAF``), else its leaf descendants in document order, else itself."""
+
+    def __init__(self, head):
+        self.blocks: list = []
+        for sib in head.itersiblings():
+            if not isinstance(sib.tag, str):
+                continue  # comments: the browser's nextElementSibling skips them
+            if (re.fullmatch(r"sec-\d+", sib.get("id") or "")
+                    or "AmmAnnexeTitre1" in (sib.get("class") or "").split()):
+                break
+            if sib.tag in _LOC_LEAF:
+                self.blocks.append(sib)
+                continue
+            leaves = [d for d in sib.iterdescendants()
+                      if isinstance(d.tag, str) and d.tag in _LOC_LEAF]
+            self.blocks.extend(leaves or [sib])
+        # Keyed by element: lxml hands back the same proxy while self.blocks holds it.
+        self.index = {el: i for i, el in enumerate(self.blocks)}
+
+    def owned(self, el, skip_tables: bool = False) -> list[tuple[str, int | None]]:
+        """``el.text_content()`` as ``(text, block)`` segments, each text attributed to
+        its innermost enclosing block (None outside every block). ``skip_tables`` drops
+        nested tables WITH their tail, exactly what removing them from a copy did."""
+        if not isinstance(el.tag, str):  # a comment sibling: its text, no block
+            return [(el.text_content(), None)]
+        out: list[tuple[str, int | None]] = []
+
+        def walk(node, owner):
+            owner = self.index.get(node, owner)
+            if node.text:
+                out.append((node.text, owner))
+            for child in node:
+                if isinstance(child.tag, str):
+                    if skip_tables and child.tag == "table":
+                        continue
+                    walk(child, owner)
+                if child.tail:
+                    out.append((child.tail, owner))
+
+        walk(el, None)
+        return out
+
+    def span(self, el) -> tuple[int, int] | None:
+        """``(first, last)`` block numbers inside ``el`` (a table row), else None."""
+        found = [self.index[d] for d in el.iter() if d in self.index]
+        return (min(found), max(found)) if found else None
+
+
+def _norm_owned(segments: list[tuple[str, int | None]]) -> tuple[str, list[int | None]]:
+    """``_norm_ws`` over the concatenated segments, returning the owner of every
+    character of the result alongside it (a collapsed space owns nothing)."""
+    chars: list[str] = []
+    owners: list[int | None] = []
+    gap = False
+    for text, owner in segments:
+        for ch in text:
+            if ch.isspace():
+                gap = True
+                continue
+            if gap and chars:
+                chars.append(" ")
+                owners.append(None)
+            gap = False
+            chars.append(ch)
+            owners.append(owner)
+    return "".join(chars), owners
 
 
 # --- A-Z browse pages -------------------------------------------------------
@@ -2392,7 +2501,8 @@ def vec_payload(chunks, vecs, model: str, query_prefix: str, src_hash: str,
                          f"{VEC_QUANTS}")
     out_chunks = []
     dim = 0
-    for (sec_id, snippet, _text), vec in zip(chunks, vecs):
+    for chunk, vec in zip(chunks, vecs):
+        sec_id, snippet = chunk[0], chunk[1]
         values = list(vec)
         dim = len(values)
         if quant == "binary":
@@ -2401,8 +2511,11 @@ def vec_payload(chunks, vecs, model: str, query_prefix: str, src_hash: str,
             q = quantize_int8(values)
             packed = struct.pack(f"{len(q)}b", *q)
         b64 = base64.b64encode(packed).decode("ascii")
-        out_chunks.append({"sec": sec_id, "snippet": snippet, "q": b64})
-    return {
+        entry = {"sec": sec_id, "snippet": snippet, "q": b64}
+        if len(chunk) > 3:
+            _set_loc(entry, chunk[3])
+        out_chunks.append(entry)
+    payload = {
         "model": model,
         "dim": dim,
         "quant": quant,
@@ -2410,6 +2523,51 @@ def vec_payload(chunks, vecs, model: str, query_prefix: str, src_hash: str,
         "src_hash": src_hash,
         "chunks": out_chunks,
     }
+    if all(len(c) > 3 for c in chunks):
+        payload["loc"] = VEC_LOC_VERSION
+    return payload
+
+
+def _set_loc(entry: dict, loc) -> None:
+    """Store a section_chunks(located=True) location on one .vec.json chunk:
+    ``"b": [first, last]`` block numbers within its section, ``"r": 1`` when it is a
+    linearised table row (the browser then highlights the row and keeps the snippet as
+    display text, since it names each value's column). No location, no keys: the
+    browser falls back to finding the snippet's text."""
+    entry.pop("b", None)
+    entry.pop("r", None)
+    if loc:
+        entry["b"] = [loc[0], loc[1]]
+        if loc[2]:
+            entry["r"] = 1
+
+
+def vec_add_locations(vec: Path, raw: str, cis: str) -> bool:
+    """Add the chunk locations to an existing ``.vec.json`` WITHOUT re-encoding, when it
+    embeds exactly this text (``src_hash``) but predates ``VEC_LOC_VERSION``. The
+    vectors are untouched: only the ``b``/``r`` keys and the ``loc`` version change.
+    Returns True when it rewrote the file. Refuses (False) if re-segmenting does not
+    reproduce the stored chunks one for one, rather than attach a wrong location."""
+    data = read_served(vec)
+    if data is None:
+        return False
+    try:
+        payload = json.loads(data)
+    except ValueError:
+        return False
+    if payload.get("loc") == VEC_LOC_VERSION or payload.get("src_hash") != raw_hash(raw):
+        return False
+    stored = payload.get("chunks") or []
+    located = section_chunks(raw, cis, located=True)
+    if len(located) != len(stored) or any(
+            c.get("sec") != l[0] or c.get("snippet") != l[1]
+            for c, l in zip(stored, located)):
+        return False
+    for c, l in zip(stored, located):
+        _set_loc(c, l[3])
+    payload["loc"] = VEC_LOC_VERSION
+    write_vec_json(vec, payload)
+    return True
 
 
 def write_vec_json(dist_path: Path, payload: dict) -> None:
@@ -2461,7 +2619,7 @@ def vec_path_for(page: Path) -> Path:
 
 
 def read_vec_meta(vec: Path) -> dict | None:
-    """``{src_hash, model, dim, quant}`` baked into an existing ``.vec.json``, else
+    """``{src_hash, model, dim, quant, loc}`` baked into an existing ``.vec.json``, else
     None. The self-describing staleness key: no separate manifest is kept.
 
     ``dim`` is the served vector width (the MRL truncation length, e.g. 1024): a change
@@ -2478,7 +2636,8 @@ def read_vec_meta(vec: Path) -> dict | None:
     try:
         d = json.loads(raw)
         return {"src_hash": d.get("src_hash"), "model": d.get("model"),
-                "dim": d.get("dim"), "quant": d.get("quant") or "int8"}
+                "dim": d.get("dim"), "quant": d.get("quant") or "int8",
+                "loc": d.get("loc")}
     except Exception:
         return None
 
@@ -2654,9 +2813,12 @@ def embed_page_to_vec(cis: str, raw: str, subdir: str, encoder, *,
     src_hash = raw_hash(raw)
     if not force:
         if vec_is_current(read_vec_meta(vec), src_hash, model, encoder.dim, quant):
-            touch_served(vec)
+            # Current vectors from before chunk locations existed get them now, no
+            # encode (vec_add_locations rewrites the file, which also dates it).
+            if not vec_add_locations(vec, raw, cis):
+                touch_served(vec)
             return "fresh"
-    chunks = section_chunks(raw, cis)
+    chunks = section_chunks(raw, cis, located=True)
     # Even with no searchable sections, persist an empty payload carrying src_hash so
     # the hash gate marks it fresh and we don't re-embed it on every pass.
     texts = [c[2] for c in chunks]
