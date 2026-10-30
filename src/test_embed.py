@@ -522,6 +522,31 @@ def test_vec_add_locations_backfills_without_reencoding():
     print("ok  test_vec_add_locations_backfills_without_reencoding")
 
 
+def test_eu_page_without_heading_ids_gets_the_chunks_anchors():
+    """An EMA overlay whose headings ema_pdf could not number (no AmmAnnexeTitre1, no
+    ids: _promote_numbered_titles promotes them) inside a CLOSED <details> group must
+    still render the sec-N ids section_chunks anchors to. Regression: on CAELYX (and 6
+    other /eu/ pages) _eu_toc only ids the OPEN group's headings, so the page had no
+    sec-N at all and every search hit pointed at a heading that did not exist."""
+    import re
+    raw = (
+        '<div id="textDocument"><details class="ema-annexe"><summary id="grp-1">'
+        "ANNEXE I</summary>\n"
+        "<p>1. DÉNOMINATION DU MÉDICAMENT</p>\n"
+        "<p>Caelyx pegylated liposomal 2 mg/ml solution à diluer pour perfusion, "
+        "un texte assez long pour faire un passage.</p>\n"
+        "<p>4. DONNÉES CLINIQUES</p>\n"
+        "<p>Caelyx pegylated liposomal est indiqué en monothérapie chez les patients "
+        "ayant un cancer du sein métastatique.</p>\n"
+        "</details></div>"
+    )
+    secs = {c[0] for c in build.section_chunks(raw)}
+    assert secs == {"sec-0", "sec-1"}, secs
+    body, _toc = build._eu_prepare(raw)
+    assert secs <= set(re.findall(r'id="(sec-\d+)"', body)), body
+    print("ok  test_eu_page_without_heading_ids_gets_the_chunks_anchors")
+
+
 def test_dsfr_backtotop_chrome_stripped():
     # Fresh ANSM scrapes carry DSFR back-to-top links + tooltip spans whose visible
     # text is "Redirection vers le haut de page". They must not pollute the chunks.
@@ -2380,6 +2405,7 @@ if __name__ == "__main__":
     test_linearised_row_snippet_resolves_to_its_row()
     test_chunk_locations_land_on_their_blocks()
     test_vec_add_locations_backfills_without_reencoding()
+    test_eu_page_without_heading_ids_gets_the_chunks_anchors()
     test_dsfr_backtotop_chrome_stripped()
     test_filler_paragraphs_dropped()
     test_empty_and_untitled()

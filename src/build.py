@@ -1545,6 +1545,26 @@ def _linearize_table(tbl) -> list[tuple[str, object]]:
     return lines
 
 
+def _ensure_sec_ids(inner) -> bool:
+    """Give the top-level headings their sec-N ids unless they already carry some;
+    False when there is no top-level heading at all. Shared by section_chunks and
+    _eu_prepare so the chunks' anchors and the rendered page always agree.
+
+    ANSM raw carries no ids: assign sec-N exactly as clean_rcp/_build_toc does for the
+    rendered page. A converted /eu/ overlay ALREADY carries sec-N ids from ema_pdf
+    (which render_eu_page keeps verbatim, and its ids are QRD-numbered, not a 0-based
+    run), so re-running _build_toc would renumber them and desync the chunk anchors
+    from the page. Only assign when they're absent. depth=1 so we touch ONLY the
+    top-level sec-N ids the chunks anchor to (sub-headings are never embedded),
+    keeping this independent of the sidebar ToC's _TOC_DEPTH."""
+    headings = inner.xpath(".//*[contains(@class, 'AmmAnnexeTitre1')]")
+    if not headings:
+        return False
+    if not any(h.get("id") for h in headings):
+        _build_toc(inner, depth=1)  # assigns id="sec-N"; empty-title headings get none
+    return True
+
+
 def section_chunks(raw: str, cis: str = "", *, located: bool = False) -> list[tuple]:
     """Segment one RCP into per-section embedding chunks aligned with ``sec-N``.
 
@@ -1574,18 +1594,8 @@ def section_chunks(raw: str, cis: str = "", *, located: bool = False) -> list[tu
     except Exception:  # a handful of dumps have markup lxml refuses
         return []
     inner = _inner_of(doc)
-    headings = inner.xpath(".//*[contains(@class, 'AmmAnnexeTitre1')]")
-    if not headings:
+    if not _ensure_sec_ids(inner):
         return []
-    # ANSM raw carries no ids: assign sec-N exactly as clean_rcp/_build_toc does for
-    # the rendered page. A converted /eu/ overlay ALREADY carries sec-N ids from
-    # ema_pdf (which render_eu_page keeps verbatim, and its ids are QRD-numbered, not
-    # a 0-based run), so re-running _build_toc would renumber them and desync the
-    # chunk anchors from the page. Only assign when they're absent. depth=1 so we
-    # touch ONLY the top-level sec-N ids these chunks anchor to (sub-headings are
-    # never embedded), keeping this independent of the sidebar ToC's _TOC_DEPTH.
-    if not any(h.get("id") for h in headings):
-        _build_toc(inner, depth=1)  # assigns id="sec-N"; empty-title headings get none
     chunks: list[tuple[str, str, str, tuple[int, int, bool] | None]] = []
     seen: set[str] = set()  # body text already emitted on THIS page (dedup, see _add)
 
@@ -1717,6 +1727,13 @@ def section_chunks(raw: str, cis: str = "", *, located: bool = False) -> list[tu
 # vec_add_locations).
 VEC_LOC_VERSION = 1
 _LOC_LEAF = frozenset({"p", "li", "td", "th", "dd", "dt", "caption"})
+# Start tags that close an open <p> in the HTML5 parser (the spec's "close a p
+# element" list), i.e. what a browser hoists out of a <p> that lxml leaves inside.
+_P_CLOSERS = frozenset({
+    "address", "article", "aside", "blockquote", "details", "dialog", "div", "dl",
+    "fieldset", "figcaption", "figure", "footer", "form", "h1", "h2", "h3", "h4",
+    "h5", "h6", "header", "hgroup", "hr", "main", "menu", "nav", "ol", "p", "pre",
+    "section", "summary", "table", "ul", "li", "dd", "dt"})
 
 
 class _BlockIndex:
@@ -1739,12 +1756,17 @@ class _BlockIndex:
             if (re.fullmatch(r"sec-\d+", sib.get("id") or "")
                     or "AmmAnnexeTitre1" in (sib.get("class") or "").split()):
                 break
-            if sib.tag in _LOC_LEAF:
+            # A <p> wrapping a block (via a stray inline tag, e.g. the scraped
+            # <p><iv><div><table>) stays one block in lxml, but a browser closes the
+            # <p> at the <div>, so on the page it is the <p> then the block's leaves.
+            own = [sib] if sib.tag in _LOC_LEAF else []
+            if own and not (sib.tag == "p" and any(
+                    d.tag in _P_CLOSERS for d in sib.iterdescendants())):
                 self.blocks.append(sib)
                 continue
             leaves = [d for d in sib.iterdescendants()
                       if isinstance(d.tag, str) and d.tag in _LOC_LEAF]
-            self.blocks.extend(leaves or [sib])
+            self.blocks.extend(own + leaves or [sib])
         # Keyed by element: lxml hands back the same proxy while self.blocks holds it.
         self.index = {el: i for i, el in enumerate(self.blocks)}
 
@@ -3488,6 +3510,11 @@ def _eu_prepare(overlay_html: str) -> tuple[str, list[TocEntry]]:
     """(body html, toc) of an EMA overlay: parsed through _parse_clean (the same tree
     section_chunks segments, subheadings promoted) with the ToC ids applied."""
     inner = _inner_of(_parse_clean(overlay_html))
+    # An overlay whose headings ema_pdf could not number (they were promoted by
+    # _promote_numbered_titles) and that sit in a CLOSED group got no id from _eu_toc,
+    # while section_chunks numbered them: every search hit on those 7 pages (of 2244)
+    # pointed at a heading the page did not have.
+    _ensure_sec_ids(inner)
     toc = _eu_toc(inner)
     return lxml_html.tostring(inner, encoding="unicode"), toc
 
