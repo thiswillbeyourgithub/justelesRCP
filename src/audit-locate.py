@@ -101,10 +101,18 @@ def check(doc, sec: str, snippet: str, b, row: bool) -> str:
     return "text-mismatch"
 
 
+_CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
 def _parse(html: bytes | str):
     # html5lib warns about every attribute name lxml cannot store; noise here.
     warnings.filterwarnings("ignore", module="html5lib")
-    return html5lib.parse(html, treebuilder="lxml", namespaceHTMLElements=False)
+    if isinstance(html, bytes):
+        html = html.decode("utf-8", "replace")  # served pages are UTF-8
+    # lxml refuses control characters (a NUL in one page's attribute raised), which a
+    # browser tolerates; they never change the block structure.
+    return html5lib.parse(_CONTROL.sub("", html), treebuilder="lxml",
+                          namespaceHTMLElements=False)
 
 
 @click.command()
