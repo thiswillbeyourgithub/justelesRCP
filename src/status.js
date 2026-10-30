@@ -377,11 +377,33 @@
     }
     // Pages still searched with vectors from an older chunk format, re-indexed after
     // every page that has none (see _CHUNK_FORMAT_LEGACY in build.py).
+    // The ETA assumes the current per-page pace keeps up; upgrades only run when nothing
+    // else is waiting, so it is a lower bound.
     var up = s.format_upgrade;
-    if (up && up.remaining > 0)
-      frag.appendChild(note("Amélioration du découpage (version " + up.version + ") : " +
-        num(up.remaining) + " page(s) restent à réindexer. Elles restent consultables " +
-        "d'ici là, avec l'ancien découpage."));
+    if (up && up.remaining > 0) {
+      var headUp = el("div", "status-lane-head");
+      headUp.appendChild(el("h3", "status-lane-title",
+        "Amélioration du découpage (version " + up.version + ")"));
+      headUp.appendChild(badge("réindexation en cours", "run"));
+      frag.appendChild(headUp);
+      var total = gap && gap.crawled_pages;
+      if (total > 0) {
+        frag.appendChild(progress(100 * (total - up.remaining) / total));
+        frag.appendChild(metric("Pages déjà réindexées",
+          num(total - up.remaining) + " / " + num(total)));
+      }
+      frag.appendChild(metric("Pages restant à réindexer", num(up.remaining), "warn"));
+      var spp = s.indexing && s.indexing.seconds_per_page;
+      if (spp > 0) {
+        var eta = up.remaining * spp;
+        frag.appendChild(metric("Fin estimée", "~ " + dur(eta) + " (vers le " +
+          new Date(Date.now() + eta * 1000).toLocaleDateString("fr-FR") + ")"));
+      }
+      frag.appendChild(note("Ces pages restent consultables d'ici là, avec l'ancien " +
+        "découpage. La réindexation passe après les pages sans aucun vecteur, la date " +
+        "de fin peut donc reculer."));
+      frag.appendChild(el("div", "status-sep"));
+    }
 
     var b = s.backlog, p = s.pages;
     frag.appendChild(metric("File d'indexation",
