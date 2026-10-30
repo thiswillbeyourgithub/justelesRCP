@@ -525,6 +525,10 @@
     chunks = (data.chunks || []).map((c) => ({
       sec: c.sec,
       snippet: c.snippet,
+      // The chunk's blocks within its section, recorded by build.section_chunks (absent
+      // from sidecars that predate it): see locateByBlocks.
+      b: c.b,
+      row: c.r === 1,
       vec: decodeVec(c.q, quant, data.dim),
     }));
     if (!chunks.length) throw fail("Aucun contenu indexé pour cette page.");
@@ -643,6 +647,8 @@
       return {
         sec: c.sec,
         snippet: c.snippet,
+        b: c.b,
+        row: c.row,
         cosine: cosine,
         lexical: lexical,
         score: cosine + KEYWORD_BOOST * lexical,
@@ -661,7 +667,7 @@
       // Gate on the raw cosine, and `continue` (not `break`): the list is sorted by the
       // HYBRID score, so a lower-cosine item can sit above a higher-cosine one.
       if (s.cosine < semFloor) continue;
-      const els = locate(s.sec, s.snippet);
+      const els = locate(s);
       if (!els || !els.length || els.some((el) => seen.has(el))) continue;
       for (const el of els) seen.add(el);
       hits.push({
@@ -694,9 +700,9 @@
     setStatus("Cliquez un passage, ou naviguez avec ‹ ›.");
   }
 
-  // Find the block elements for a hit: the RUN of consecutive paragraphs within section
-  // `secId` that the chunk snippet spans, else [section heading] as a fallback (e.g. a
-  // linearised table-row chunk whose text isn't a contiguous DOM string).
+  // Find the block elements for a hit: the blocks the chunk was cut from when its
+  // sidecar recorded them (locateByBlocks), else the RUN of consecutive paragraphs within
+  // section `s.sec` that the chunk snippet spans, else [section heading] as a fallback.
   //
   // A chunk is NOT one paragraph: build.py's _merge_small folds paragraphs shorter than
   // _SEC_MERGE_MIN_CHARS into their neighbour, and _sentence_chunks groups whole
@@ -711,10 +717,12 @@
   // last block only has to START with whatever is left of it. Blocks are joined with a
   // single space, exactly as build.py's _norm_ws(" ".join(...)) built the body.
   const MAX_RUN_BLOCKS = 12; // a chunk is ~500 chars; a longer run means we mis-tracked
-  function locate(secId, snippet) {
-    const head = document.getElementById(secId);
+  function locate(s) {
+    const head = document.getElementById(s.sec);
     if (!head) return null;
-    const hay = norm(snippet);
+    const located = s.b && locateByBlocks(head, s);
+    if (located) return located;
+    const hay = norm(s.snippet);
     const needle = hay.slice(0, 40);
     if (needle.length >= 8) {
       const blocks = sectionBlocks(head);
@@ -746,6 +754,72 @@
       if (across) return across;
     }
     return [head]; // fallback: scroll to the section title
+  }
+
+  // The chunk's recorded location: `s.b` = [first, last] block numbers within its
+  // section, counted the way sectionBlocks() counts them (build._BlockIndex mirrors it,
+  // keep the two in sync), and `s.row` when the chunk is a linearised table row. Text
+  // search guessed wrong whenever the chunk's text was not contiguous on the page (a
+  // linearised row, a run of cells, a filler paragraph dropped from the middle); the
+  // location does not care. It is still VERIFIED against the live text before use: a
+  // browser repairs some markup differently from lxml (a <p> wrapping a <table> is
+  // closed before it, adding an empty block), which shifts every later block of the
+  // section, so the same-length run is tried at the nearest offset whose text holds
+  // the snippet's words. Null (fall back to text search) when none does.
+  // src/audit-locate.py replays this on the served catalog: keep the two in sync.
+  const VERIFY_WORDS = 8;
+  const WORD_RE = /[\p{L}\p{N}]{4,}/gu;
+  function locateByBlocks(head, s) {
+    const blocks = sectionBlocks(head);
+    const first = s.b[0];
+    const last = s.b[1];
+    if (!(first >= 0 && last >= first)) return null;
+    // The snippet is the body cut at _SEC_SNIPPET_CHARS: its last word may be partial.
+    const toks = s.snippet.trim().split(/\s+/);
+    const words = (toks.length > 1 ? toks.slice(0, -1).join(" ") : s.snippet)
+      .toLowerCase().match(WORD_RE) || [];
+    const want = words.slice(0, VERIFY_WORDS);
+    const offsets = [];
+    for (let d = -first; d < blocks.length - last; d++) offsets.push(d);
+    offsets.sort((x, y) => Math.abs(x) - Math.abs(y));
+    for (const d of offsets) {
+      const run = runAt(blocks, first + d, last + d, s.row);
+      if (!run) continue;
+      // Space-free text, matched by substring: the chunk's text glues adjacent cells
+      // ("lymphatiqueTrès") where the page has two blocks.
+      const text = run.text.map(blockText).join("").replace(/\s+/g, "").toLowerCase();
+      if (want.every((w) => text.indexOf(w) !== -1)) return run.els;
+    }
+    return null;
+  }
+
+  // The elements to highlight for blocks[first..last] (`els`, outermost only: a <td>
+  // and the <p> inside it are both blocks) and the ones whose text verifies it (`text`;
+  // a row adds its table's header row, whose labels the linearised line carries).
+  function runAt(blocks, first, last, row) {
+    const slice = blocks.slice(first, last + 1);
+    if (row) {
+      const trs = [];
+      for (const b of slice) {
+        const tr = b.closest("tr");
+        if (tr && !trs.includes(tr)) trs.push(tr);
+      }
+      if (!trs.length) return null;
+      const table = trs[0].closest("table");
+      const header = table ? table.querySelector("tr") : null;
+      const els = trs.slice();
+      els.linear = true;
+      return { els: els, text: header && !trs.includes(header) ? [header].concat(trs) : trs };
+    }
+    const els = slice.filter((b) => !slice.some((o) => o !== b && o.contains(b)));
+    return { els: els, text: els };
+  }
+
+  // A block's text with a row's cells space-separated (a <tr>'s textContent glues
+  // "Dose" and "50 %" into "Dose50 %").
+  function blockText(el) {
+    if (el.tagName !== "TR") return el.textContent + " ";
+    return Array.from(el.children).map((c) => c.textContent).join(" ") + " ";
   }
 
   // A header-led table is embedded one row per chunk, LINEARISED by build.py's
