@@ -105,7 +105,7 @@ dist/status.html status.js  noindex live ops dashboard (crawl/embed/query stats 
                             the curated /api/summary + /api/sem/summary endpoints)
 dist/logo.svg               site logo (SVG favicon on every page + README header)
 dist/og.png                 raster social card for og:image / twitter:image (1200x630)
-dist/manifest.webmanifest icon-192.png icon-512.png apple-touch-icon.png  makes the site installable as an app
+dist/manifest.webmanifest icon-192.png icon-512.png icon-maskable-192.png icon-maskable-512.png apple-touch-icon.png  makes the site installable as an app
 dist/app-config.js app-init.js dev-banner.js dock.js app-version.js rcp-semsearch.js  (runtime client assets)
 dist/rcp/<cis>-<slug>.vec.json   OPTIONAL per-page section vectors for server-side
 dist/eu/<cis>-<slug>.vec.json    per-drug semantic search, written DIRECTLY by

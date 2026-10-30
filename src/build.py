@@ -4168,7 +4168,12 @@ def write_static_assets(changelog: dict) -> None:
     # copied as-is without a .br sibling. The icons are rendered from logo.svg once
     # and committed, like og.png: `rsvg-convert --width N --height N
     # --keep-aspect-ratio --background-color '#ffffff'` at 192, 512 and 180 (iOS).
-    for raster in ("og.png", "icon-192.png", "icon-512.png", "apple-touch-icon.png"):
+    # The maskable pair (Android's adaptive icons, which crop to the central 80%
+    # circle) is the logo at 70% of the edge on a full-bleed page: add
+    # `--page-width N --page-height N --left M --top M` with --width/--height
+    # 0.7*N and M the margin, (N - 0.7*N) / 2.
+    for raster in ("og.png", "icon-192.png", "icon-512.png", "apple-touch-icon.png",
+                   "icon-maskable-192.png", "icon-maskable-512.png"):
         shutil.copy(SRC / raster, DIST / raster)
 
 
