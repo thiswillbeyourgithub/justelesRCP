@@ -100,10 +100,18 @@ services:
     tmpfs:
       # Caddy needs a writable data/config dir even without TLS; /gen holds the
       # per-startup rendered app-config.js (see entrypoint.sh + Caddyfile).
-      - /tmp
-      - /config
-      - /data
-      - /gen
+      #
+      # `mode=1777` on every tmpfs (here and in refresh/embed), never Docker's
+      # default: a bare tmpfs is 1777 when the container is created but comes
+      # back root-owned 0755 when the restart policy restarts it (docker-ce
+      # 29.9.3, measured 2026-11-04). refresh and embed run as a host uid, so
+      # they would lose /tmp after any crash or daemon restart; justelesdocs's
+      # non-root Caddy restart-looped on exactly that. This web service runs as
+      # root and does not need it, but stays uniform with the other two.
+      - /tmp:mode=1777
+      - /config:mode=1777
+      - /data:mode=1777
+      - /gen:mode=1777
     cap_add:
       # The caddy:2-alpine binary ships with `setcap cap_net_bind_service=+ep`.
       # The effective (+e) bit means execve() fails with EPERM ("Operation not
@@ -198,7 +206,7 @@ services:
       - ../data/.scrape-ema-manifest.json:/app/data/.scrape-ema-manifest.json
       - ../dist/eu:/app/dist/eu
     tmpfs:
-      - /tmp
+      - /tmp:mode=1777
     healthcheck:
       <<: *healthcheck-timing
       test: ["CMD", "python", "-c",
@@ -300,7 +308,7 @@ services:
       - ../dist/rcp:/app/dist/rcp
       - ../dist/eu:/app/dist/eu
     tmpfs:
-      - /tmp
+      - /tmp:mode=1777
     healthcheck:
       <<: *healthcheck-timing
       test: ["CMD", "python", "-c",
