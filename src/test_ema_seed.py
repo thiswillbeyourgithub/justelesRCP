@@ -184,6 +184,34 @@ def test_table_merged_title_row_spans_columns():
     ), got
 
 
+def test_framed_prose_is_not_read_as_a_table():
+    """Regression, VITRAKVI 64373909: its PDF frames every page in a ruled box, so
+    find_tables returned one page-sized "table" per page whose rows are the prose
+    lines (one filled cell each). Emitted as <table>, the section markers sat in cells
+    and the Sommaire was empty. Such a detection is read as text; a real table with a
+    few merged rows (a title, a MedDRA class divider) is kept."""
+    ema = sema.ema
+    prose = [["4.1 Indications thérapeutiques", None]] + [[f"ligne {i}", ""] for i in range(19)]
+    assert ema._is_prose_table(prose)
+    real = [["Classe", None]] + [[f"effet {i}", "fréquent"] for i in range(12)]
+    assert not ema._is_prose_table(real)
+    assert not ema._is_prose_table(prose[:5])  # small tables are always kept
+
+
+def test_unaccented_smpc_title_still_opens_its_group():
+    """Regression, MVASI 61409314: a PDF spelling the title "RESUME DES
+    CARACTERISTIQUES DU PRODUIT" (no accents) was missed, so no group opened and the
+    page's Sommaire listed only the annex names. Titles are matched accent-folded."""
+    import pymupdf
+    doc = pymupdf.open()
+    p = doc.new_page(width=595, height=842)
+    p.insert_text((71, 100), "ANNEXE I", fontname="hebo")  # dividers are bold
+    p.insert_text((71, 130), "RESUME DES CARACTERISTIQUES DU PRODUIT", fontname="hebo")
+    p.insert_text((71, 160), "Le texte du résumé.")
+    out = sema.ema.convert(doc.tobytes())["html"]
+    assert '<details class="ema-annexe" open>' in out, out
+
+
 def test_error_entry_keeps_last_success_and_backs_off():
     """A failed fetch must not pass for a fresh capture, nor be retried at once.
 
@@ -636,6 +664,8 @@ if __name__ == "__main__":
     test_overlay_pdf_url_reads_baked_link()
     test_convert_splits_paragraphs_bullets_and_drops_page_numbers()
     test_table_merged_title_row_spans_columns()
+    test_framed_prose_is_not_read_as_a_table()
+    test_unaccented_smpc_title_still_opens_its_group()
     test_error_entry_keeps_last_success_and_backs_off()
     test_refresh_refuses_unknown_cis()
     test_ema_url_host_check_blocks_spoofs()

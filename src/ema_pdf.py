@@ -47,6 +47,8 @@ import re
 
 import pymupdf
 
+from bdpm import fold_ascii
+
 
 # Page ceiling for one product-information PDF. The largest real ones (multi-
 # presentation notices) run to a few hundred pages; anything far beyond that is
@@ -88,8 +90,12 @@ _ANNEXE = re.compile(r"^ANNEXE\s+[IVX]+", re.I)
 # number marker. Deliberately a tight whitelist: a generic "all-caps bold line ->
 # heading" rule wrongly promotes the mock-up box text in the labelling annex and
 # the many uppercase run-ins, exploding the heading count.
+# These three patterns are matched against the ACCENT-FOLDED text (fold_ascii):
+# about 1 PDF in 7 spells its titles without accents ("RESUME DES CARACTERISTIQUES
+# DU PRODUIT"), which the accented patterns missed, so no group was marked open and
+# the page's Sommaire listed only the annex names (MVASI 61409314).
 _ANNEX_TITLE = re.compile(
-    r"^(RÉSUMÉ DES CARACTÉRISTIQUES|ÉTIQUETAGE ET NOTICE|ÉTIQUETAGE|NOTICE)\b", re.I
+    r"^(RESUME DES CARACTERISTIQUES|ETIQUETAGE ET NOTICE|ETIQUETAGE|NOTICE)\b", re.I
 )
 # A heading that opens a new collapsible <details> group (macro structure of the
 # doc). The labelling annex repeats its 1-18 block per pack and the notice recurs
@@ -97,8 +103,26 @@ _ANNEX_TITLE = re.compile(
 # blocks instead of one flat 300-heading wall. Matched against the full heading
 # label, so "A. ÉTIQUETAGE"/"B. NOTICE" (Annexe III halves) group while
 # "A. FABRICANT…" (an Annexe II section) does not.
-_GROUP_BOUNDARY = re.compile(r"(ANNEXE\s+[IVX]+|RÉSUMÉ DES CARACTÉRISTIQUES|ÉTIQUETAGE|NOTICE)", re.I)
-_SMPC_TITLE = re.compile(r"RÉSUMÉ DES CARACTÉRISTIQUES", re.I)  # the group shown open
+_GROUP_BOUNDARY = re.compile(r"(ANNEXE\s+[IVX]+|RESUME DES CARACTERISTIQUES|ETIQUETAGE|NOTICE)", re.I)
+_SMPC_TITLE = re.compile(r"RESUME DES CARACTERISTIQUES", re.I)  # the group shown open
+
+# pymupdf's find_tables reads a PDF that frames every page in ruled boxes (VITRAKVI)
+# as one page-sized "table" per page, whose rows are the prose lines: each is one
+# filled cell spanning the rest. Emitted as <table>, the whole SmPC lost its headings
+# (the section markers sat in cells) and the Sommaire was empty. Real tables have
+# a few such rows (a merged title, a "MedDRA class" divider) among multi-cell ones,
+# never this many: a detection with at least _PROSE_TABLE_MIN_ROWS rows of which
+# _PROSE_TABLE_RATIO hold one filled cell or none is read as text instead.
+_PROSE_TABLE_MIN_ROWS = 10
+_PROSE_TABLE_RATIO = 0.7
+
+
+def _is_prose_table(rows: list[list[str | None]]) -> bool:
+    """True when a detected table is really framed prose (see _PROSE_TABLE_RATIO)."""
+    if len(rows) < _PROSE_TABLE_MIN_ROWS:
+        return False
+    single = sum(1 for r in rows if sum(1 for c in r if c and c.strip()) <= 1)
+    return single >= _PROSE_TABLE_RATIO * len(rows)
 
 
 def _pdf_date(raw: str | None) -> str:
@@ -256,11 +280,11 @@ def _convert_doc(doc) -> dict:
         if groups and not groups[-1]["parts"]:
             g = groups[-1]
             g["title"] = f'{g["title"]} - {gtitle}'.strip(" -")
-            g["open"] = g["open"] or bool(_SMPC_TITLE.search(gtitle))
+            g["open"] = g["open"] or bool(_SMPC_TITLE.search(fold_ascii(gtitle)))
             return g
         g = {
             "sid": f"grp-{len(groups) + 1}", "title": gtitle,
-            "open": bool(_SMPC_TITLE.search(gtitle)), "parts": [],
+            "open": bool(_SMPC_TITLE.search(fold_ascii(gtitle))), "parts": [],
         }
         groups.append(g)
         return g
@@ -279,7 +303,7 @@ def _convert_doc(doc) -> dict:
 
     for page in doc:
         page_h = page.rect.height
-        tables = page.find_tables().tables
+        tables = [t for t in page.find_tables().tables if not _is_prose_table(t.extract())]
         tbboxes = [t.bbox for t in tables]
         # Elements to place in reading order: (y0, x0, kind, payload). Text is
         # placed line by line (not block by block) so that a PDF text block that
@@ -345,7 +369,7 @@ def _convert_doc(doc) -> dict:
                 if pending_marker:
                     label = f"{pending_marker} {txt}"
                     is_sub = bool(_MARKER_SUB.match(pending_marker))
-                    if _GROUP_BOUNDARY.search(label) and not is_sub:
+                    if _GROUP_BOUNDARY.search(fold_ascii(label)) and not is_sub:
                         flush_para(para)
                         new_group(label)
                     elif is_sub:
@@ -357,7 +381,7 @@ def _convert_doc(doc) -> dict:
                     pending_marker = ""
                     continue
                 # A bold ANNEXE divider or a whitelisted annex title opens a group.
-                if bold and (_ANNEXE.match(txt) or _ANNEX_TITLE.match(txt)):
+                if bold and (_ANNEXE.match(txt) or _ANNEX_TITLE.match(fold_ascii(txt))):
                     flush_para(para)
                     new_group(txt)
                     continue
