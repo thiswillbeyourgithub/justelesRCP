@@ -194,6 +194,8 @@ uv run src/audit-locate.py --sample 100  # check every semantic-search chunk of 
                           #  lands on its passage, not its section heading (replays the browser's
                           #  locateByBlocks on html5lib-parsed served pages; exit 1 on failure;
                           #  --all, --only CIS). deploy.sh runs it after the build (DEPLOY_LOCATE_SAMPLE)
+uv run src/audit-pages.py --all  # flag crawled pages under 6 Sommaire sections, 2000 chars or
+                          #  5 chunks (= a parser bug to fix); --sample N, --only CIS, --lane rcp|eu
 uv run src/build.py           # build ./dist from ./data (overlay wins over the 2022 CSV; a data/eu
                           #  overlay makes /eu/<cis> a full converted page instead of a stub). Does NOT
                           #  bake vectors anymore: the embed service / embed-rcp.py write .vec.json
