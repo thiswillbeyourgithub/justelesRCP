@@ -240,6 +240,58 @@ def test_eu_toc_keeps_ema_ids_and_nests_subheads():
     print("ok  test_eu_toc_keeps_ema_ids_and_nests_subheads")
 
 
+def test_eu_smpc_group_opened_when_its_title_was_missed():
+    # Regression, MVASI 61409314 (and ~310 other /eu/ pages): ema_pdf missed the
+    # unaccented "RESUME DES CARACTERISTIQUES" title, so no group was open and the
+    # Sommaire listed only the annex names. The first group holding a numbered heading
+    # is opened at parse time, its plain-paragraph numbered titles are promoted (the
+    # ANSM-only guard skipped them since ema_pdf had tagged ONE heading), and the
+    # promoted ones get sec-N ids after ema_pdf's, never colliding with them.
+    overlay = """<div id="textDocument">
+      <details class="ema-annexe"><summary id="grp-1">ANNEXE I</summary>
+        <p>RESUME DES CARACTERISTIQUES DU PRODUIT</p>
+        <h2 class="AmmAnnexeTitre1" id="sec-1">1. DENOMINATION DU MEDICAMENT</h2>
+        <p>MVASI 25 mg/mL solution a diluer pour perfusion.</p>
+        <p>4. DONNEES CLINIQUES</p>
+        <p>4.1 Indications therapeutiques</p>
+        <p>MVASI est indique chez les patients adultes atteints de cancer colorectal.</p>
+      </details>
+      <details class="ema-annexe"><summary id="grp-2">ANNEXE III</summary>
+        <p>Boite de carton</p>
+      </details>
+    </div>"""
+    body, toc = build._eu_prepare(overlay)
+    assert [g[0] for g in toc] == ["grp-1", "grp-2"], toc
+    secs = toc[0][2]
+    assert [(i, t) for i, t, _ in secs] == [("sec-1", "1. DENOMINATION DU MEDICAMENT"),
+                                            ("sec-2", "4. DONNEES CLINIQUES")], secs
+    assert [t for _, t, _ in secs[1][2]] == ["4.1 Indications therapeutiques"], secs
+    assert toc[1][2] == [], toc  # the labelling annex stays closed
+    assert {s for s, _, _ in build.section_chunks(overlay)} == {"sec-1", "sec-2"}
+    # An overlay ema_pdf already opened is left as it is.
+    opened = overlay.replace('<details class="ema-annexe"><summary id="grp-2">',
+                             '<details class="ema-annexe" open><summary id="grp-2">')
+    assert [len(g[2]) for g in build._eu_prepare(opened)[1]] == [0, 0]
+    print("ok  test_eu_smpc_group_opened_when_its_title_was_missed")
+
+
+def test_eu_lane_hash_suffix_keeps_old_vectors_served():
+    # The /eu/ chunking fix bumps only that lane's hash (_CHUNK_EU_SUFFIX), so ~2.2k
+    # /eu/ pages re-embed instead of the whole catalog, and their pre-fix vectors stay
+    # served meanwhile (vec_is_legacy). An ANSM page's hash is untouched.
+    rcp = "<div id='textDocument'><p>bonjour</p></div>"
+    eu = '<div id="textDocument"><details class="ema-annexe"><p>x</p></details></div>'
+    fmt = build._CHUNK_FORMAT_VERSION
+    assert build.raw_hash(rcp) == build._hash_keyed(fmt, rcp)
+    assert build.raw_hash(eu) == build._hash_keyed(fmt + build._CHUNK_EU_SUFFIX, eu)
+    cfg = ("m", 4, "binary")
+    old = {"src_hash": build._hash_keyed(fmt, eu), "model": "m", "dim": 4, "quant": "binary"}
+    assert build.vec_is_legacy(old, eu, *cfg)
+    assert not build.vec_is_current(old, build.raw_hash(eu), *cfg)
+    assert not build.vec_is_legacy(dict(old, src_hash=build._hash_keyed(fmt, rcp)), rcp, *cfg)
+    print("ok  test_eu_lane_hash_suffix_keeps_old_vectors_served")
+
+
 def test_merge_small_chunks():
     # A tiny tail / stray fragment is folded into a neighbour, never emitted alone, but a
     # lone short chunk (a genuinely short section) is kept; large chunks are left intact.
@@ -2399,6 +2451,8 @@ if __name__ == "__main__":
     test_unstyled_subheads_promoted()
     test_prose_tagged_as_heading_is_demoted()
     test_eu_toc_keeps_ema_ids_and_nests_subheads()
+    test_eu_smpc_group_opened_when_its_title_was_missed()
+    test_eu_lane_hash_suffix_keeps_old_vectors_served()
     test_merge_small_chunks()
     test_merged_chunk_snippet_spans_its_paragraph_run()
     test_flat_table_snippet_resolves_to_its_rows()

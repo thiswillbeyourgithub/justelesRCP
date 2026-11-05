@@ -946,8 +946,41 @@ def _parse_clean(raw: str):
             del node.attrib["style"]
     _demote_prose_headings(doc)
     _promote_numbered_titles(doc)
+    _eu_open_smpc(doc)  # after the promotion, which may give the SmPC its headings
     _promote_subheads(doc)
     return doc
+
+
+def _is_eu_doc(doc) -> bool:
+    """True for a converted EMA overlay (ema_pdf wraps it in annex groups)."""
+    return bool(doc.xpath("//details[contains(@class, 'ema-annexe')]"))
+
+
+def _is_eu_raw(raw: str) -> bool:
+    """_is_eu_doc on the raw text: a cheap string test, so raw_hash can tell the two
+    lanes apart without parsing (it runs on every search query)."""
+    return 'class="ema-annexe"' in raw
+
+
+def _eu_open_smpc(doc) -> None:
+    """Open the SmPC group of an EMA overlay that ema_pdf left all closed.
+
+    ema_pdf marks the group whose title reads "RÉSUMÉ DES CARACTÉRISTIQUES" open, and
+    only an open group lists its sections in the Sommaire (_eu_toc) and gets its
+    subheadings promoted (_is_subhead). 311 of 2244 overlays spell that title without
+    accents or with typos ("RESUME DES CARACTERISTIQUES", "RÉ SUMÉ DES CARACTÉ
+    RISTIQUES", "CHARACTERISTIQUES"), so it stayed a body paragraph, nothing was open,
+    and the Sommaire of e.g. MVASI 61409314 listed only "ANNEXE I..IV". The SmPC is
+    always the first part of an EMA product information, so the first group holding
+    a numbered top-level heading is it. Done at parse time so the overlays already
+    converted are fixed without re-fetching their PDF."""
+    groups = doc.xpath("//details[contains(@class, 'ema-annexe')]")
+    if not groups or any(g.get("open") is not None for g in groups):
+        return
+    for g in groups:
+        if g.xpath(".//*[contains(@class, 'AmmAnnexeTitre1')]"):
+            g.set("open", "open")
+            return
 
 
 # Prose tagged as a heading. Some ANSM pages put whole body paragraphs in an
@@ -981,14 +1014,19 @@ def _demote_prose_headings(doc) -> None:
 # or one level too deep (AmmAnnexeTitre2). With no top-level heading the page got an
 # empty Sommaire and no section anchors. Only on such a document, the QRD-numbered
 # titles are re-tagged: "N. ALL CAPS" as level 1, "N.N. Title" as level 2. A fresh
-# scrape always has AmmAnnexeTitre1 (extract_rcp requires it), so overlays, and the
-# semantic-search chunks built from them, are untouched.
+# scrape always has AmmAnnexeTitre1 (extract_rcp requires it), so ANSM overlays, and
+# the semantic-search chunks built from them, are untouched.
+# EMA overlays are re-tagged in every annex group, even when ema_pdf found some
+# headings: it only recognises a bold marker standing alone on its line, so a PDF
+# that sets "1. DÉNOMINATION DU MÉDICAMENT" as one line (ELMIRON 60027685, YARGESA
+# 68836272, DOCETAXEL KABI 60726678) kept its whole SmPC as plain paragraphs while
+# the Annexe II "A./B./C." headings were found, and the Sommaire had no SmPC section.
 _NUMBERED_TITLE_RE = re.compile(r"^(\d{1,2})\.(\d{1,2}\.?)?\s+\S")
 _NUMBERED_TITLE_MAX = 120
 
 
 def _promote_numbered_titles(doc) -> None:
-    if doc.xpath("//*[contains(@class, 'AmmAnnexeTitre1')]"):
+    if not _is_eu_doc(doc) and doc.xpath("//*[contains(@class, 'AmmAnnexeTitre1')]"):
         return
     for p in doc.iter("p"):
         if any(a.tag in ("td", "th", "li") for a in p.iterancestors()):
@@ -1359,7 +1397,23 @@ def raw_hash(raw: str, fmt: str = _CHUNK_FORMAT_VERSION) -> str:
 
     _CHUNK_FORMAT_VERSION is mixed in so a change to how section_chunks segments a page
     (which leaves the raw overlay untouched) still changes the hash and busts every
-    .vec.json, forcing a re-embed on the next re-bake / re-crawl."""
+    .vec.json, forcing a re-embed on the next re-bake / re-crawl.
+
+    _CHUNK_EU_SUFFIX is the same bump for the /eu/ lane only, for a change that only
+    re-chunks EMA overlays: it re-embeds their ~2.2k pages instead of the whole
+    ~13k-page catalog a _CHUNK_FORMAT_VERSION bump costs. On the next such change,
+    bump the suffix and add the outgoing one to _CHUNK_EU_LEGACY."""
+    return _hash_keyed(fmt + (_CHUNK_EU_SUFFIX if _is_eu_raw(raw) else ""), raw)
+
+
+# See raw_hash. "+eu1" (2026-11-05) = _eu_open_smpc + the per-annex-group
+# _promote_numbered_titles: ~475 /eu/ pages whose Sommaire listed no SmPC section.
+_CHUNK_EU_SUFFIX = "+eu1"
+# Older /eu/ suffixes whose vectors vec_is_legacy keeps serving ("" = none yet).
+_CHUNK_EU_LEGACY = ("",)
+
+
+def _hash_keyed(fmt: str, raw: str) -> str:
     keyed = f"{fmt}\x00{raw}"
     return hashlib.sha256(keyed.encode("utf-8")).hexdigest()[:16]
 
@@ -1556,11 +1610,22 @@ def _ensure_sec_ids(inner) -> bool:
     run), so re-running _build_toc would renumber them and desync the chunk anchors
     from the page. Only assign when they're absent. depth=1 so we touch ONLY the
     top-level sec-N ids the chunks anchor to (sub-headings are never embedded),
-    keeping this independent of the sidebar ToC's _TOC_DEPTH."""
+    keeping this independent of the sidebar ToC's _TOC_DEPTH.
+
+    An /eu/ overlay can also mix both: ema_pdf's ids plus headings _parse_clean
+    promoted (_promote_numbered_titles). Those get fresh ids numbered after the
+    highest one in use, so ema_pdf's stay put and none collides."""
     headings = inner.xpath(".//*[contains(@class, 'AmmAnnexeTitre1')]")
     if not headings:
         return False
-    if not any(h.get("id") for h in headings):
+    if any(h.get("id") for h in headings):
+        used = [int(m[1]) for h in headings if (m := re.fullmatch(r"sec-(\d+)", h.get("id") or ""))]
+        n = max(used, default=0)
+        for h in headings:
+            if not h.get("id") and h.text_content().strip():
+                n += 1
+                h.set("id", f"sec-{n}")
+    else:
         _build_toc(inner, depth=1)  # assigns id="sec-N"; empty-title headings get none
     return True
 
@@ -2794,8 +2859,12 @@ def vec_is_legacy(meta: dict | None, raw: str, model: str, dim: int,
     quantisation, but under an older chunk format (``_CHUNK_FORMAT_LEGACY``): stale for
     the sweep, still good enough to serve. ``vec_is_current`` stays the gate that says
     "nothing to do"; a page passing this one is merely searchable meanwhile."""
+    legacy = {raw_hash(raw, f) for f in _CHUNK_FORMAT_LEGACY}
+    if _is_eu_raw(raw):  # an older /eu/ suffix, under the current or a legacy format
+        legacy |= {_hash_keyed(f + s, raw) for s in _CHUNK_EU_LEGACY
+                   for f in (_CHUNK_FORMAT_VERSION, *_CHUNK_FORMAT_LEGACY)}
     return bool(meta and _meta_matches(meta, model, dim, quant)
-                and meta.get("src_hash") in {raw_hash(raw, f) for f in _CHUNK_FORMAT_LEGACY})
+                and meta.get("src_hash") in legacy)
 
 
 def embed_page_to_vec(cis: str, raw: str, subdir: str, encoder, *,
