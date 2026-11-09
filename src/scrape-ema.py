@@ -400,6 +400,9 @@ def convert_and_write(cis: str, pdf_bytes: bytes, gzip_overlay: bool,
     return entry
 
 
+RECONVERT_MAX_ERRORS = 3  # consecutive failed live fetches before --reconvert gives up
+
+
 def pdf_cache_path(cache_dir: Path, url: str) -> Path:
     """Where --pdf-cache keeps the PDF of ``url``: a short URL hash (two products
     could share a file name) plus the readable EMA file name."""
@@ -408,7 +411,7 @@ def pdf_cache_path(cache_dir: Path, url: str) -> Path:
 
 
 def process_one(client: httpx.Client, cis: str, url: str, gzip_overlay: bool,
-                pdf_cache: Path | None = None) -> dict:
+                pdf_cache: Path | None = None, archive_fallback: bool = True) -> dict:
     """Fetch one EMA PDF and write its overlay. Tries the live EMA URL first; on
     ANY failure to obtain a PDF (network error, 404, or a non-PDF body) it falls
     back to the Internet Archive. Returns the manifest entry (with ``status='error'``
@@ -418,7 +421,12 @@ def process_one(client: httpx.Client, cis: str, url: str, gzip_overlay: bool,
     ``pdf_cache`` (CLI only, ``--pdf-cache``) is a read-through cache: a PDF already
     there is converted without any download, a live download is saved there (never
     an Internet Archive copy). Meant for re-converting after an ema_pdf change, and
-    for the many CIS sharing one PDF; it never notices an EMA revision by itself."""
+    for the many CIS sharing one PDF; it never notices an EMA revision by itself.
+
+    ``archive_fallback=False`` (``--reconvert``) skips the Internet Archive: a
+    failed live fetch returns an error entry and leaves the current overlay alone,
+    since an old-converter live conversion beats a possibly older archived text
+    flagged on the page as such (the EMA's WAF answers 429 to bulk fetches)."""
     via_archive = False
     fetched_at = None
     cached = pdf_cache_path(pdf_cache, url) if pdf_cache else None
@@ -435,6 +443,8 @@ def process_one(client: httpx.Client, cis: str, url: str, gzip_overlay: bool,
                     tmp.write_bytes(pdf)
                     tmp.replace(cached)
             except Exception as exc:  # live EMA failed: try the Internet Archive
+                if not archive_fallback:
+                    raise
                 logger.warning("{} live EMA fetch failed ({}); trying Internet Archive",
                                cis, str(exc)[:120])
                 pdf = _wayback_pdf(client, url)
@@ -587,13 +597,14 @@ def main(limit, fetch_all, only, local_file, local_cis, local_src, local_via_arc
     total = len(targets)
     logger.info("fetching {} EMA PDFs, overlay={}, base rate {}s (+jitter)",
                 total, "gzip" if gzip_overlay else "plain", rate)
-    n_ok = n_empty = n_err = 0
+    n_ok = n_empty = n_err = streak = 0
     start = time.monotonic()
     with httpx.Client(follow_redirects=True, timeout=60.0, headers={"User-Agent": USER_AGENT}) as client:
         cache_dir = Path(pdf_cache) if pdf_cache else None
         for i, cis in enumerate(targets, 1):
             downloaded = not (cache_dir and pdf_cache_path(cache_dir, url_of[cis]).is_file())
-            entry = process_one(client, cis, url_of[cis], gzip_overlay, pdf_cache=cache_dir)
+            entry = process_one(client, cis, url_of[cis], gzip_overlay, pdf_cache=cache_dir,
+                                archive_fallback=not reconvert)
             scrape.store_entry(ema_manifest, cis, entry)
             status = entry["status"]
             if status == "ok":
@@ -606,6 +617,11 @@ def main(limit, fetch_all, only, local_file, local_cis, local_src, local_via_arc
                 n_err += 1
                 result = f'ERROR {entry.get("error", "")}'
             logger.info("{} | {} -> {}", scrape._progress(i, total, start), cis, result)
+            streak = streak + 1 if status == "error" else 0
+            if reconvert and streak >= RECONVERT_MAX_ERRORS:
+                logger.error("{} live fetches failed in a row (EMA throttling us?); stopping, "
+                             "re-run --reconvert later to resume", streak)
+                break
             if i % 10 == 0:
                 scrape.save_manifest(ema_manifest, EMA_MANIFEST_PATH)
             if i < total and rate > 0 and downloaded:

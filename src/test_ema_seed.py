@@ -748,6 +748,23 @@ def test_converter_version_stamp_makes_old_overlays_due():
         finally:
             sema.convert_and_write = saved
         assert seen["pdf"] == b"%PDF-cached" and seen["fetched_at"] is not None, seen
+
+        # --reconvert never falls back to the Internet Archive: the 3 first CIS of
+        # the first real run (EMA 429) got their live overlay swapped for an
+        # archived copy, flagged as such on the page.
+        def refuse(client, u):
+            raise RuntimeError("429 Too Many Requests")
+
+        def archive(client, u):
+            raise AssertionError("archive must not be tried")
+        saved = sema._fetch_pdf, sema._wayback_pdf
+        sema._fetch_pdf, sema._wayback_pdf = refuse, archive
+        try:
+            got = sema.process_one(None, "111", url + "?other", True, pdf_cache=cache,
+                                   archive_fallback=False)
+        finally:
+            sema._fetch_pdf, sema._wayback_pdf = saved
+        assert got["status"] == "error" and "429" in got["error"], got
     print("ok  test_converter_version_stamp_makes_old_overlays_due")
 
 
