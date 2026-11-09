@@ -212,6 +212,33 @@ def test_unaccented_smpc_title_still_opens_its_group():
     assert '<details class="ema-annexe" open>' in out, out
 
 
+def test_italic_or_underlined_subheading_gets_its_own_line():
+    """Regression, BIKTARVY 62844771: italic or underlined subheadings set with no
+    blank line before their paragraph were glued to it ("Doses oubliées Si le patient
+    oublie..."). They now come out as AmmAnnexeTitre3 paragraphs; a short italic line
+    that ends a sentence, or a box border under a line, does not."""
+    import pymupdf
+    doc = pymupdf.open()
+    p = doc.new_page(width=595, height=842)
+    p.insert_text((71, 100), "Doses oubliées", fontname="tiit")  # italic
+    p.insert_text((71, 112.6), "Si le patient oublie une dose, il la prend.")
+    p.insert_text((71, 125.2), "Posologie")
+    p.draw_rect(pymupdf.Rect(71, 127, 115, 127.5), color=None, fill=(0, 0, 0))  # underline
+    p.insert_text((71, 137.8), "Un comprimé par jour.")
+    p.insert_text((71, 150.4), "Voir la rubrique 5.1.", fontname="tiit")  # ends a sentence
+    p.insert_text((71, 163), "Boîte")
+    p.draw_rect(pymupdf.Rect(71, 165, 520, 165.5), color=None, fill=(0, 0, 0))  # box border
+    p.insert_text((71, 175.6), "en carton.")
+    out = sema.ema.convert(doc.tobytes())["html"]
+    paras = [x[: x.index("</p>")] for x in out.split("<p")[1:]]
+    assert paras == [
+        ' class="AmmAnnexeTitre3">Doses oubliées',
+        ">Si le patient oublie une dose, il la prend.",
+        ' class="AmmAnnexeTitre3">Posologie',
+        ">Un comprimé par jour. Voir la rubrique 5.1. Boîte en carton.",
+    ], paras
+
+
 def test_error_entry_keeps_last_success_and_backs_off():
     """A failed fetch must not pass for a fresh capture, nor be retried at once.
 
@@ -666,6 +693,7 @@ if __name__ == "__main__":
     test_table_merged_title_row_spans_columns()
     test_framed_prose_is_not_read_as_a_table()
     test_unaccented_smpc_title_still_opens_its_group()
+    test_italic_or_underlined_subheading_gets_its_own_line()
     test_error_entry_keeps_last_success_and_backs_off()
     test_refresh_refuses_unknown_cis()
     test_ema_url_host_check_blocks_spoofs()

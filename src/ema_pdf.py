@@ -80,6 +80,25 @@ _PARA_GAP = 0.5
 _BULLETS = ("•", "·", "-", "–", "o", "\uf0b7")
 _BULLET_PREFIXES = ("• ", "\uf0b7 ")
 
+# Subheadings ("Doses oubliées", "Insuffisance rénale", "Posologie") are italic or
+# underlined lines that the PDF often sets with NO blank line before the paragraph
+# under them, so the gap rule above merged them into it ("Doses oubliées Si le
+# patient oublie...", BIKTARVY 62844771). A line is read as a subheading when it is
+# italic (span flag 2) or underlined (a thin filled rectangle drawn just under it),
+# starts at the left margin, stays shorter than _SUBHEAD_MAX_WIDTH of the text
+# column, has at most _SUBHEAD_MAX_WORDS words, starts with a capital and does not
+# end like a sentence. Bold is deliberately NOT a cue: the labelling annex sets its
+# mock-up boxes and warnings in short bold lines (see _ANNEX_TITLE). Emitted with
+# the ANSM subheading hook AmmAnnexeTitre3, so an /eu/ page nests it in the Sommaire
+# exactly like an /rcp/ one.
+_SUBHEAD_MAX_WIDTH = 0.85
+_SUBHEAD_MAX_WORDS = 20
+_SUBHEAD_END = (".", ";", ",")
+# An underline rule: at most this thick (pt), its top within this distance of the
+# line's bottom edge (pt).
+_UNDERLINE_MAX_H = 1.5
+_UNDERLINE_GAP = 3.0
+
 # Section-marker tokens that open a heading in the QRD template. A top-level
 # marker ("1.", "10.", a lone "ANNEXE") -> h2; a sub-marker ("4.1", "6.2") -> h3.
 _MARKER_TOP = re.compile(r"^(\d{1,2})\.$")
@@ -237,6 +256,34 @@ def _inside(inner, outer, tol: float = 2.0) -> bool:
     )
 
 
+def _underlines(page) -> list[tuple[float, float, float]]:
+    """``(x0, x1, y)`` of every thin horizontal filled rule on ``page`` (the way
+    Word-made EMA PDFs draw an underline, as a separate rectangle)."""
+    out = []
+    for d in page.get_drawings():
+        r = d.get("rect")
+        if r is not None and r.height <= _UNDERLINE_MAX_H and r.width > r.height * 5:
+            out.append((r.x0, r.x1, r.y0))
+    return out
+
+
+def _is_subheading(line, txt: str, left: float, right: float,
+                   rules: list[tuple[float, float, float]]) -> bool:
+    """True when a text line is a subheading (see _SUBHEAD_MAX_WIDTH)."""
+    x0, _, x1, bottom = line["bbox"]
+    if (x0 - left > 3 or x1 - left > _SUBHEAD_MAX_WIDTH * (right - left)
+            or len(txt.split()) > _SUBHEAD_MAX_WORDS
+            or not txt[0].isupper() or txt.endswith(_SUBHEAD_END)):
+        return False
+    spans = [s for s in line["spans"] if s["text"].strip()]
+    if spans and all(s["flags"] & 2 for s in spans):
+        return True
+    # Underlined: a rule right below the line, covering most of it and ending near
+    # its end (a wider one is a box border, like the labelling annex's mock-ups).
+    return any(abs(ry - bottom) <= _UNDERLINE_GAP and rx0 <= x0 + 2
+               and x0 + 0.8 * (x1 - x0) <= rx1 <= x1 + 10 for rx0, rx1, ry in rules)
+
+
 def _line_text(line) -> tuple[str, bool]:
     """Joined text of a dict-line and whether it is (all) bold."""
     txt = "".join(s["text"] for s in line["spans"]).strip()
@@ -324,6 +371,13 @@ def _convert_doc(doc) -> dict:
                     continue  # text belongs to a table, emitted as <table>
                 elems.append((line["bbox"][1], line["bbox"][0], "line", line))
         elems.sort(key=lambda e: (round(e[0]), e[1]))
+        # Text column for _is_subheading: from the leftmost line to the mirrored
+        # right margin (EMA pages are A4 with symmetric margins), which is robust on
+        # a page holding only a few short lines, unlike the rightmost line end.
+        line_x0 = [e[1] for e in elems if e[2] == "line"]
+        left = min(line_x0) if line_x0 else 0.0
+        right = max(page.rect.width - left, left + 1)
+        rules = _underlines(page)
 
         for y0, _, kind, payload in elems:
             if kind == "table":
@@ -384,6 +438,10 @@ def _convert_doc(doc) -> dict:
                 if bold and (_ANNEXE.match(txt) or _ANNEX_TITLE.match(fold_ascii(txt))):
                     flush_para(para)
                     new_group(txt)
+                    continue
+                if _is_subheading(line, txt, left, right, rules):
+                    flush_para(para)
+                    add_html(f'<p class="AmmAnnexeTitre3">{html.escape(txt)}</p>')
                     continue
                 para.append(txt)
         prev_bottom = None
