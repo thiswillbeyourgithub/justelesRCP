@@ -141,7 +141,9 @@ class _CrawlLane:
 
     ``outdated_fn`` (EMA lane only) maps the order to the CIS whose overlay an older
     converter produced (scrape-ema.outdated_conversions); recomputed with each order,
-    those are due whatever the TTL, so an ema_pdf fix reaches every /eu/ page. Read
+    those are due whatever the TTL, so an ema_pdf fix reaches every /eu/ page. One
+    claimed ONLY for that (TTL not due) lands in ``no_archive``: ``_process_ema`` then
+    skips the Internet Archive fallback, keeping the current overlay on a 429. Read
     off the overlays, not the manifest, because overlays converted on the dev machine
     reach the VPS by rsync without their manifest entry.
     """
@@ -155,6 +157,7 @@ class _CrawlLane:
         self.order_fn = order_fn      # () -> list[str], may raise SystemExit
         self.outdated_fn = outdated_fn  # (order) -> set[str], or None
         self.outdated: set[str] = set()  # CIS due because an older converter made them
+        self.no_archive: set[str] = set()  # claimed ONLY for a reconversion (see is_due)
         self.order: list[str] = []
         self.idx = 0
         self.idle = False
@@ -360,7 +363,13 @@ class _LaneScheduler:
                 if cis in self._pending:
                     continue  # already queued/in flight (on-demand or other lane)
                 if lane.is_due(cis):
-                    lane.outdated.discard(cis)  # a failed fetch falls back on the error retry
+                    if cis in lane.outdated:
+                        lane.outdated.discard(cis)  # a failed fetch falls back on the error retry
+                        if not scrape.is_due(lane.manifest.get(cis), lane.ttl_days):
+                            # Due only for the converter: on a live failure keep the
+                            # current overlay rather than swap in an archived copy
+                            # (the EMA WAF 429s bulk fetches; see _process_ema).
+                            lane.no_archive.add(cis)
                     self._pending[cis] = "crawl"
                     lane.idle = False
                     lane.idle_logged = False
@@ -1081,7 +1090,11 @@ class Refresher(_LaneScheduler, _Stats):
             return
         # process_one catches its own network/parse errors and returns
         # status='error' (it does not raise), so a dead EMA link degrades cleanly.
-        entry = ema_scrape.process_one(client, cis, url, self.gzip_overlay)
+        with self._lock:
+            no_archive = cis in self._eu_lane.no_archive
+            self._eu_lane.no_archive.discard(cis)
+        entry = ema_scrape.process_one(client, cis, url, self.gzip_overlay,
+                                       archive_fallback=not no_archive)
         with self._lock:
             scrape.store_entry(self._ema_manifest, cis, entry)
         status = entry.get("status")

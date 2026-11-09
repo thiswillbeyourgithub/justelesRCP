@@ -726,6 +726,21 @@ def test_converter_version_stamp_makes_old_overlays_due():
             assert lane.is_due("222") and not lane.is_due("111") and lane.due_at("333") is None
             claimed = [r._claim_next_crawl(lane), r._claim_next_crawl(lane)]
             assert claimed == ["222", "333"] and not lane.outdated, (claimed, lane.outdated)
+            # Claimed only for the converter (TTL fresh): fetched with no archive
+            # fallback, so a throttled VPS keeps the page instead of flagging it.
+            assert lane.no_archive == {"222", "333"}, lane.no_archive
+            calls = []
+            r._eu_lane, r._ema_manifest, r.gzip_overlay = lane, {}, True
+            r._eu_url = lambda c: "https://www.ema.europa.eu/x_fr.pdf"
+            r._record = r._persist = lambda *a, **k: None
+            saved_po = rs.ema_scrape.process_one
+            rs.ema_scrape.process_one = lambda *a, **k: calls.append(k) or {"status": "error"}
+            try:
+                r._process_ema(None, "222", "crawl")
+                r._process_ema(None, "222", "user")  # a later click: normal fallback
+            finally:
+                rs.ema_scrape.process_one = saved_po
+            assert [c["archive_fallback"] for c in calls] == [False, True], calls
         finally:
             sema.EU_OVERLAY_DIR = orig
 
