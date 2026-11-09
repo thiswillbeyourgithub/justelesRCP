@@ -734,16 +734,16 @@ def test_converter_version_stamp_makes_old_overlays_due():
         url = "https://www.ema.europa.eu/fr/documents/product-information/x_fr.pdf"
         dest = sema.pdf_cache_path(cache, url)
         dest.parent.mkdir()
-        dest.write_bytes(b"%PDF-cached")
+        dest.write_bytes(_gz.compress(b"%PDF-cached"))
         seen = {}
 
         def fake_convert(cis, pdf, gz, src_url="", via_archive=False, fetched_at=None):
             seen.update(pdf=pdf, fetched_at=fetched_at)
             return {"status": "ok"}
-        saved = sema.convert_and_write
+        saved = saved_cw = sema.convert_and_write
         sema.convert_and_write = fake_convert
         try:
-            got = sema.process_one(None, "111", url, True, pdf_cache=cache)
+            got = sema.process_one(None, "111", url, True, pdf_cache=cache, use_cached=True)
             assert got["status"] == "ok", got
         finally:
             sema.convert_and_write = saved
@@ -765,6 +765,18 @@ def test_converter_version_stamp_makes_old_overlays_due():
         finally:
             sema._fetch_pdf, sema._wayback_pdf = saved
         assert got["status"] == "error" and "429" in got["error"], got
+
+        # A normal sweep ignores the cached copy (it must notice an EMA revision)
+        # but refreshes it with the live download.
+        sema._fetch_pdf = lambda client, u: b"%PDF-live"
+        sema.convert_and_write = fake_convert
+        try:
+            sema.process_one(None, "111", url, True, pdf_cache=cache)
+        finally:
+            sema._fetch_pdf, sema._wayback_pdf = saved
+            sema.convert_and_write = saved_cw
+        assert seen["pdf"] == b"%PDF-live" and seen["fetched_at"] is None, seen
+        assert _gz.decompress(dest.read_bytes()) == b"%PDF-live"
     print("ok  test_converter_version_stamp_makes_old_overlays_due")
 
 

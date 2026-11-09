@@ -163,10 +163,11 @@ uv run src/scrape-ema.py --limit 60   # OPTIONAL bulk scrape of EMA product-info
                                   # Falls back to the Internet Archive if a live EMA PDF fails (never
                                   # exposes the archive URL; stamps via_archive). --retry-archived
                                   # re-fetches just the archive-sourced CIS against the live EMA.
-                                  # --reconvert --all --pdf-cache data/ema_pdf_cache_ignore_backups
-                                  # re-does the overlays an older ema_pdf.CONVERTER_VERSION made (bump
-                                  # it on every converter output change; see docs/architecture/eu-pages.md)
-                                  # from a local PDF cache, so a converter tweak replays offline.
+                                  # Every download is also kept gzipped in data/ema_pdfs_ignore_backups_cache
+                                  # (local only: not backed up, not Syncthing'd, not deployed).
+                                  # --reconvert --all re-does the overlays an older ema_pdf.CONVERTER_VERSION
+                                  # made (bump it on every converter output change; see
+                                  # docs/architecture/eu-pages.md) from that cache, so a tweak replays offline.
                                   # --seed-from-ema-json bulk-seeds the ema_pdf links from the EMA's
                                   # own EPAR-documents JSON dump (brand-joined, ~97% of auth-groups)
                                   # so a first seed needs no prior per-CIS ANSM harvest; --ema-json

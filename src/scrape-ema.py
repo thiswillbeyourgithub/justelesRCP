@@ -70,6 +70,10 @@ DATA = ROOT / "data"
 EU_OVERLAY_DIR = DATA / "eu"
 EMA_MANIFEST_PATH = DATA / ".scrape-ema-manifest.json"
 ANSM_MANIFEST_PATH = DATA / ".scrape-manifest.json"  # source of the ema_pdf links
+# Local archive of every EMA PDF this CLI downloads, gzipped (see pdf_cache_path).
+# Never deployed (deploy.sh excludes /data), and named so restic ("ignore_backups")
+# and Syncthing (**/*cache in the parent .stignore) both skip it.
+PDF_CACHE_DIR = DATA / "ema_pdfs_ignore_backups_cache"
 
 # Internet Archive Wayback Machine, used ONLY as a fallback when the live EMA PDF
 # URL fails to yield a PDF (network error, 404, or an HTML error/maintenance page).
@@ -404,24 +408,35 @@ RECONVERT_MAX_ERRORS = 3  # consecutive failed live fetches before --reconvert g
 
 
 def pdf_cache_path(cache_dir: Path, url: str) -> Path:
-    """Where --pdf-cache keeps the PDF of ``url``: a short URL hash (two products
-    could share a file name) plus the readable EMA file name."""
+    """Where the PDF cache keeps the PDF of ``url``, gzipped: a short URL hash (two
+    products could share a file name) plus the readable EMA file name, ``.gz``."""
     name = re.sub(r"[^A-Za-z0-9._-]", "_", url.rsplit("/", 1)[-1])[-100:]
-    return cache_dir / f"{hashlib.sha256(url.encode()).hexdigest()[:12]}-{name}"
+    return cache_dir / f"{hashlib.sha256(url.encode()).hexdigest()[:12]}-{name}.gz"
+
+
+def _cache_store(cached: Path, pdf: bytes) -> None:
+    """Atomically save a live download (mtime = download time, read back as the
+    overlay's fetch date by a later --reconvert)."""
+    cached.parent.mkdir(parents=True, exist_ok=True)
+    tmp = cached.with_name(cached.name + ".tmp")
+    tmp.write_bytes(gzip.compress(pdf, compresslevel=9, mtime=0))
+    tmp.replace(cached)
 
 
 def process_one(client: httpx.Client, cis: str, url: str, gzip_overlay: bool,
-                pdf_cache: Path | None = None, archive_fallback: bool = True) -> dict:
+                pdf_cache: Path | None = None, use_cached: bool = False,
+                archive_fallback: bool = True) -> dict:
     """Fetch one EMA PDF and write its overlay. Tries the live EMA URL first; on
     ANY failure to obtain a PDF (network error, 404, or a non-PDF body) it falls
     back to the Internet Archive. Returns the manifest entry (with ``status='error'``
     and no overlay only when BOTH fail). Reused by the refresh service's on-demand +
     crawler EMA lane, so the fallback covers those too.
 
-    ``pdf_cache`` (CLI only, ``--pdf-cache``) is a read-through cache: a PDF already
-    there is converted without any download, a live download is saved there (never
-    an Internet Archive copy). Meant for re-converting after an ema_pdf change, and
-    for the many CIS sharing one PDF; it never notices an EMA revision by itself.
+    ``pdf_cache`` (CLI only, default ``PDF_CACHE_DIR``) keeps a gzipped copy of every
+    live download (never an Internet Archive copy), so the catalog can be replayed
+    through a new converter offline. It is only READ when ``use_cached``
+    (``--reconvert``): a normal sweep always downloads, since the point of a sweep is
+    to notice an EMA revision, which a cached copy never would.
 
     ``archive_fallback=False`` (``--reconvert``) skips the Internet Archive: a
     failed live fetch returns an error entry and leaves the current overlay alone,
@@ -431,17 +446,14 @@ def process_one(client: httpx.Client, cis: str, url: str, gzip_overlay: bool,
     fetched_at = None
     cached = pdf_cache_path(pdf_cache, url) if pdf_cache else None
     try:
-        if cached and cached.is_file():
-            pdf = cached.read_bytes()
+        if use_cached and cached and cached.is_file():
+            pdf = gzip.decompress(cached.read_bytes())
             fetched_at = datetime.fromtimestamp(cached.stat().st_mtime, timezone.utc)
         else:
             try:
                 pdf = _fetch_pdf(client, url)
                 if cached:
-                    cached.parent.mkdir(parents=True, exist_ok=True)
-                    tmp = cached.with_suffix(".tmp")
-                    tmp.write_bytes(pdf)
-                    tmp.replace(cached)
+                    _cache_store(cached, pdf)
             except Exception as exc:  # live EMA failed: try the Internet Archive
                 if not archive_fallback:
                     raise
@@ -500,11 +512,13 @@ def build_order(ttl_days: int, *, force: bool, frequency: Path | None,
 @click.option("--ema-json", "ema_json", type=click.Path(exists=True, dir_okay=False), default=None,
               help="Use this local EMA EPAR-documents JSON for --seed-from-ema-json instead of downloading.")
 @click.option("--reconvert", is_flag=True,
-              help="Re-fetch only the CIS whose overlay an older converter made "
-                   "(ema_pdf.CONVERTER_VERSION), TTL ignored. Pair with --pdf-cache.")
-@click.option("--pdf-cache", "pdf_cache", type=click.Path(file_okay=False), default=None,
-              help="Read-through PDF cache dir (reuse a cached PDF, save each download). "
-                   "Put it in a folder whose name contains ignore_backups.")
+              help="Re-do only the CIS whose overlay an older converter made "
+                   "(ema_pdf.CONVERTER_VERSION), TTL ignored, from the PDF cache when it "
+                   "has the PDF.")
+@click.option("--pdf-cache", "pdf_cache", type=click.Path(file_okay=False),
+              default=str(PDF_CACHE_DIR), show_default=True,
+              help="Gzipped copy of every downloaded PDF; --reconvert reads it back "
+                   "instead of downloading. Empty string disables it.")
 @click.option("--dry-run", "dry_run", is_flag=True,
               help="With --seed-from-ema-json: report the seed plan, write nothing, and exit.")
 def main(limit, fetch_all, only, local_file, local_cis, local_src, local_via_archive,
@@ -602,8 +616,10 @@ def main(limit, fetch_all, only, local_file, local_cis, local_src, local_via_arc
     with httpx.Client(follow_redirects=True, timeout=60.0, headers={"User-Agent": USER_AGENT}) as client:
         cache_dir = Path(pdf_cache) if pdf_cache else None
         for i, cis in enumerate(targets, 1):
-            downloaded = not (cache_dir and pdf_cache_path(cache_dir, url_of[cis]).is_file())
+            downloaded = not (reconvert and cache_dir
+                              and pdf_cache_path(cache_dir, url_of[cis]).is_file())
             entry = process_one(client, cis, url_of[cis], gzip_overlay, pdf_cache=cache_dir,
+                                use_cached=reconvert,
                                 archive_fallback=not reconvert)
             scrape.store_entry(ema_manifest, cis, entry)
             status = entry["status"]
