@@ -50,6 +50,15 @@ import pymupdf
 from bdpm import fold_ascii
 
 
+# Version of the conversion output. BUMP IT with every change that alters the HTML
+# convert() produces: scrape-ema.py stamps it on each overlay (data-ema-conv), and an
+# overlay stamped older (or unstamped, = 0) is due again for the EMA crawler and for
+# `scrape-ema.py --reconvert`, so a converter fix reaches every /eu/ page without
+# waiting for the 180-day re-fetch TTL. 1 = before the stamp existed (overlays of
+# July 2026 still carried the pre-2026-09-30 converter: page numbers, no paragraph
+# split), 2 = italic/underlined subheadings on their own line.
+CONVERTER_VERSION = 2
+
 # Page ceiling for one product-information PDF. The largest real ones (multi-
 # presentation notices) run to a few hundred pages; anything far beyond that is
 # not an SmPC and is refused before parsing.

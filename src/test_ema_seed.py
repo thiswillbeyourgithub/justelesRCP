@@ -683,6 +683,74 @@ def test_parallel_import_reference_is_harvested_and_kept():
     print("ok parallel import reference harvested, merged and linked")
 
 
+def test_converter_version_stamp_makes_old_overlays_due():
+    """Overlays converted before an ema_pdf fix stayed broken until their 180-day
+    TTL (BIKTARVY: page numbers and glued subheadings months after both fixes).
+    Each overlay now carries data-ema-conv; an older or missing stamp is due at
+    once, for the CLI (build_order, --reconvert) and the refresh EMA lane alike,
+    and --pdf-cache converts a cached PDF without any download."""
+    import gzip as _gz
+    import tempfile
+    import threading
+    from datetime import datetime, timezone
+    html_doc = sema._overlay_html({"html": '<div id="textDocument"><p>x</p></div>',
+                                   "date": "2026-01-01"},
+                                  fetched_date="2026-11-01T00:00:00+00:00")
+    assert f'data-ema-conv="{sema.ema.CONVERTER_VERSION}"' in html_doc, html_doc[:200]
+    old = sema.ema.CONVERTER_VERSION - 1
+    fresh = {"status": "ok", "last_fetch": datetime.now(timezone.utc).isoformat()}
+    spec = importlib.util.spec_from_file_location(
+        "refresh_service", Path(__file__).parent / "refresh-service.py")
+    rs = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(rs)
+    with tempfile.TemporaryDirectory() as d:
+        orig = sema.EU_OVERLAY_DIR
+        sema.EU_OVERLAY_DIR = Path(d)
+        try:
+            (Path(d) / "111.html.gz").write_bytes(_gz.compress(html_doc.encode()))
+            (Path(d) / "222.html").write_text(
+                f'<div id="textDocument" data-ema-conv="{old}">b</div>', encoding="utf-8")
+            (Path(d) / "333.html").write_text('<div id="textDocument">b</div>', encoding="utf-8")
+            (Path(d) / "444.html").write_bytes(b"")  # delisted marker: never "outdated"
+            assert sema.overlay_conv("111") == sema.ema.CONVERTER_VERSION
+            assert sema.overlay_conv("333") == 0 and sema.overlay_conv("444") is None
+            cis = ["111", "222", "333", "444", "555"]
+            assert sema.outdated_conversions(cis) == {"222", "333"}
+
+            # The refresh lane: fresh manifest entries, yet 222/333 are claimed first.
+            r = rs.Refresher.__new__(rs.Refresher)
+            r._lock, r._pending = threading.Lock(), {}
+            lane = rs._CrawlLane("eu", True, 180, 0, {c: dict(fresh) for c in cis},
+                                 lambda: list(cis), sema.outdated_conversions)
+            r._build_crawl_order(lane)
+            assert lane.is_due("222") and not lane.is_due("111") and lane.due_at("333") is None
+            claimed = [r._claim_next_crawl(lane), r._claim_next_crawl(lane)]
+            assert claimed == ["222", "333"] and not lane.outdated, (claimed, lane.outdated)
+        finally:
+            sema.EU_OVERLAY_DIR = orig
+
+        # --pdf-cache: a cached PDF is converted with no network and dated by the file.
+        cache = Path(d) / "cache"
+        url = "https://www.ema.europa.eu/fr/documents/product-information/x_fr.pdf"
+        dest = sema.pdf_cache_path(cache, url)
+        dest.parent.mkdir()
+        dest.write_bytes(b"%PDF-cached")
+        seen = {}
+
+        def fake_convert(cis, pdf, gz, src_url="", via_archive=False, fetched_at=None):
+            seen.update(pdf=pdf, fetched_at=fetched_at)
+            return {"status": "ok"}
+        saved = sema.convert_and_write
+        sema.convert_and_write = fake_convert
+        try:
+            got = sema.process_one(None, "111", url, True, pdf_cache=cache)
+            assert got["status"] == "ok", got
+        finally:
+            sema.convert_and_write = saved
+        assert seen["pdf"] == b"%PDF-cached" and seen["fetched_at"] is not None, seen
+    print("ok  test_converter_version_stamp_makes_old_overlays_due")
+
+
 if __name__ == "__main__":
     test_pymupdf_is_pinned_to_the_refresh_images_version()
     test_parse_tolerates_runon_records()
@@ -706,4 +774,5 @@ if __name__ == "__main__":
     test_rcp_images_are_inlined_from_the_public_ansm_host()
     test_overlays_date_themselves_and_manifests_merge()
     test_parallel_import_reference_is_harvested_and_kept()
+    test_converter_version_stamp_makes_old_overlays_due()
     print("\nAll tests passed.")

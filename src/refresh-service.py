@@ -138,15 +138,23 @@ class _CrawlLane:
     rotation. Existing overlays are kept and keep serving until each is refreshed.
     ``wake`` is an Event the handler sets so an idle worker stops sleeping at once
     instead of after its (up to hour-long) idle wait.
+
+    ``outdated_fn`` (EMA lane only) maps the order to the CIS whose overlay an older
+    converter produced (scrape-ema.outdated_conversions); recomputed with each order,
+    those are due whatever the TTL, so an ema_pdf fix reaches every /eu/ page. Read
+    off the overlays, not the manifest, because overlays converted on the dev machine
+    reach the VPS by rsync without their manifest entry.
     """
 
-    def __init__(self, name, enabled, ttl_days, rate, manifest, order_fn):
+    def __init__(self, name, enabled, ttl_days, rate, manifest, order_fn, outdated_fn=None):
         self.name = name
         self.enabled = enabled
         self.ttl_days = ttl_days
         self.rate = rate
         self.manifest = manifest      # the lane's manifest dict (shared ref)
         self.order_fn = order_fn      # () -> list[str], may raise SystemExit
+        self.outdated_fn = outdated_fn  # (order) -> set[str], or None
+        self.outdated: set[str] = set()  # CIS due because an older converter made them
         self.order: list[str] = []
         self.idx = 0
         self.idle = False
@@ -156,6 +164,14 @@ class _CrawlLane:
         self.force_pending: set[str] = set()  # CIS still to re-crawl in the forced pass
         self.wake = threading.Event()         # set by SIGHUP to break an idle sleep
         self.stale = False  # order must be rebuilt: rotation wrapped, or a new EMA link
+
+    # The lane's due test, used everywhere the crawler asks (claim, gauges, idle
+    # wait) so they never disagree. Caller holds the Refresher's _lock.
+    def is_due(self, cis: str) -> bool:
+        return cis in self.outdated or scrape.is_due(self.manifest.get(cis), self.ttl_days)
+
+    def due_at(self, cis: str):
+        return None if cis in self.outdated else scrape.due_at(self.manifest.get(cis), self.ttl_days)
 
 
 class RenderContext:
@@ -224,7 +240,7 @@ class _LaneScheduler:
         if not lane.enabled:
             return 0
         return sum(1 for cis in lane.order
-                   if scrape.is_due(lane.manifest.get(cis), lane.ttl_days))
+                   if lane.is_due(cis))
 
     @staticmethod
     def _crawl_eta_seconds(due: int, rate: float) -> float:
@@ -279,9 +295,15 @@ class _LaneScheduler:
             logger.warning("{} crawler disabled: {}", lane.name, exc)
             lane.enabled = False
             return
+        # Overlay reads (a few seconds over ~2k files): outside the lock.
+        outdated = lane.outdated_fn(order) if lane.outdated_fn else set()
+        if outdated:
+            logger.info("{} crawler: {} overlays from an older converter, due now",
+                        lane.name, len(outdated))
         previous = len(lane.order)
         with self._lock:
             lane.order = order
+            lane.outdated = outdated
             if lane.idx >= len(order):
                 lane.idx = 0
         if len(order) != previous:
@@ -337,7 +359,8 @@ class _LaneScheduler:
                     lane.stale = True
                 if cis in self._pending:
                     continue  # already queued/in flight (on-demand or other lane)
-                if scrape.is_due(lane.manifest.get(cis), lane.ttl_days):
+                if lane.is_due(cis):
+                    lane.outdated.discard(cis)  # a failed fetch falls back on the error retry
                     self._pending[cis] = "crawl"
                     lane.idle = False
                     lane.idle_logged = False
@@ -359,7 +382,7 @@ class _LaneScheduler:
         soonest: float | None = None
         with self._lock:
             for cis in lane.order:
-                at = scrape.due_at(lane.manifest.get(cis), lane.ttl_days)
+                at = lane.due_at(cis)
                 if at is None:
                     return 1.0
                 secs = (at - now).total_seconds()
@@ -609,7 +632,7 @@ class Refresher(_LaneScheduler, _Stats):
             lambda: scrape.build_queue(crawl_ttl_days, force=True, restrict=page_cis))
         self._eu_lane = _CrawlLane(
             "eu", eu_crawl, eu_crawl_ttl_days, eu_rate, self._ema_manifest,
-            self._build_eu_order)
+            self._build_eu_order, ema_scrape.outdated_conversions)
         self._crawl_lanes = (self._ansm_lane, self._eu_lane)
         # Workers: the on-demand lane always runs; each crawl lane only when enabled.
         self._demand_worker = threading.Thread(target=self._demand_run,

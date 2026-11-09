@@ -46,12 +46,15 @@ EMA once it recovers).
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 import html
 import json
 import os
+import re
 import time
 import urllib.parse
+from datetime import datetime, timezone
 from pathlib import Path
 
 import click
@@ -274,6 +277,9 @@ def _overlay_html(conv: dict, src_url: str = "", fetched_date: str = "",
     * ``data-ema-pdf`` = the exact source PDF URL, baked as the 'consulter le PDF
       officiel' button. This is ALWAYS the real EMA URL, even when the bytes came
       from the Internet Archive fallback (we never expose the archive URL).
+    * ``data-ema-conv`` = ema_pdf.CONVERTER_VERSION, the converter that produced
+      this HTML. Placed first so ``overlay_conv`` finds it in the overlay's head; an
+      older stamp makes the CIS due again (``outdated_conversions``).
     * ``data-ema-archive="1"`` = present ONLY when the bytes were recovered from the
       Internet Archive because the live EMA URL failed. build shows a note on the
       page; the manifest also records it (``via_archive``) so these can be re-tried
@@ -288,8 +294,39 @@ def _overlay_html(conv: dict, src_url: str = "", fetched_date: str = "",
     archived = ' data-ema-archive="1"' if via_archive else ""
     return doc_html.replace(
         '<div id="textDocument">',
-        f'<div id="textDocument" data-ema-date="{date}"{fetched}{src}{archived}>', 1,
+        f'<div id="textDocument" data-ema-conv="{ema.CONVERTER_VERSION}" '
+        f'data-ema-date="{date}"{fetched}{src}{archived}>', 1,
     )
+
+
+_CONV_RE = re.compile(rb'data-ema-conv="(\d+)"')
+
+
+def overlay_conv(cis: str) -> int | None:
+    """Converter version stamped on ``cis``'s OWN /eu/ overlay (0 when it predates
+    the stamp), or None when it has no readable overlay. Reads only the head (the
+    stamp is the wrapper's first attribute), so scanning the ~2k overlays is cheap."""
+    build = svc_http.load_sibling("build.py", "build")
+    path = build._overlay_path(cis, EU_OVERLAY_DIR)
+    if path is None:
+        return None
+    try:
+        with (gzip.open if path.suffix == ".gz" else open)(path, "rb") as f:
+            head = f.read(512)
+    except (OSError, EOFError):
+        return None
+    if not head:
+        return None
+    m = _CONV_RE.search(head)
+    return int(m.group(1)) if m else 0
+
+
+def outdated_conversions(cis_list) -> set[str]:
+    """The CIS of ``cis_list`` whose own overlay was produced by an older converter
+    (see ema_pdf.CONVERTER_VERSION): due again regardless of the fetch TTL. Shared by
+    this CLI's sweep and --reconvert and by the refresh service's EMA crawl lane."""
+    return {c for c in cis_list
+            if (v := overlay_conv(c)) is not None and v < ema.CONVERTER_VERSION}
 
 
 def _looks_like_pdf(data: bytes) -> bool:
@@ -334,14 +371,17 @@ def _wayback_pdf(client: httpx.Client, url: str) -> bytes:
 
 
 def convert_and_write(cis: str, pdf_bytes: bytes, gzip_overlay: bool,
-                      src_url: str = "", via_archive: bool = False) -> dict:
+                      src_url: str = "", via_archive: bool = False,
+                      fetched_at: datetime | None = None) -> dict:
     """Convert one PDF's bytes and write its /eu/ overlay. Returns a manifest
     entry dict ({last_fetch, hash, status, date, bytes[, via_archive]}); status
     'empty' means the PDF yielded no usable HTML (no overlay written). When
     ``via_archive`` the bytes came from the Internet Archive, which is stamped on
-    both the overlay (data-ema-archive) and the entry (via_archive)."""
+    both the overlay (data-ema-archive) and the entry (via_archive). ``fetched_at``
+    is when the bytes were downloaded (default now; a --pdf-cache hit passes the
+    cached file's date, so the page's "vérifiée le" never claims a fresher check)."""
     conv = ema.convert(pdf_bytes)
-    now = scrape._now_iso()
+    now = (fetched_at or datetime.now(timezone.utc)).isoformat()
     # Bake the fetch DATE (not the full timestamp) so a same-day re-fetch of an
     # unchanged PDF yields a byte-identical overlay (no needless rewrite/rsync).
     html_doc = _overlay_html(conv, src_url, fetched_date=now[:10], via_archive=via_archive)
@@ -354,27 +394,53 @@ def convert_and_write(cis: str, pdf_bytes: bytes, gzip_overlay: bool,
         entry["via_archive"] = True
     if not html_doc:
         return entry
-    dest = scrape.write_overlay(cis, html_doc, gzip_overlay, overlay_dir=EU_OVERLAY_DIR)
+    dest = scrape.write_overlay(cis, html_doc, gzip_overlay, overlay_dir=EU_OVERLAY_DIR,
+                                fetched=fetched_at)
     entry["bytes"] = dest.stat().st_size
     return entry
 
 
-def process_one(client: httpx.Client, cis: str, url: str, gzip_overlay: bool) -> dict:
+def pdf_cache_path(cache_dir: Path, url: str) -> Path:
+    """Where --pdf-cache keeps the PDF of ``url``: a short URL hash (two products
+    could share a file name) plus the readable EMA file name."""
+    name = re.sub(r"[^A-Za-z0-9._-]", "_", url.rsplit("/", 1)[-1])[-100:]
+    return cache_dir / f"{hashlib.sha256(url.encode()).hexdigest()[:12]}-{name}"
+
+
+def process_one(client: httpx.Client, cis: str, url: str, gzip_overlay: bool,
+                pdf_cache: Path | None = None) -> dict:
     """Fetch one EMA PDF and write its overlay. Tries the live EMA URL first; on
     ANY failure to obtain a PDF (network error, 404, or a non-PDF body) it falls
     back to the Internet Archive. Returns the manifest entry (with ``status='error'``
     and no overlay only when BOTH fail). Reused by the refresh service's on-demand +
-    crawler EMA lane, so the fallback covers those too."""
+    crawler EMA lane, so the fallback covers those too.
+
+    ``pdf_cache`` (CLI only, ``--pdf-cache``) is a read-through cache: a PDF already
+    there is converted without any download, a live download is saved there (never
+    an Internet Archive copy). Meant for re-converting after an ema_pdf change, and
+    for the many CIS sharing one PDF; it never notices an EMA revision by itself."""
     via_archive = False
+    fetched_at = None
+    cached = pdf_cache_path(pdf_cache, url) if pdf_cache else None
     try:
-        try:
-            pdf = _fetch_pdf(client, url)
-        except Exception as exc:  # live EMA failed: try the Internet Archive
-            logger.warning("{} live EMA fetch failed ({}); trying Internet Archive",
-                           cis, str(exc)[:120])
-            pdf = _wayback_pdf(client, url)
-            via_archive = True
-        entry = convert_and_write(cis, pdf, gzip_overlay, src_url=url, via_archive=via_archive)
+        if cached and cached.is_file():
+            pdf = cached.read_bytes()
+            fetched_at = datetime.fromtimestamp(cached.stat().st_mtime, timezone.utc)
+        else:
+            try:
+                pdf = _fetch_pdf(client, url)
+                if cached:
+                    cached.parent.mkdir(parents=True, exist_ok=True)
+                    tmp = cached.with_suffix(".tmp")
+                    tmp.write_bytes(pdf)
+                    tmp.replace(cached)
+            except Exception as exc:  # live EMA failed: try the Internet Archive
+                logger.warning("{} live EMA fetch failed ({}); trying Internet Archive",
+                               cis, str(exc)[:120])
+                pdf = _wayback_pdf(client, url)
+                via_archive = True
+        entry = convert_and_write(cis, pdf, gzip_overlay, src_url=url, via_archive=via_archive,
+                                  fetched_at=fetched_at)
         entry["ema_pdf"] = url  # always the real EMA URL, never the archive one
         if via_archive:
             logger.info("{} recovered from Internet Archive (stamped for later retry)", cis)
@@ -388,11 +454,13 @@ def process_one(client: httpx.Client, cis: str, url: str, gzip_overlay: bool) ->
 def build_order(ttl_days: int, *, force: bool, frequency: Path | None,
                 links: dict[str, str], ema_manifest: dict) -> list[str]:
     """CIS with an EMA PDF that are due, frequency-ordered (reusing the ANSM
-    scraper's queue for ordering, then filtering by the EMA manifest's TTL)."""
+    scraper's queue for ordering, then filtering by the EMA manifest's TTL; an
+    overlay from an older converter is due whatever its age)."""
     ordered = scrape.build_queue(0, force=True, restrict=set(links), frequency=frequency)
     if force:
         return ordered
-    return [c for c in ordered if scrape.is_due(ema_manifest.get(c), ttl_days)]
+    outdated = outdated_conversions(ordered)
+    return [c for c in ordered if c in outdated or scrape.is_due(ema_manifest.get(c), ttl_days)]
 
 
 @click.command()
@@ -421,10 +489,17 @@ def build_order(ttl_days: int, *, force: bool, frequency: Path | None,
                    "SmPC PDF is known without harvesting each ANSM page. Updates the ANSM manifest.")
 @click.option("--ema-json", "ema_json", type=click.Path(exists=True, dir_okay=False), default=None,
               help="Use this local EMA EPAR-documents JSON for --seed-from-ema-json instead of downloading.")
+@click.option("--reconvert", is_flag=True,
+              help="Re-fetch only the CIS whose overlay an older converter made "
+                   "(ema_pdf.CONVERTER_VERSION), TTL ignored. Pair with --pdf-cache.")
+@click.option("--pdf-cache", "pdf_cache", type=click.Path(file_okay=False), default=None,
+              help="Read-through PDF cache dir (reuse a cached PDF, save each download). "
+                   "Put it in a folder whose name contains ignore_backups.")
 @click.option("--dry-run", "dry_run", is_flag=True,
               help="With --seed-from-ema-json: report the seed plan, write nothing, and exit.")
 def main(limit, fetch_all, only, local_file, local_cis, local_src, local_via_archive,
-         ttl_days, rate, no_gzip, force, retry_archived, frequency, seed, ema_json, dry_run):
+         ttl_days, rate, no_gzip, force, retry_archived, frequency, seed, ema_json,
+         reconvert, pdf_cache, dry_run):
     """Refresh EMA /eu/ overlays from the live EMA site (see module docstring)."""
     gzip_overlay = GZIP_DEFAULT and not no_gzip
     freq = Path(frequency) if frequency else None
@@ -470,6 +545,17 @@ def main(limit, fetch_all, only, local_file, local_cis, local_src, local_via_arc
                           links={c: links[c] for c in archived}, ema_manifest=ema_manifest)
         targets = due if fetch_all else due[:limit]
         logger.info("retrying {} Internet-Archive-sourced CIS against the live EMA", len(targets))
+    elif reconvert:
+        # Every CIS whose OWN overlay an older converter produced, linked or not (a
+        # borrow CIS resolves its URL from its overlay below), frequency-ordered.
+        build = svc_http.load_sibling("build.py", "build")
+        have = build._overlay_cis(EU_OVERLAY_DIR)
+        ordered = scrape.build_queue(0, force=True, restrict=have, frequency=freq)
+        outdated = outdated_conversions(ordered)
+        due = [c for c in ordered if c in outdated]
+        targets = due if fetch_all else due[:limit]
+        logger.info("{} overlays from a converter older than v{}, re-converting {}",
+                    len(due), ema.CONVERTER_VERSION, len(targets))
     elif only:
         # Explicit CIS: keep them all for now; the URL resolution below covers both a
         # harvested link AND (for a borrow CIS) its overlay's baked data-ema-pdf.
@@ -504,8 +590,10 @@ def main(limit, fetch_all, only, local_file, local_cis, local_src, local_via_arc
     n_ok = n_empty = n_err = 0
     start = time.monotonic()
     with httpx.Client(follow_redirects=True, timeout=60.0, headers={"User-Agent": USER_AGENT}) as client:
+        cache_dir = Path(pdf_cache) if pdf_cache else None
         for i, cis in enumerate(targets, 1):
-            entry = process_one(client, cis, url_of[cis], gzip_overlay)
+            downloaded = not (cache_dir and pdf_cache_path(cache_dir, url_of[cis]).is_file())
+            entry = process_one(client, cis, url_of[cis], gzip_overlay, pdf_cache=cache_dir)
             scrape.store_entry(ema_manifest, cis, entry)
             status = entry["status"]
             if status == "ok":
@@ -520,7 +608,7 @@ def main(limit, fetch_all, only, local_file, local_cis, local_src, local_via_arc
             logger.info("{} | {} -> {}", scrape._progress(i, total, start), cis, result)
             if i % 10 == 0:
                 scrape.save_manifest(ema_manifest, EMA_MANIFEST_PATH)
-            if i < total and rate > 0:
+            if i < total and rate > 0 and downloaded:
                 time.sleep(scrape.jitter_gap(rate))
 
     scrape.save_manifest(ema_manifest, EMA_MANIFEST_PATH)
