@@ -124,39 +124,50 @@ def _profile(model_name: str) -> dict:
 #: comment asserting the ceiling is safe.
 PASSAGE_MAX_TOKENS = 1024
 
-#: Upper bound on rows x (longest row in characters)^2 for ONE passage batch, the
+#: Upper bound on rows x (longest row in TOKENS)^2 for ONE passage batch, the
 #: quantity attention memory grows with (every row is padded to the longest, and the
 #: score matrix is quadratic in that length). ``batch_size`` alone bounds the row
 #: count, not the cost: one page (CIS 64587553) linearises clinical-trial tables into
-#: 46 rows of ~3300 characters (~950 tokens), the length sort puts 8 of them in one
-#: batch, and that batch peaked at 3.6 GB resident against 626 MB at rest. The 2 GB
-#: embed container was OOM-killed on it, restarted, met the same page first in its
-#: queue, and so embedded nothing at all for days (344 restarts). This budget is
-#: 8 rows of 1600 characters, so an ordinary ~500-character chunk batch is never
-#: split while a 3300-character row runs alone (peak 1.3 GB on that page). It does
-#: move those long rows' vectors a little: the int8 graph quantises activations with
-#: one scale per batch tensor, and 3 of them encoded alone against together measured a
-#: minimum cosine of 0.971. Still deterministic for a given page (same rows, same sort,
-#: same split), and no staleness gate reads vector values, so nothing re-embeds.
-BATCH_CHAR_BUDGET = 8 * 1600 ** 2
+#: 46 rows of ~950 tokens, the length sort put 8 of them in one batch, and that batch
+#: peaked at 3.6 GB resident against 626 MB at rest. The 2 GB embed container was
+#: OOM-killed on it, restarted, met the same page first in its queue, and so embedded
+#: nothing at all for days (344 restarts).
+#:
+#: Until 0.70.2 this budget counted CHARACTERS (8 rows of 1600), and characters are a
+#: poor proxy: prose runs ~0.4 tokens per character, but a dosing table linearised into
+#: "2,850 3,000 55 0,825 0,990 1,155" runs ~0.9, so 8 rows of 600 characters were 8 rows
+#: of ~530 tokens and passed. Three such pages (64308797, 66055271, 69200149) peaked at
+#: 2.2, ~2 and 1.95 GB in a fresh process and were quarantined by the crash guard.
+#: Measured extra RAM above the model for one batch (int8 jina, 4 threads, arena off):
+#: 8x150 tokens 408 MB, 8x300 439, 8x530 1095, 8x650 1529, 4x530 516, 1x1024 359,
+#: 2x1024 776, i.e. roughly 350 MB + 0.00045 MB x rows x tokens^2. 1.0M tokens^2
+#: (8x354, 4x500, 1x1000) therefore caps a batch near 800 MB, ~1.4 GB resident, while
+#: an ordinary page (sections of 120 to 300 tokens) keeps full batches of 8.
+#:
+#: The split moves long rows' vectors a little: the int8 graph quantises activations
+#: with one scale per batch tensor (3 long rows alone against together: minimum cosine
+#: 0.971). Still deterministic for a given page (same rows, same sort, same split), and
+#: no staleness gate reads vector values, so nothing re-embeds.
+BATCH_TOKEN_BUDGET = 1_000_000
 
 
-def _batch_bounds(texts: list[str], batch_size: int,
-                  budget: int = BATCH_CHAR_BUDGET) -> list[tuple[int, int]]:
-    """``(start, stop)`` slices of ``texts`` in order: at most ``batch_size`` rows each,
-    and no more rows than keep ``rows * longest_chars**2`` within ``budget`` (a lone
-    row over budget still gets its own batch). See BATCH_CHAR_BUDGET."""
+def _batch_bounds(lengths: list[int], batch_size: int,
+                  budget: int = BATCH_TOKEN_BUDGET) -> list[tuple[int, int]]:
+    """``(start, stop)`` slices of rows whose token counts are ``lengths``, in order:
+    at most ``batch_size`` rows each, and no more rows than keep
+    ``rows * longest**2`` within ``budget`` (a lone row over budget still gets its own
+    batch). See BATCH_TOKEN_BUDGET."""
     bounds: list[tuple[int, int]] = []
     start, longest = 0, 0
-    for i, t in enumerate(texts):
-        widest = max(longest, len(t))
+    for i, n in enumerate(lengths):
+        widest = max(longest, n)
         rows = i - start + 1
         if rows > 1 and (rows > batch_size or rows * widest * widest > budget):
             bounds.append((start, i))
-            start, widest = i, len(t)
+            start, widest = i, n
         longest = widest
-    if texts:
-        bounds.append((start, len(texts)))
+    if lengths:
+        bounds.append((start, len(lengths)))
     return bounds
 
 
@@ -233,8 +244,16 @@ def batch_feed(tokenizer, texts: list[str], *, max_len: int,
     (0.999998 either way in fp16), so it is written for the reader rather than for the
     arithmetic.
     """
+    return encodings_feed(tokenizer, tokenizer.encode_batch(texts), max_len=max_len,
+                          token_type_ids=token_type_ids)
+
+
+def encodings_feed(tokenizer, encs: list, *, max_len: int,
+                   token_type_ids: bool = False) -> dict:
+    """batch_feed for rows the caller already tokenised (``tokenizer.encode_batch``
+    output), so Encoder.encode can size its batches by real token counts without
+    tokenising every passage twice."""
     global _TRUNCATED_ROWS, _LONGEST_ROW
-    encs = tokenizer.encode_batch(texts)
     longest = max((len(e.ids) for e in encs), default=0)
     _LONGEST_ROW = max(_LONGEST_ROW, longest)
     if longest > max_len:
@@ -671,25 +690,28 @@ class Encoder:
         # longest page holds 1209, and a page has something to regroup only once it
         # fills more than one batch.
         #
-        # By CHARACTER length, which is a free proxy: tokenising twice to sort by the
-        # real thing would cost more than the sort saves.
+        # By TOKEN length: every text is tokenised once, up front, and the batches are
+        # fed from those encodings (encodings_feed), so the real count costs nothing
+        # extra. It used to be character length, which misjudges number-heavy tables
+        # by 2x (see BATCH_TOKEN_BUDGET).
         #
         # No vector changes. With the attention mask taken from the tokenizer rather
         # than rebuilt (see batch_feed), padding is inert and a row's vector does not
         # depend on what shares its batch; measured at cosine 1.000000 against the
         # unsorted order (on ordinary rows: very long ones do shift, see
-        # BATCH_CHAR_BUDGET). A single batch has nothing to regroup, which is what keeps
+        # BATCH_TOKEN_BUDGET). A single batch has nothing to regroup, which is what keeps
         # this a no-op for callers that plan their own batches, as justelesrecos's
         # embed.py does.
+        encs = self.tokenizer.encode_batch([prefix + t for t in texts])
         order: list[int] | None = None
         if len(texts) > batch_size:
-            order = sorted(range(len(texts)), key=lambda i: len(texts[i]))
-            texts = [texts[i] for i in order]
+            order = sorted(range(len(encs)), key=lambda i: len(encs[i].ids))
+            encs = [encs[i] for i in order]
+        lengths = [min(len(e.ids), max_len) for e in encs]
         out: list[np.ndarray] = []
-        for start, stop in _batch_bounds(texts, batch_size):
-            batch = [prefix + t for t in texts[start:stop]]
-            feed = batch_feed(self.tokenizer, batch, max_len=max_len,
-                              token_type_ids="token_type_ids" in self._input_names)
+        for start, stop in _batch_bounds(lengths, batch_size):
+            feed = encodings_feed(self.tokenizer, encs[start:stop], max_len=max_len,
+                                  token_type_ids="token_type_ids" in self._input_names)
             attention = feed["attention_mask"]
             hidden = self.session.run([self._token_output], feed)[0]  # (B, L, H)
             if self.pooling == "cls":

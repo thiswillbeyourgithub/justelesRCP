@@ -2327,15 +2327,22 @@ def test_passage_batches_are_bounded_by_attention_cost():
     the same page, and embedded nothing), while ordinary rows keep full batches."""
     import onnx_embed
     b = onnx_embed._batch_bounds
-    assert b(["a" * 500] * 20, 8) == [(0, 8), (8, 16), (16, 20)]
-    # each 3300-char row is over budget with a neighbour: one per batch
-    assert b(["a" * 3300] * 3 + ["a" * 100], 8) == [(0, 1), (1, 2), (2, 3), (3, 4)]
+    assert b([150] * 20, 8) == [(0, 8), (8, 16), (16, 20)]
+    # each 950-token row is over budget with a neighbour: one per batch
+    assert b([950] * 3 + [40], 8) == [(0, 1), (1, 2), (2, 3), (3, 4)]
     # the budget uses the batch's LONGEST row, not the new one alone
-    assert b(["a" * 100] * 7 + ["a" * 2300] * 3, 8) == [(0, 7), (7, 10)]
+    assert b([40] * 7 + [700] * 3, 8) == [(0, 7), (7, 9), (9, 10)]
     assert b([], 8) == []
-    for bounds in (b(["a" * n for n in range(0, 5000, 37)], 8),):
-        assert all(stop - start <= 8 for start, stop in bounds)
-        assert [x for s, e in bounds for x in range(s, e)] == list(range(136))
+    bounds = b(list(range(0, 1100, 8)), 8)
+    assert all(stop - start <= 8 for start, stop in bounds)
+    assert [x for s, e in bounds for x in range(s, e)] == list(range(138))
+    # Regression (0.70.2): the budget counts TOKENS. A dosing table of 600-character
+    # rows tokenises to ~530 tokens a row (~0.9 token/char against ~0.4 for prose);
+    # the old character budget (8 x 1600 chars) let 8 of them share a batch, which
+    # peaked at 2.2 GB and got the 2 GB embed container OOM-killed.
+    assert b([530] * 8, 8) == [(0, 3), (3, 6), (6, 8)]
+    assert all((e - s) * 530 ** 2 <= onnx_embed.BATCH_TOKEN_BUDGET
+               for s, e in b([530] * 8, 8))
     print("ok passage batches bounded by attention cost")
 
 
