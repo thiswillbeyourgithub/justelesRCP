@@ -33,6 +33,8 @@ when an offline GPU bake asks for it; the runtime service never calls it).
 
 from __future__ import annotations
 
+import ctypes
+import ctypes.util
 import hashlib
 import json
 import os
@@ -136,19 +138,44 @@ PASSAGE_MAX_TOKENS = 1024
 #: Until 0.70.2 this budget counted CHARACTERS (8 rows of 1600), and characters are a
 #: poor proxy: prose runs ~0.4 tokens per character, but a dosing table linearised into
 #: "2,850 3,000 55 0,825 0,990 1,155" runs ~0.9, so 8 rows of 600 characters were 8 rows
-#: of ~530 tokens and passed. Three such pages (64308797, 66055271, 69200149) peaked at
-#: 2.2, ~2 and 1.95 GB in a fresh process and were quarantined by the crash guard.
-#: Measured extra RAM above the model for one batch (int8 jina, 4 threads, arena off):
-#: 8x150 tokens 408 MB, 8x300 439, 8x530 1095, 8x650 1529, 4x530 516, 1x1024 359,
-#: 2x1024 776, i.e. roughly 350 MB + 0.00045 MB x rows x tokens^2. 1.0M tokens^2
-#: (8x354, 4x500, 1x1000) therefore caps a batch near 800 MB, ~1.4 GB resident, while
-#: an ordinary page (sections of 120 to 300 tokens) keeps full batches of 8.
+#: of ~530 tokens and passed (8x530 measures 1062 MB above the model). Measured with
+#: MMAP_THRESHOLD pinned (int8 jina, 4 threads, arena off, extra RAM above the model):
+#: 8x299 426 MB, 8x353 559, 4x499 452, 1x1023 342, 8x529 1062. 1.0M tokens^2 (8x354,
+#: 4x500, 1x1000) therefore caps a batch near 560 MB, ~1.2 GB resident, while an
+#: ordinary page (sections of 120 to 300 tokens) keeps full batches of 8. The three
+#: pages the crash guard quarantined in 2026-11 needed both fixes: 64308797 peaked at
+#: 2205 MB, 1379 with this budget, 1072 with the pinned threshold as well.
 #:
 #: The split moves long rows' vectors a little: the int8 graph quantises activations
 #: with one scale per batch tensor (3 long rows alone against together: minimum cosine
 #: 0.971). Still deterministic for a given page (same rows, same sort, same split), and
 #: no staleness gate reads vector values, so nothing re-embeds.
 BATCH_TOKEN_BUDGET = 1_000_000
+
+
+#: Fixed glibc mmap threshold for the arena-off encoder. glibc serves blocks above
+#: M_MMAP_THRESHOLD with mmap (returned to the OS on free) and smaller ones from the
+#: heap, and by default it RAISES that threshold to the size of every mmapped block it
+#: frees, up to 32 MiB. Attention allocates one score tensor of rows x 16 heads x
+#: tokens^2 x 4 bytes per layer, so once the threshold has climbed, every tensor under
+#: 32 MiB lands on the heap and the intermediates of the 28 layers pile up there for the
+#: whole run. Measured (int8 jina, 4 threads, arena off, extra RAM above the model):
+#: 8x255 tokens (33.3 MB score tensor) 1150 MB, but 8x269 (37.0 MB, always mmapped)
+#: 370 MB; 1x699 929 MB against 1x767 192 MB. Pinned at 1 MiB: 8x254 328 MB, 1x698
+#: 153 MB, and page 69200149 peaks at 1196 MB instead of 1843 at the same speed.
+#: Quarantined by the crash guard on the 2 GB VPS before this, with 64308797 (2205 MB).
+MMAP_THRESHOLD = 1 << 20
+_M_MMAP_THRESHOLD = -3  # mallopt parameter number, from glibc's malloc.h
+
+
+def _pin_mmap_threshold(threshold: int = MMAP_THRESHOLD) -> bool:
+    """Pin glibc's mmap threshold (process-wide; see MMAP_THRESHOLD). Returns False
+    and changes nothing where libc has no ``mallopt`` (musl, macOS)."""
+    try:
+        libc = ctypes.CDLL(ctypes.util.find_library("c") or "libc.so.6")
+        return bool(libc.mallopt(_M_MMAP_THRESHOLD, int(threshold)))
+    except (OSError, AttributeError):
+        return False
 
 
 def _batch_bounds(lengths: list[int], batch_size: int,
@@ -574,6 +601,11 @@ class Encoder:
         # speed; the long-lived embed service turns it off (EMBED_CPU_ARENA) because on a
         # small VPS that never-returned memory is what starves everything else.
         opts.enable_cpu_mem_arena = bool(cpu_arena)
+        if not cpu_arena:
+            # Without the arena every tensor goes through malloc, whose default
+            # threshold policy piles attention tensors up on the heap: see
+            # MMAP_THRESHOLD (it decided which pages fit in the 2 GB container).
+            _pin_mmap_threshold()
         # ``providers`` defaults to CPU-only: that is the runtime container's posture (the
         # VPS has no GPU and installs the CPU-only ``onnxruntime``). The offline pre-bake
         # (embed-rcp.py) passes a GPU-preferring list on a machine that has one, always

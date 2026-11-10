@@ -2346,6 +2346,20 @@ def test_passage_batches_are_bounded_by_attention_cost():
     print("ok passage batches bounded by attention cost")
 
 
+def test_arena_off_encoder_pins_the_mmap_threshold():
+    """Regression (0.70.1): with the onnxruntime arena off, glibc's sliding mmap
+    threshold put every attention tensor under 32 MiB on the heap, and a batch of
+    8x255 tokens cost 1150 MB instead of 330, enough to OOM-kill the 2 GB embed
+    container on three pages. The arena-off Encoder must pin the threshold."""
+    import inspect, platform
+    import onnx_embed
+    if platform.system() == "Linux" and platform.libc_ver()[0] == "glibc":
+        assert onnx_embed._pin_mmap_threshold() is True
+    src = inspect.getsource(onnx_embed.Encoder.__init__)
+    assert "if not cpu_arena:" in src and "_pin_mmap_threshold()" in src
+    print("ok  arena-off encoder pins the mmap threshold")
+
+
 def test_older_chunk_format_stays_served_and_upgrades_last():
     """A chunk-format bump must not leave the catalog unsearchable for the weeks the VPS
     needs to re-embed it: vectors of the same text under a _CHUNK_FORMAT_LEGACY format
@@ -2549,6 +2563,7 @@ if __name__ == "__main__":
     test_embed_request_during_embed_is_rerun_not_dropped()
     test_web_manifest_icons_ship()
     test_passage_batches_are_bounded_by_attention_cost()
+    test_arena_off_encoder_pins_the_mmap_threshold()
     test_crash_guard_counts_restarts_and_quarantines_a_killer_page()
     test_crash_guard_forgets_old_crashes_and_code_changes()
     test_older_chunk_format_stays_served_and_upgrades_last()
