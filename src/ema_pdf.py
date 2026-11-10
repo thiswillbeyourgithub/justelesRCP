@@ -168,6 +168,13 @@ def capture_date(doc: pymupdf.Document) -> str:
     return _pdf_date(md.get("modDate")) or _pdf_date(md.get("creationDate"))
 
 
+def pdf_bytes_date(pdf_bytes: bytes) -> str:
+    """``capture_date`` of a PDF given as bytes, without converting it (cheap: reads
+    only the metadata). Lets a caller tell two copies of a PDF apart by revision."""
+    with pymupdf.open(stream=pdf_bytes, filetype="pdf") as doc:
+        return capture_date(doc)
+
+
 def _img_data_uri(doc: pymupdf.Document, xref: int) -> tuple[str, int] | None:
     """Return ``(data_uri, display_width)`` for one image xref, or None if it is
     too small to be a real figure. Transcodes to a browser format and downscales.

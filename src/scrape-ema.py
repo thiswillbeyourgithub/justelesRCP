@@ -303,26 +303,32 @@ def _overlay_html(conv: dict, src_url: str = "", fetched_date: str = "",
     )
 
 
-_CONV_RE = re.compile(rb'data-ema-conv="(\d+)"')
+_ATTR_RE = re.compile(rb'data-ema-(conv|date|fetched|archive)="([^"]*)"')
 
 
-def overlay_conv(cis: str) -> int | None:
-    """Converter version stamped on ``cis``'s OWN /eu/ overlay (0 when it predates
-    the stamp), or None when it has no readable overlay. Reads only the head (the
-    stamp is the wrapper's first attribute), so scanning the ~2k overlays is cheap."""
+def _overlay_head(cis: str) -> dict[str, str] | None:
+    """The ``data-ema-*`` stamps (conv, date, fetched, archive; see _overlay_html) of
+    ``cis``'s OWN /eu/ overlay, or None when it has no readable overlay. Reads only
+    the head (the stamps are on the wrapper div), so scanning ~2k overlays is cheap."""
     build = svc_http.load_sibling("build.py", "build")
     path = build._overlay_path(cis, EU_OVERLAY_DIR)
     if path is None:
         return None
     try:
         with (gzip.open if path.suffix == ".gz" else open)(path, "rb") as f:
-            head = f.read(512)
+            head = f.read(1024)
     except (OSError, EOFError):
         return None
     if not head:
         return None
-    m = _CONV_RE.search(head)
-    return int(m.group(1)) if m else 0
+    return {k.decode(): v.decode("utf-8", "replace") for k, v in _ATTR_RE.findall(head)}
+
+
+def overlay_conv(cis: str) -> int | None:
+    """Converter version stamped on ``cis``'s OWN /eu/ overlay (0 when it predates
+    the stamp), or None when it has no readable overlay."""
+    head = _overlay_head(cis)
+    return None if head is None else int(head.get("conv") or 0)
 
 
 def outdated_conversions(cis_list) -> set[str]:
@@ -372,6 +378,36 @@ def _wayback_pdf(client: httpx.Client, url: str) -> bytes:
     if not _looks_like_pdf(body):
         raise RuntimeError("Internet Archive snapshot is not a PDF")
     return body
+
+
+def _same_version_archive(client: httpx.Client, cis: str, url: str
+                          ) -> tuple[bytes, datetime, bool] | None:
+    """For a reconversion-only refresh: the Internet Archive's copy of ``url`` when it
+    is the SAME revision as the one ``cis``'s current overlay was converted from
+    (its PDF date equals the overlay's ``data-ema-date``), else None.
+
+    Such a copy carries the text we already serve, so converting it is as good as a
+    live download and spares the EMA, whose WAF answers 429 to most bulk fetches.
+    Returns ``(pdf, fetched_at, via_archive)``: ``fetched_at`` is the overlay's
+    existing fetch date (nothing was checked against the live EMA now, so the page's
+    "vérifiée le" must not move) and ``via_archive`` keeps the overlay's own archive
+    flag (the provenance of that revision is unchanged). An overlay with no PDF date
+    (a few PDFs lack metadata) cannot be matched and returns None."""
+    head = _overlay_head(cis) or {}
+    date, fetched = head.get("date"), head.get("fetched")
+    if not date or not fetched:
+        return None
+    try:
+        pdf = _wayback_pdf(client, url)
+        archived = ema.pdf_bytes_date(pdf)
+    except Exception as exc:
+        logger.info("{} no usable Internet Archive copy ({})", cis, str(exc)[:120])
+        return None
+    if archived != date:
+        logger.info("{} Internet Archive copy is revision {}, overlay is {}", cis, archived, date)
+        return None
+    fetched_at = datetime.fromisoformat(fetched).replace(tzinfo=timezone.utc)
+    return pdf, fetched_at, head.get("archive") == "1"
 
 
 def convert_and_write(cis: str, pdf_bytes: bytes, gzip_overlay: bool,
@@ -438,10 +474,13 @@ def process_one(client: httpx.Client, cis: str, url: str, gzip_overlay: bool,
     (``--reconvert``): a normal sweep always downloads, since the point of a sweep is
     to notice an EMA revision, which a cached copy never would.
 
-    ``archive_fallback=False`` (``--reconvert``) skips the Internet Archive: a
-    failed live fetch returns an error entry and leaves the current overlay alone,
-    since an old-converter live conversion beats a possibly older archived text
-    flagged on the page as such (the EMA's WAF answers 429 to bulk fetches)."""
+    ``archive_fallback=False`` (a reconversion-only refresh: ``--reconvert`` and the
+    refresh lane's outdated-converter claims) first tries the Internet Archive copy
+    of the SAME revision the overlay was made from (``_same_version_archive``), which
+    spares the EMA's WAF (it answers 429 to bulk fetches). Otherwise it tries the
+    live EMA and, on failure, skips the generic archive fallback: an error entry
+    leaves the current overlay alone, since an old-converter live conversion beats
+    a possibly older archived text flagged on the page as such."""
     via_archive = False
     fetched_at = None
     cached = pdf_cache_path(pdf_cache, url) if pdf_cache else None
@@ -449,6 +488,9 @@ def process_one(client: httpx.Client, cis: str, url: str, gzip_overlay: bool,
         if use_cached and cached and cached.is_file():
             pdf = gzip.decompress(cached.read_bytes())
             fetched_at = datetime.fromtimestamp(cached.stat().st_mtime, timezone.utc)
+        elif not archive_fallback and (same := _same_version_archive(client, cis, url)):
+            pdf, fetched_at, via_archive = same
+            logger.info("{} reconverted from the same-revision Internet Archive copy", cis)
         else:
             try:
                 pdf = _fetch_pdf(client, url)
@@ -464,7 +506,7 @@ def process_one(client: httpx.Client, cis: str, url: str, gzip_overlay: bool,
         entry = convert_and_write(cis, pdf, gzip_overlay, src_url=url, via_archive=via_archive,
                                   fetched_at=fetched_at)
         entry["ema_pdf"] = url  # always the real EMA URL, never the archive one
-        if via_archive:
+        if via_archive and fetched_at is None:
             logger.info("{} recovered from Internet Archive (stamped for later retry)", cis)
         return entry
     except Exception as exc:  # both live + archive failed: record and move on

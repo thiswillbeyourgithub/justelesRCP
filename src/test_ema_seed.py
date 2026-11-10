@@ -795,6 +795,61 @@ def test_converter_version_stamp_makes_old_overlays_due():
     print("ok  test_converter_version_stamp_makes_old_overlays_due")
 
 
+def test_reconversion_uses_the_same_revision_archive_copy():
+    """After 0.70.0 the VPS's reconversion stalled: the EMA refused ~90% of its PDF
+    fetches (429), ETA two months. A reconversion-only refresh now converts the
+    Internet Archive copy when it is the SAME revision (PDF date == the overlay's
+    data-ema-date), without touching the EMA and without moving the page's
+    "vérifiée le" date or archive flag; any other case still goes to the live EMA."""
+    import tempfile
+    import pymupdf
+
+    def pdf_dated(day):
+        doc = pymupdf.open()
+        doc.new_page()
+        doc.set_metadata({"modDate": f"D:{day.replace('-', '')}120000+01'00'"})
+        return doc.tobytes()
+    assert sema.ema.pdf_bytes_date(pdf_dated("2026-06-15")) == "2026-06-15"
+
+    def overlay(date, archive=False):
+        return sema._overlay_html({"html": '<div id="textDocument"><p>x</p></div>',
+                                   "date": date}, fetched_date="2026-09-30",
+                                  via_archive=archive)
+    url = "https://www.ema.europa.eu/fr/documents/product-information/x_fr.pdf"
+    seen, live = [], []
+
+    def fake_convert(cis, pdf, gz, src_url="", via_archive=False, fetched_at=None):
+        seen.append((cis, pdf[:5], via_archive, fetched_at and fetched_at.date().isoformat()))
+        return {"status": "ok"}
+
+    def refuse(client, u):
+        live.append(u)
+        raise RuntimeError("429 Too Many Requests")
+    saved = sema._fetch_pdf, sema._wayback_pdf, sema.convert_and_write, sema.EU_OVERLAY_DIR
+    with tempfile.TemporaryDirectory() as d:
+        sema.EU_OVERLAY_DIR = Path(d)
+        (Path(d) / "111.html").write_text(overlay("2026-06-15"), encoding="utf-8")
+        (Path(d) / "222.html").write_text(overlay("2026-06-15", archive=True), encoding="utf-8")
+        (Path(d) / "333.html").write_text(overlay("2026-01-01"), encoding="utf-8")
+        (Path(d) / "444.html").write_text(overlay(""), encoding="utf-8")
+        sema._fetch_pdf, sema.convert_and_write = refuse, fake_convert
+        sema._wayback_pdf = lambda client, u: pdf_dated("2026-06-15")
+        try:
+            got = {c: sema.process_one(None, c, url, True, archive_fallback=False)["status"]
+                   for c in ("111", "222", "333", "444")}
+            # A normal (TTL-due) refresh never takes the shortcut: it must see a revision.
+            sema.process_one(None, "111", url, True)
+        finally:
+            sema._fetch_pdf, sema._wayback_pdf, sema.convert_and_write, sema.EU_OVERLAY_DIR = saved
+    # 111/222 converted from the archive copy, dated and flagged like before; 333 (the
+    # archive holds another revision) and 444 (no PDF date) went to the EMA, refused.
+    assert got == {"111": "ok", "222": "ok", "333": "error", "444": "error"}, got
+    assert seen[:2] == [("111", b"%PDF-", False, "2026-09-30"),
+                        ("222", b"%PDF-", True, "2026-09-30")], seen
+    assert len(live) == 3 and seen[2][2] is True and seen[2][3] is None, (live, seen)
+    print("ok  test_reconversion_uses_the_same_revision_archive_copy")
+
+
 if __name__ == "__main__":
     test_pymupdf_is_pinned_to_the_refresh_images_version()
     test_parse_tolerates_runon_records()
@@ -819,4 +874,5 @@ if __name__ == "__main__":
     test_overlays_date_themselves_and_manifests_merge()
     test_parallel_import_reference_is_harvested_and_kept()
     test_converter_version_stamp_makes_old_overlays_due()
+    test_reconversion_uses_the_same_revision_archive_copy()
     print("\nAll tests passed.")
