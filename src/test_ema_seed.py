@@ -23,6 +23,7 @@ CIS_bdpm data is exercised by a live ``--dry-run``):
    alone never mislinks a wrong drug's SmPC onto a whole authorization group.
 """
 import importlib.util
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 _spec = importlib.util.spec_from_file_location(
@@ -725,12 +726,13 @@ def test_converter_version_stamp_makes_old_overlays_due():
             r._build_crawl_order(lane)
             assert lane.is_due("222") and not lane.is_due("111") and lane.due_at("333") is None
             claimed = [r._claim_next_crawl(lane), r._claim_next_crawl(lane)]
-            assert claimed == ["222", "333"] and not lane.outdated, (claimed, lane.outdated)
+            # Still outdated while in flight: only a successful reconversion clears it.
+            assert claimed == ["222", "333"] and lane.outdated == {"222", "333"}, claimed
             # Claimed only for the converter (TTL fresh): fetched with no archive
             # fallback, so a throttled VPS keeps the page instead of flagging it.
             assert lane.no_archive == {"222", "333"}, lane.no_archive
             calls = []
-            r._eu_lane, r._ema_manifest, r.gzip_overlay = lane, {}, True
+            r._eu_lane, r._ema_manifest, r.gzip_overlay = lane, lane.manifest, True
             r._eu_url = lambda c: "https://www.ema.europa.eu/x_fr.pdf"
             r._record = r._persist = lambda *a, **k: None
             saved_po = rs.ema_scrape.process_one
@@ -741,6 +743,32 @@ def test_converter_version_stamp_makes_old_overlays_due():
             finally:
                 rs.ema_scrape.process_one = saved_po
             assert [c["archive_fallback"] for c in calls] == [False, True], calls
+            # Regression: a failed reconversion used to leave ``outdated`` at claim
+            # time, so the /status "done" gauge counted it as done. Now it stays
+            # outdated, waits out the error retry, then is due again for the
+            # converter, still without the archive fallback (TTL is fresh).
+            assert "222" in lane.outdated and lane.manifest["222"]["status"] == "error"
+            assert not lane.is_due("222"), "error retry window must be honoured"
+            assert r._due_count_locked(lane) == 2, "222 and 333 are not done yet"
+            stale = (datetime.now(timezone.utc) - timedelta(
+                seconds=rs.scrape.ERROR_RETRY_SECONDS + 60)).isoformat()
+            lane.manifest["222"]["last_error"] = stale
+            assert lane.is_due("222") and not lane.ttl_due("222")
+            r._pending.clear()
+            lane.idx = 0
+            assert r._claim_next_crawl(lane) == "222" and "222" in lane.no_archive
+            # A success clears it for good.
+            rs.ema_scrape.process_one = lambda *a, **k: {"status": "ok", **fresh}
+            saved_ro, saved_re = rs.build._read_overlay, rs.build.render_eu_page
+            rs.build._read_overlay = lambda *a, **k: ""
+            rs.build.render_eu_page = lambda *a, **k: None
+            r._cap, r._tpl = {}, ""
+            try:
+                r._process_ema(None, "222", "crawl")
+            finally:
+                rs.ema_scrape.process_one = saved_po
+                rs.build._read_overlay, rs.build.render_eu_page = saved_ro, saved_re
+            assert "222" not in lane.outdated and not lane.is_due("222")
         finally:
             sema.EU_OVERLAY_DIR = orig
 

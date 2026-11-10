@@ -141,7 +141,9 @@ class _CrawlLane:
 
     ``outdated_fn`` (EMA lane only) maps the order to the CIS whose overlay an older
     converter produced (scrape-ema.outdated_conversions); recomputed with each order,
-    those are due whatever the TTL, so an ema_pdf fix reaches every /eu/ page. One
+    those are due whatever the TTL, so an ema_pdf fix reaches every /eu/ page. A CIS
+    leaves ``outdated`` only once its reconversion succeeds (a failed one waits out
+    the usual error retry, then is due again, and keeps counting as not done). One
     claimed ONLY for that (TTL not due) lands in ``no_archive``: ``_process_ema`` then
     skips the Internet Archive fallback, keeping the current overlay on a 429. Read
     off the overlays, not the manifest, because overlays converted on the dev machine
@@ -170,11 +172,24 @@ class _CrawlLane:
 
     # The lane's due test, used everywhere the crawler asks (claim, gauges, idle
     # wait) so they never disagree. Caller holds the Refresher's _lock.
+    # An outdated CIS stays in ``outdated`` until a reconversion SUCCEEDS
+    # (_process_ema discards it), so a failed one is not counted as done: it waits
+    # out the usual error retry, then is due again for the converter.
     def is_due(self, cis: str) -> bool:
-        return cis in self.outdated or scrape.is_due(self.manifest.get(cis), self.ttl_days)
+        at = self.due_at(cis)
+        return at is None or datetime.now(timezone.utc) >= at
 
     def due_at(self, cis: str):
-        return None if cis in self.outdated else scrape.due_at(self.manifest.get(cis), self.ttl_days)
+        entry = self.manifest.get(cis)
+        if cis in self.outdated and (entry or {}).get("status") != "error":
+            return None
+        return scrape.due_at(entry, self.ttl_days)
+
+    def ttl_due(self, cis: str) -> bool:
+        """Due by the TTL alone (age of the last SUCCESSFUL fetch), ignoring both the
+        converter and a pending error retry: decides ``no_archive`` for a reconversion."""
+        entry = self.manifest.get(cis)
+        return scrape.is_due(entry and {**entry, "status": "ok"}, self.ttl_days)
 
 
 class RenderContext:
@@ -238,12 +253,14 @@ class _LaneScheduler:
 
         A live sweep-size hint: how many pages the lane still has to fetch before it
         goes idle. O(len(order)) but cheap (a dict lookup + one ISO parse each), and
-        only ever run under the lock the callers already hold.
+        only ever run under the lock the callers already hold. A page still awaiting
+        its reconversion counts as remaining even inside its error-retry window, so a
+        failed fetch never shows up as "done" on /status.
         """
         if not lane.enabled:
             return 0
         return sum(1 for cis in lane.order
-                   if lane.is_due(cis))
+                   if cis in lane.outdated or lane.is_due(cis))
 
     @staticmethod
     def _crawl_eta_seconds(due: int, rate: float) -> float:
@@ -364,8 +381,7 @@ class _LaneScheduler:
                     continue  # already queued/in flight (on-demand or other lane)
                 if lane.is_due(cis):
                     if cis in lane.outdated:
-                        lane.outdated.discard(cis)  # a failed fetch falls back on the error retry
-                        if not scrape.is_due(lane.manifest.get(cis), lane.ttl_days):
+                        if not lane.ttl_due(cis):
                             # Due only for the converter: on a live failure keep the
                             # current overlay rather than swap in an archived copy
                             # (the EMA WAF 429s bulk fetches; see _process_ema).
@@ -1095,9 +1111,11 @@ class Refresher(_LaneScheduler, _Stats):
             self._eu_lane.no_archive.discard(cis)
         entry = ema_scrape.process_one(client, cis, url, self.gzip_overlay,
                                        archive_fallback=not no_archive)
+        status = entry.get("status")
         with self._lock:
             scrape.store_entry(self._ema_manifest, cis, entry)
-        status = entry.get("status")
+            if status != "error":  # reconverted (or settled): no longer outdated
+                self._eu_lane.outdated.discard(cis)
         if status == "ok":
             # Re-read the overlay process_one just wrote, then render the /eu/ page
             # (writes dist/eu/<slug>.html, stored as .br) BEFORE persisting the manifest,
