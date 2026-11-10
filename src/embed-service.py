@@ -114,6 +114,8 @@ _FAILURES_MAX = 200
 _CRASH_QUARANTINE = 2
 #: ... within this many seconds of each other (see _CrashGuard).
 _CRASH_WINDOW = 24 * 3600
+#: CPU niceness the whole service runs at (see main): background work on a shared VPS.
+NICENESS = 19
 # Format upgrade (see build._CHUNK_FORMAT_LEGACY): pages whose vectors are still served
 # from an older chunk format are re-embedded only once nothing better is waiting, a few
 # at a time so a page that newly needs vectors never queues behind hundreds of them.
@@ -1282,6 +1284,13 @@ def main(host, port, model_dir, out_dim, vec_quant, sem_floor, intra_threads,
     """Run the semantic-search embedder (see module docstring)."""
     global EMBEDDER
     svc_http.setup_logging(log_level)
+    # Lowest CPU priority, set before any thread exists: Linux niceness is per
+    # thread and inherited at creation, so onnxruntime's pool and the HTTP threads
+    # all start at 19. The encoder kept ~3 of the VPS's 4 cores busy at nice 0 and
+    # made every other service on the host (sshd included) sluggish; at 19 it only
+    # takes what they leave. Raising niceness needs no capability (cap_drop: ALL).
+    os.nice(NICENESS - os.nice(0))
+    logger.info("running at niceness {}", os.nice(0))
 
     logger.info("loading model from {} (kept warm)", model_dir)
     baseline_rss = _rss_mb()  # process RSS before the weights load (Python + onnxruntime lib)
