@@ -49,6 +49,7 @@ logged that contains a query's text.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import random
@@ -60,6 +61,7 @@ import threading
 import time
 import urllib.request
 from collections import Counter, OrderedDict, deque
+from pathlib import Path
 from urllib.parse import parse_qs
 
 import click
@@ -110,6 +112,8 @@ _FAILURES_MAX = 200
 #: changes. One crash can be bad luck (a reader query's encode at the same moment);
 #: two on the same page is the page. See _CrashGuard.
 _CRASH_QUARANTINE = 2
+#: ... within this many seconds of each other (see _CrashGuard).
+_CRASH_WINDOW = 24 * 3600
 # Format upgrade (see build._CHUNK_FORMAT_LEGACY): pages whose vectors are still served
 # from an older chunk format are re-embedded only once nothing better is waiting, a few
 # at a time so a page that newly needs vectors never queues behind hundreds of them.
@@ -163,10 +167,17 @@ class _CrashGuard:
     (uptime, errors), so /status saw a young, healthy service, and the same page came
     back to the front of the queue. A small JSON file in the writable vectors mount
     records each boot and the page being embedded right now; a boot that finds a page
-    still marked in flight knows the previous process died during it. Wiped by a
-    deploy's mirror rsync, which is fine: a deploy may well have fixed the cause."""
+    still marked in flight knows the previous process died during it.
 
-    def __init__(self, path) -> None:
+    A crash only counts against a page for _CRASH_WINDOW seconds, and every record is
+    dropped when the embed code changed (``code``, see _code_signature), since a deploy
+    may well have fixed the cause. Before that, records lived forever: a deploy's rsync
+    did delete the file, but the running process rewrote it whole from memory at its
+    next page or on SIGTERM. So any two deaths on the same page, months apart and from
+    long-fixed memory bugs, quarantined it: in 2026-11 three ordinary pages (CIS
+    64308797, 66055271, 69200149, chunks under 900 characters) were quarantined."""
+
+    def __init__(self, path, code: str = "") -> None:
         self.path = path
         try:
             state = json.loads(path.read_text(encoding="utf-8"))
@@ -174,11 +185,14 @@ class _CrashGuard:
             state = {}
         state = state if isinstance(state, dict) else {}
         now = time.time()
+        self.code = code
         self.boots = [t for t in state.get("boots", []) if isinstance(t, (int, float))]
         self.boots = (self.boots + [now])[-_BOOTS_KEPT:]
-        # {cis: {"crashes": n, "src_hash": h, "at": t}}
+        # {cis: {"crashes": n, "src_hash": h, "at": t}}, only the recent ones of this code
+        same_code = state.get("code") == code
         self.crashed: dict = {k: v for k, v in (state.get("crashed") or {}).items()
-                              if isinstance(v, dict)}
+                              if same_code and isinstance(v, dict)
+                              and now - (v.get("at") or 0) < _CRASH_WINDOW}
         died = state.get("inflight")
         if isinstance(died, dict) and died.get("cis"):
             prev = self.crashed.get(died["cis"], {})
@@ -191,7 +205,8 @@ class _CrashGuard:
         self._save()
 
     def _save(self) -> None:
-        state = {"boots": self.boots, "crashed": self.crashed, "inflight": self.inflight}
+        state = {"code": self.code, "boots": self.boots, "crashed": self.crashed,
+                 "inflight": self.inflight}
         tmp = self.path.with_name(self.path.name + ".tmp")
         try:
             tmp.write_text(json.dumps(state), encoding="utf-8")
@@ -221,6 +236,18 @@ class _CrashGuard:
     def quarantine_list(self) -> list[str]:
         return sorted(k for k, v in self.crashed.items()
                       if v.get("crashes", 0) >= _CRASH_QUARANTINE)
+
+def _code_signature() -> str:
+    """Short hash of the code that decides how a page is embedded (this service, the
+    encoder, build.py's segmentation): a change resets _CrashGuard's records."""
+    h = hashlib.sha256()
+    for name in ("embed-service.py", "onnx_embed.py", "build.py"):
+        try:
+            h.update((Path(__file__).resolve().parent / name).read_bytes())
+        except OSError:
+            h.update(name.encode())
+    return h.hexdigest()[:12]
+
 
 def _clean_stop(signum, frame) -> None:
     """SIGTERM (`docker stop`, a deploy recreating the container): clear the in-flight
@@ -323,7 +350,7 @@ class Embedder:
     def start(self) -> None:
         # .vec.json is stored br-only now; drop the plain copies an older embedder left
         # (no build ever rewrites them on the VPS, and they are ~0.8 GB).
-        self.crash = _CrashGuard(build.DIST / "rcp" / ".embed-state.json")
+        self.crash = _CrashGuard(build.DIST / "rcp" / ".embed-state.json", _code_signature())
         dropped = build.drop_plain_copies()
         if dropped:
             logger.info("dropped {} plain/.gz copies superseded by a .br", dropped)

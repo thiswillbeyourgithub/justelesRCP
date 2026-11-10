@@ -2440,6 +2440,35 @@ def test_crash_guard_counts_restarts_and_quarantines_a_killer_page():
     print("ok  test_crash_guard_counts_restarts_and_quarantines_a_killer_page")
 
 
+def test_crash_guard_forgets_old_crashes_and_code_changes():
+    """In 2026-11 three ordinary pages were quarantined: crash records never expired
+    (a deploy deleted the file but the running process rewrote it whole from memory),
+    so two deaths on one page months apart, from long-fixed memory bugs, were enough.
+    A crash now counts for _CRASH_WINDOW only, and a code change drops every record."""
+    import json
+    import tempfile
+    es = _load_embed_service()
+    with tempfile.TemporaryDirectory() as d:
+        path = Path(d) / ".embed-state.json"
+        g = es._CrashGuard(path, "v1")
+        g.begin("64308797", "h")
+        g = es._CrashGuard(path, "v1")                  # crash #1 ...
+        state = json.loads(path.read_text())
+        state["crashed"]["64308797"]["at"] -= es._CRASH_WINDOW + 1   # ... weeks ago
+        state["inflight"] = {"cis": "64308797", "src_hash": "h"}
+        path.write_text(json.dumps(state))
+        g = es._CrashGuard(path, "v1")                  # crash #2 today: not two in a row
+        assert not g.quarantined("64308797", "h") and g.crashed["64308797"]["crashes"] == 1
+        g.begin("64308797", "h")
+        g = es._CrashGuard(path, "v1")                  # a second one within the window
+        assert g.quarantined("64308797", "h")
+        g = es._CrashGuard(path, "v2")                  # a deploy changed the embed code
+        assert not g.quarantined("64308797", "h") and not g.quarantine_list()
+        assert g.restarts_since(3600) == 4              # boots are kept across code changes
+    assert len(es._code_signature()) == 12
+    print("ok  test_crash_guard_forgets_old_crashes_and_code_changes")
+
+
 if __name__ == "__main__":
     test_load_cap_meta_excludes_decentralised()
     test_clean_substance_strips_salt_hydrate()
@@ -2514,5 +2543,6 @@ if __name__ == "__main__":
     test_web_manifest_icons_ship()
     test_passage_batches_are_bounded_by_attention_cost()
     test_crash_guard_counts_restarts_and_quarantines_a_killer_page()
+    test_crash_guard_forgets_old_crashes_and_code_changes()
     test_older_chunk_format_stays_served_and_upgrades_last()
     print("\nAll tests passed.")
