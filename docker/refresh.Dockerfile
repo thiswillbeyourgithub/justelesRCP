@@ -13,8 +13,12 @@ FROM python:3.14.9-slim
 # at build time means the read-only runtime container needs no package cache and
 # no network just to import them. pymupdf (fitz) is for the EMA /eu/ lane: the
 # service imports ema_pdf.py, which converts EMA product-information PDFs to HTML.
-RUN pip install --no-cache-dir httpx==0.28.1 lxml==6.1.3 brotli==1.2.1 loguru==0.7.3 \
-    click==8.5.0 pymupdf==1.28.2
+# apt upgrade: the python base image lags behind Debian security fixes.
+# pip is only needed at build time: uninstalling it drops its vendored urllib3/msgpack/setuptools (trivy HIGHs).
+RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/* \
+ && pip install --no-cache-dir httpx==0.28.1 lxml==6.1.3 brotli==1.2.1 loguru==0.7.3 \
+    click==8.5.0 pymupdf==1.28.2 \
+ && pip uninstall -y pip
 
 WORKDIR /app
 # The service imports build.py, scrape-rcp.py and (for the EMA /eu/ lane)

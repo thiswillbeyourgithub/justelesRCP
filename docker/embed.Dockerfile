@@ -21,8 +21,12 @@ FROM python:3.14.9-slim
 # writes the .br sibling). The model itself is NOT baked: it is mounted read-only from
 # the host ./models at runtime (scripts/download-model.sh fetches it), so it stays out of the
 # image and out of the .dockerignore-excluded build context.
-RUN pip install --no-cache-dir onnxruntime==1.31.0 tokenizers==0.23.3 numpy==2.5.4 \
-    lxml==6.1.3 brotli==1.2.1 loguru==0.7.3 click==8.5.0
+# apt upgrade: the python base image lags behind Debian security fixes.
+# pip is only needed at build time: uninstalling it drops its vendored urllib3/msgpack/setuptools (trivy HIGHs).
+RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/* \
+ && pip install --no-cache-dir onnxruntime==1.31.0 tokenizers==0.23.3 numpy==2.5.4 \
+    lxml==6.1.3 brotli==1.2.1 loguru==0.7.3 click==8.5.0 \
+ && pip uninstall -y pip
 
 WORKDIR /app
 # The service imports build.py (section_chunks / quantize / overlay readers /
