@@ -2498,6 +2498,20 @@ def test_crash_guard_counts_restarts_and_quarantines_a_killer_page():
     print("ok  test_crash_guard_counts_restarts_and_quarantines_a_killer_page")
 
 
+def test_backlog_trend_needs_a_window_and_reports_the_delta():
+    """/status judges "is indexing catching up?" from the backlog's observed trend. In
+    2026-11 the old gauge (crawl attempts/min vs a mean page time measured on 5 huge EMA
+    pages) said "never" with a backlog of 65 pages, although most crawled pages need no
+    encode at all."""
+    es = _load_embed_service()
+    assert es._backlog_trend([]) is None
+    assert es._backlog_trend([(0.0, 65), (600.0, 70)]) is None  # 10 min: too early
+    hist = [(0.0, 65), (900.0, 70), (1800.0, 50)]
+    assert es._backlog_trend(hist) == {"window_seconds": 1800.0, "delta": -15}
+    assert es._backlog_trend([(0.0, 5), (2000.0, 9)])["delta"] == 4  # growing
+    print("ok  test_backlog_trend_needs_a_window_and_reports_the_delta")
+
+
 def test_crash_guard_forgets_old_crashes_and_code_changes():
     """In 2026-11 three ordinary pages were quarantined: crash records never expired
     (a deploy deleted the file but the running process rewrote it whole from memory),
@@ -2604,5 +2618,6 @@ if __name__ == "__main__":
     test_arena_off_encoder_pins_the_mmap_threshold()
     test_crash_guard_counts_restarts_and_quarantines_a_killer_page()
     test_crash_guard_forgets_old_crashes_and_code_changes()
+    test_backlog_trend_needs_a_window_and_reports_the_delta()
     test_older_chunk_format_stays_served_and_upgrades_last()
     print("\nAll tests passed.")

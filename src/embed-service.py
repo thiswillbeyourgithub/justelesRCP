@@ -98,6 +98,14 @@ BATCH_DEFAULT = 8
 # many of those it describes in depth (reads + segments + tokenises the overlay, so it
 # costs ~1 s on a long /eu/ page), how many recent results and failures it remembers.
 _BACKLOG_LIST_MAX = 300
+# "Is indexing catching up?" on /status is judged from the backlog's OBSERVED trend: the
+# size at each reconcile scan over the last _TREND_WINDOW seconds, reported once the
+# oldest sample is _TREND_MIN_WINDOW old. Comparing the crawler's pages/min with the
+# encoder's mean page time (the old gauge) said "never" in 2026-11: most crawled pages
+# are empty or unchanged and need no encode, and the encode mean came from 5 huge EMA
+# pages right after a boot.
+_TREND_WINDOW = 3600.0
+_TREND_MIN_WINDOW = 1800.0
 _BACKLOG_DEEP = 20
 # Both popup routes are public and CPU-bound (segmenting + tokenising whole pages),
 # so at most this many run at once (past it: 503), a backlog answer is reused for
@@ -328,6 +336,8 @@ class Embedder:
         # many still lack a fresh .vec.json), so the /status page can answer "is the
         # embedder behind the crawler?" without an expensive per-request full scan.
         self._last_scan: dict = {}
+        # (monotonic time, backlog size) per reconcile scan, see _backlog_trend.
+        self._scan_history: deque[tuple[float, int]] = deque()
         # Crash bookkeeping that outlives the process (see _CrashGuard); created by
         # start(), so a test building an Embedder writes no state file.
         self.crash: _CrashGuard | None = None
@@ -644,8 +654,12 @@ class Embedder:
             queued += self._feed_upgrades()
         # Record for /api/sem/summary: total crawled pages vs how many still await an
         # embed, so the /status page can show whether embedding trails the crawl.
+        now = time.monotonic()
         self._last_scan = {"overlays": overlays, "stale": stale,
-                           "stale_cis": stale_cis, "at": time.monotonic()}
+                           "stale_cis": stale_cis, "at": now}
+        self._scan_history.append((now, stale))
+        while self._scan_history and now - self._scan_history[0][0] > _TREND_WINDOW:
+            self._scan_history.popleft()
         return queued
 
     def _upgrade_order(self, legacy: list[str]) -> list[str]:
@@ -1045,7 +1059,24 @@ class Embedder:
                 "backlog_eta_seconds": round(awaiting * cadence, 1)
                                        if (pages_per_min > 0 and awaiting) else 0.0,
             }
+            trend = _backlog_trend(list(self._scan_history))
+            if trend:
+                summary["crawl_gap"]["trend"] = trend
         return summary
+
+
+def _backlog_trend(history: list[tuple[float, int]],
+                   min_window: float = _TREND_MIN_WINDOW) -> dict | None:
+    """How the embed backlog moved over the scans in ``history`` ((monotonic time,
+    size) pairs, oldest first): ``{"window_seconds", "delta"}`` with delta = newest size
+    minus oldest (negative = shrinking), or None while the history spans less than
+    ``min_window`` (too early after a boot to tell). Arrivals (new drugs, revised or
+    changed pages) and the encoder's real speed both show up in it, whatever the
+    page sizes, which is the honest answer to "is indexing catching up?"."""
+    if len(history) < 2 or history[-1][0] - history[0][0] < min_window:
+        return None
+    return {"window_seconds": round(history[-1][0] - history[0][0], 1),
+            "delta": history[-1][1] - history[0][1]}
 
 
 class _Handler(svc_http.JSONHandler):

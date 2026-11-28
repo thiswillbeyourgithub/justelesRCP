@@ -432,12 +432,8 @@
   }
 
   // "Is indexing keeping up with crawling?" - the one gauge that needs BOTH services.
-  // Indexing speed = the embedder's sustained pages/min. Crawl speed = the page
-  // production rate = sum of the enabled lanes STILL SWEEPING (an idle/caught-up lane
-  // adds no new work); when the refresh service is down no crawling happens, so its
-  // production is treated as 0. The ratio + catch-up ETA assume the worst case that
-  // every explored page must be re-indexed (true during a fresh seed / forced
-  // re-crawl, which is exactly when indexing can fall behind).
+  // The verdict and the ETA come from the backlog's observed trend (crawl_gap.trend);
+  // the two speeds are shown for context only (see the comment inside).
   function renderCatchup(crawlS, embedS) {
     if (!embedS) return;  // embed service down: renderDown already filled body-catchup
     var frag = document.createDocumentFragment();
@@ -456,6 +452,13 @@
       return;
     }
     var backlog = gap.awaiting_embed;
+    // The verdict comes from the backlog's OBSERVED trend over the last hour
+    // (gap.trend, from the embed service's reconcile scans), not from comparing the
+    // crawl speed with the encode speed: most crawled pages are empty or unchanged and
+    // need no encode, and right after a boot the encode speed is measured on a handful
+    // of pages (5 huge EMA SmPCs gave "never" in 2026-11 with 65 pages queued).
+    var trend = gap.trend;
+    var shrink = trend && trend.window_seconds > 0 ? -trend.delta / trend.window_seconds : 0;
 
     var crawlPm = 0, crawlKnown = !!crawlS;
     if (crawlS) {
@@ -463,36 +466,42 @@
         if (g && g.enabled && !g.idle) crawlPm += (g.pages_per_min || 0);
       });
     }
-    var net = idxPm - crawlPm;  // pages/min the backlog shrinks by
 
     var head = el("div", "status-lane-head");
     head.appendChild(el("h3", "status-lane-title", "L'indexation rattrape-t-elle l'exploration ?"));
     if (backlog <= 0) head.appendChild(badge("à jour", "ok"));
-    else if (!idxPm) head.appendChild(badge("mesure en cours", "run"));
-    else if (net > 0) head.appendChild(badge("rattrapage en cours", "run"));
-    else head.appendChild(badge("ne rattrape pas", "warn"));
+    else if (!trend) head.appendChild(badge("mesure en cours", "run"));
+    else if (trend.delta < 0) head.appendChild(badge("rattrapage en cours", "run"));
+    else if (trend.delta > 0) head.appendChild(badge("ne rattrape pas", "warn"));
+    else head.appendChild(badge("file stable", "run"));
     frag.appendChild(head);
 
     frag.appendChild(metric("Vitesse d'indexation", pm(idxPm) || "en cours de mesure"));
-    frag.appendChild(metric("Vitesse d'exploration",
+    frag.appendChild(metric("Vitesse d'exploration (pages vérifiées)",
       crawlKnown ? (pm(crawlPm) || "à l'arrêt (tout est à jour)") : "inconnue (service arrêté)"));
-    if (idxPm > 0 && crawlKnown && crawlPm > 0) {
-      var ratio = idxPm / crawlPm;
-      frag.appendChild(metric("Rapport indexation / exploration",
-        (ratio < 10 ? ratio.toFixed(1) : num(ratio)) + " ×", ratio >= 1 ? "" : "warn"));
-    }
 
     if (backlog > 0) {
       frag.appendChild(el("div", "status-sep"));
       frag.appendChild(metric("Pages en attente d'indexation", num(backlog), "warn"));
-      if (!idxPm) {
-        frag.appendChild(note("Vitesse d'indexation en cours de mesure…"));
-      } else if (net > 0) {
-        frag.appendChild(metric("Rattrapage complet estimé", "~ " + dur(backlog / net * 60)));
+      if (!trend) {
+        frag.appendChild(note("La tendance se mesure sur 30 minutes de fonctionnement " +
+          "du service d'indexation."));
       } else {
-        frag.appendChild(metric("Rattrapage complet estimé", "jamais au rythme actuel", "warn"));
-        frag.appendChild(note("L'exploration produit de nouvelles pages au moins aussi vite " +
-          "que l'indexation ne les traite.", "warn"));
+        var d = trend.delta;
+        frag.appendChild(metric("Évolution de la file",
+          (d > 0 ? "+" : d < 0 ? "−" : "") + num(Math.abs(d)) + " page" +
+          (Math.abs(d) > 1 ? "s" : "") + " en " + dur(trend.window_seconds),
+          d > 0 ? "warn" : ""));
+        if (d < 0) {
+          frag.appendChild(metric("Rattrapage complet estimé", "~ " + dur(backlog / shrink)));
+        } else if (d > 0) {
+          frag.appendChild(note("De nouvelles pages à indexer (nouveaux médicaments, " +
+            "révisions, pages modifiées) arrivent plus vite que l'indexation ne les traite.",
+            "warn"));
+        } else {
+          frag.appendChild(note("Autant de pages arrivent qu'il n'en est indexé, ou la " +
+            "file est bloquée : voir le détail de la file d'indexation."));
+        }
       }
     } else {
       frag.appendChild(note("L'indexation est à jour avec l'exploration : chaque page " +
