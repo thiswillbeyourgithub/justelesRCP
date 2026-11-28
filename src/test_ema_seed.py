@@ -878,6 +878,46 @@ def test_reconversion_uses_the_same_revision_archive_copy():
     print("ok  test_reconversion_uses_the_same_revision_archive_copy")
 
 
+def test_ema_revision_dates_make_older_overlays_revised():
+    """A new EMA revision of a SmPC used to wait for the 180-day fetch TTL. The
+    EPAR-documents dump carries each product-information PDF's last_updated_date;
+    an overlay fetched on an EARLIER day than that date is "revised" (due now).
+    Same day or later, an unknown URL, or a missing fetched stamp: not revised."""
+    import tempfile
+    a = "https://www.ema.europa.eu/fr/a-epar-product-information_fr.pdf"
+    b = "https://www.ema.europa.eu/fr/b-epar-product-information_fr.pdf"
+    records = [
+        {"type": "product-information", "medicine_name": "A", "document_url": a,
+         "last_updated_date": "2026-11-23T10:00:00Z"},
+        {"type": "product-information", "medicine_name": "B", "document_url": b,
+         "last_updated_date": "2026-01-05T10:00:00Z"},
+        {"type": "overview", "medicine_name": "C",
+         "document_url": "https://www.ema.europa.eu/en/c-overview_en.pdf",
+         "last_updated_date": "2026-11-27T10:00:00Z"},
+    ]
+    dates = sema.ema_pi_dates(records)
+    assert dates == {a: "2026-11-23T10:00:00Z", b: "2026-01-05T10:00:00Z"}, dates
+    conv = {"html": '<div id="textDocument"><p>x</p></div>', "date": "2026-01-01"}
+    with tempfile.TemporaryDirectory() as d:
+        orig = sema.EU_OVERLAY_DIR
+        sema.EU_OVERLAY_DIR = Path(d)
+        try:
+            for cis, url, fetched in (("111", a, "2026-11-01T00:00:00+00:00"),   # revised
+                                      ("222", b, "2026-11-01T00:00:00+00:00"),   # up to date
+                                      ("333", a, "2026-11-23T08:00:00+00:00"),   # same day
+                                      ("444", "https://www.ema.europa.eu/fr/x.pdf",
+                                       "2026-01-01T00:00:00+00:00"),            # not in dump
+                                      ("555", a, "")):                          # no stamp
+                (Path(d) / f"{cis}.html").write_text(
+                    sema._overlay_html(conv, src_url=url, fetched_date=fetched),
+                    encoding="utf-8")
+            got = sema.revised_overlays(["111", "222", "333", "444", "555", "666"], dates)
+        finally:
+            sema.EU_OVERLAY_DIR = orig
+    assert got == {"111": "2026-11-23"}, got
+    print("ok  test_ema_revision_dates_make_older_overlays_revised")
+
+
 if __name__ == "__main__":
     test_pymupdf_is_pinned_to_the_refresh_images_version()
     test_parse_tolerates_runon_records()
@@ -903,4 +943,5 @@ if __name__ == "__main__":
     test_parallel_import_reference_is_harvested_and_kept()
     test_converter_version_stamp_makes_old_overlays_due()
     test_reconversion_uses_the_same_revision_archive_copy()
+    test_ema_revision_dates_make_older_overlays_revised()
     print("\nAll tests passed.")

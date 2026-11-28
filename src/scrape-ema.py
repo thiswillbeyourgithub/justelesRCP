@@ -168,6 +168,55 @@ def _parse_ema_documents(text: str) -> list[dict]:
     return out
 
 
+def _pi_url(r: dict) -> str:
+    """The product-information PDF URL of one EMA document record, French
+    (``translations.fr``) preferred, English ``document_url`` as fallback; "" for any
+    other document type or a URL off the EMA hosts (we fetch it server-side: SSRF)."""
+    if r.get("type") != "product-information":
+        return ""
+    url = (r.get("translations") or {}).get("fr") or r.get("document_url") or ""
+    return url if scrape.bdpm.is_ema_pdf_url(url) else ""
+
+
+def fetch_ema_documents(ema_json_path: str | None = None) -> list[dict]:
+    """The EMA EPAR-documents records, from a local dump file or downloaded live
+    (~28 MB, refreshed daily by the EMA). Raises on a failed download. Shared by
+    --seed-from-ema-json and the refresh service's daily revision check."""
+    if ema_json_path:
+        logger.info("reading EMA EPAR documents from local file {}", ema_json_path)
+        text = Path(ema_json_path).read_text(encoding="utf-8")
+    else:
+        logger.info("downloading EMA EPAR documents JSON …")
+        with httpx.Client(follow_redirects=True, timeout=180.0,
+                          headers={"User-Agent": USER_AGENT}) as client:
+            resp = client.get(EMA_EPAR_JSON_URL)
+            resp.raise_for_status()
+            text = resp.text
+    return _parse_ema_documents(text)
+
+
+def ema_pi_dates(records: list[dict]) -> dict[str, str]:
+    """product-information PDF URL -> its ``last_updated_date`` (ISO, e.g.
+    '2026-07-07T12:26:00Z'): when the EMA last revised that SmPC/notice bundle."""
+    return {url: r.get("last_updated_date") or "" for r in records if (url := _pi_url(r))}
+
+
+def revised_overlays(cis_list, pi_dates: dict[str, str]) -> dict[str, str]:
+    """The CIS of ``cis_list`` whose OWN overlay was fetched (``data-ema-fetched``)
+    on a day BEFORE the EMA last revised its PDF (``pi_dates``, keyed by the overlay's
+    ``data-ema-pdf``), mapped to that revision date. Those are due again whatever the
+    fetch TTL. Day granularity: the fetched stamp is a date, so a revision published
+    later on the very day of a fetch waits for the TTL (rare, and harmless)."""
+    out: dict[str, str] = {}
+    for cis in cis_list:
+        head = _overlay_head(cis) or {}
+        fetched = head.get("fetched", "")[:10]
+        revised = pi_dates.get(html.unescape(head.get("pdf", "")), "")[:10]
+        if fetched and revised and revised > fetched:
+            out[cis] = revised
+    return out
+
+
 def _ema_pi_index(records: list[dict]) -> dict[str, str]:
     """folded EMA ``medicine_name`` -> product-information PDF URL, French
     (``translations.fr``) preferred, English ``document_url`` as fallback, for
@@ -175,10 +224,8 @@ def _ema_pi_index(records: list[dict]) -> dict[str, str]:
     brand wins (records are chronological; any current PI doc points at the live PDF)."""
     idx: dict[str, str] = {}
     for r in records:
-        if r.get("type") != "product-information":
-            continue
-        url = (r.get("translations") or {}).get("fr") or r.get("document_url") or ""
-        if not scrape.bdpm.is_ema_pdf_url(url):  # we fetch it server-side (SSRF)
+        url = _pi_url(r)
+        if not url:
             continue
         name = _fold(r.get("medicine_name", ""))
         if url and name and name not in idx:
@@ -219,17 +266,7 @@ def seed_ema_links(ansm: dict, *, ema_json_path: str | None = None,
         return 0
     groups = build.auth_groups(cap)
 
-    if ema_json_path:
-        logger.info("reading EMA EPAR documents from local file {}", ema_json_path)
-        text = Path(ema_json_path).read_text(encoding="utf-8")
-    else:
-        logger.info("downloading EMA EPAR documents JSON …")
-        with httpx.Client(follow_redirects=True, timeout=180.0,
-                          headers={"User-Agent": USER_AGENT}) as client:
-            resp = client.get(EMA_EPAR_JSON_URL)
-            resp.raise_for_status()
-            text = resp.text
-    records = _parse_ema_documents(text)
+    records = fetch_ema_documents(ema_json_path)
     index = _ema_pi_index(records)
     logger.info("parsed {} EMA documents; {} product-information brands carry a PDF",
                 len(records), len(index))
@@ -303,11 +340,11 @@ def _overlay_html(conv: dict, src_url: str = "", fetched_date: str = "",
     )
 
 
-_ATTR_RE = re.compile(rb'data-ema-(conv|date|fetched|archive)="([^"]*)"')
+_ATTR_RE = re.compile(rb'data-ema-(conv|date|fetched|archive|pdf)="([^"]*)"')
 
 
 def _overlay_head(cis: str) -> dict[str, str] | None:
-    """The ``data-ema-*`` stamps (conv, date, fetched, archive; see _overlay_html) of
+    """The ``data-ema-*`` stamps (conv, date, fetched, archive, pdf; see _overlay_html) of
     ``cis``'s OWN /eu/ overlay, or None when it has no readable overlay. Reads only
     the head (the stamps are on the wrapper div), so scanning ~2k overlays is cheap."""
     build = svc_http.load_sibling("build.py", "build")
@@ -316,7 +353,7 @@ def _overlay_head(cis: str) -> dict[str, str] | None:
         return None
     try:
         with (gzip.open if path.suffix == ".gz" else open)(path, "rb") as f:
-            head = f.read(1024)
+            head = f.read(2048)
     except (OSError, EOFError):
         return None
     if not head:
