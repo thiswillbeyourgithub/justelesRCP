@@ -49,7 +49,9 @@ frontend templates/assets it renders), NOT the repo root: `src/build.py`,
 `src/embed-rcp.py`, `src/svc_http.py` (the shared HTTP layer of the two services:
 `JSONHandler`, `QuietHTTPServer`, `setup_logging`, plus `load_sibling`, the by-path
 importer of the hyphenated scripts, which caches each sibling in `sys.modules` so two
-importers share one instance), plus the tests `src/test_embed.py` / `src/test_ema_seed.py`.
+importers share one instance), `src/discover.py` (new-drug discovery: live BDPM download + diff +
+state, used by the refresh service and by `download-data.sh`), plus the tests `src/test_embed.py` /
+`src/test_ema_seed.py` / `src/test_discover.py`.
 They stay siblings so `import bdpm` / `import svc_http` and the by-path service imports
 keep resolving; each anchors the repo root as `Path(__file__).resolve().parent.parent`
 (so `data/`, `src/`, `dist/`, `models/` hang off it). Invoke them as `uv run
@@ -80,6 +82,8 @@ data/CIS_bdpm.txt   (official CIS -> drug name, latin-1, tab-separated)
 data/rcp/<cis>.html[.gz]   ANSM re-scrape overlay (scrape-rcp.py, wins over CSV)
 data/eu/<cis>.html[.gz]    EMA SmPC converted from the PDF (scrape-ema.py + ema_pdf.py;
                            wraps the same <div id="textDocument"> envelope)
+data/live/                 refresh service only: the BDPM catalog it re-downloads daily +
+                           new-drugs.json (discovery state shown on /status)
       | build.py
       v
 dist/rcp/<cis>-<slug>.html   one cleaned page per drug (slug from drug name),
@@ -129,7 +133,7 @@ Key facts that aren't obvious from a single file. Each area's full notes (the co
 - **Search and browse** ([docs/architecture/search.md](docs/architecture/search.md)): A-Z browse pages are static and crawlable; search is 100% client-side over `search-index.json` (row flags `sub`/`ret`/`aip`/`eu`); the dropdown and the shareable `/?q=` results page share `search()`/`resultItem()`. No search API and no full-text search over RCP content, by design.
 - **Build pipeline and RCP rendering** ([docs/architecture/build-and-rendering.md](docs/architecture/build-and-rendering.md)): names from `CIS_bdpm.txt`; cross-drug backlinks (`bdpm.py` is shared with the scraper and must stay pure stdlib; links only target CIS that render a page); the `Amm*` class hooks shared with `style.css`; the 2022 mojibake repair and the ANSM HTML quirks fixed in `_parse_clean`; the incremental build (`_global_key`, `_record_hash`, failed renders keep their old page); ANSM overlays from `scrape-rcp.py` win over the frozen 2022 CSV, and a zero-byte overlay means delisted (archived page).
 - **Drug page chrome** ([docs/architecture/drug-page.md](docs/architecture/drug-page.md)): the Sommaire (ToC) and the sticky dock (`src/dock.js` owns every offset through `--chrome-off`; never give `.toc` or `.semsearch` their own `position: sticky`). CRITICAL: only top-level headings get the `sec-N` ids, deeper ones get `sub-N`, because the semantic-search vectors anchor to `sec-N`. Also the freshness banner (`data-rcp-ansm` headline; `data-rcp-asof` drives the refresh and must stay), the official source button and the "En savoir plus" pill row (top and bottom).
-- **Refresh service** ([docs/architecture/refresh-service.md](docs/architecture/refresh-service.md)): optional runtime component behind `/api/*`; imports `scrape-rcp.py`/`build.py`/`scrape-ema.py` by path, so those must stay import-safe; on-demand and crawler lanes for ANSM and EMA with separate rate limits, a catalog-wide hourly budget, SIGHUP forced re-crawl (`deploy.sh --rebuild`); the archived/delisted contract (`build.rcp_archived` is the single test). Never call `asof_of()` while holding `self._lock` (deadlock).
+- **Refresh service** ([docs/architecture/refresh-service.md](docs/architecture/refresh-service.md)): optional runtime component behind `/api/*`; also discovers NEW drugs daily (live BDPM diff, `discover.py`) and EMA revisions, fetches them first in their lane, and serves them to search via `/api/search-extra` until the next full build; imports `scrape-rcp.py`/`build.py`/`scrape-ema.py` by path, so those must stay import-safe; on-demand and crawler lanes for ANSM and EMA with separate rate limits, a catalog-wide hourly budget, SIGHUP forced re-crawl (`deploy.sh --rebuild`); the archived/delisted contract (`build.rcp_archived` is the single test). Never call `asof_of()` while holding `self._lock` (deadlock).
 - **Release notes, /a-propos, /status** ([docs/architecture/release-notes-and-status.md](docs/architecture/release-notes-and-status.md)): every `__version__` bump needs `docs/changelog/<version>/changelog.md` (the build refuses otherwise); `src/changelog.js` owns the generic modal frame `window.jlrcpModal`; `/status` reads only the curated public `/api/summary` + `/api/sem/summary`.
 - **EU-authorization pages and EMA conversion** ([docs/architecture/eu-pages.md](docs/architecture/eu-pages.md)): ~15% of CIS have an empty RCP; the centrally-authorized ones get an `/eu/` page, a stub or a full SmPC converted from the EMA PDF (`ema_pdf.py`, `scrape-ema.py`); overlays are shared by authorization group (`resolve_eu`); figures go to content-addressed `dist/<eu|rcp>/img/`; every EMA URL passes the SSRF guard `bdpm.is_ema_pdf_url`; nothing is fetched from the EMA at build time.
 - **Per-drug semantic search** ([docs/architecture/semantic-search.md](docs/architecture/semantic-search.md)): server-side embed service behind `/api/sem/*`, crawled overlays only, writes `.vec.json` sidecars; `build.section_chunks` is the single segmentation source; a segmentation change bumps `_CHUNK_FORMAT_VERSION` (keep the old one in `_CHUNK_FORMAT_LEGACY`); changing `RUNTIME_MODEL`, `EMBED_OUT_DIM` or `EMBED_VEC_QUANT` re-embeds the catalog; the reader's query is never logged nor sent to analytics. Each chunk records its blocks (`"b"`, `build._BlockIndex`, which MUST number blocks exactly like `sectionBlocks()`/`collectLeaves()` in `rcp-semsearch.js`) and the browser highlights those instead of searching for the text; `uv run src/audit-locate.py --sample N` checks every chunk lands on its passage (deploy.sh runs it). Added by Claude Code.
@@ -141,6 +145,7 @@ Key facts that aren't obvious from a single file. Each area's full notes (the co
 ```bash
 ./scripts/download-data.sh        # fetch + auto-extract the frozen 2022 data/CIS_RCP.csv (zip), and
                           #  refresh data/CIS_bdpm.txt (+ COMPO/GENER) from the LIVE daily BDPM feed
+                          #  (via `uv run src/discover.py data`, validated before swapping in)
 ./scripts/download-model.sh       # OPTIONAL: fetch the jina-embeddings-v5-text-small-retrieval fp32 ONNX
                           #  + tokenizer into ./models and quantise it to int8 (~650 Mo kept,
                           #  ~2.4 Go downloaded, gitignored) for SERVER-SIDE per-drug semantic search
@@ -222,6 +227,7 @@ uv run src/refresh-service.py # optional: run the refresh API on :8460 (behind C
                           # REFRESH_CRAWL_TTL_DAYS (365); EMA lane REFRESH_EMA_CRAWL (1=on) +
                           # REFRESH_EMA_RATE_SECONDS (300) + REFRESH_EMA_CRAWL_TTL_DAYS (180);
                           # REFRESH_LOG_LEVEL (INFO, health never logged);
+                          # new-drug discovery REFRESH_DISCOVER (1=on) + REFRESH_DISCOVER_HOURS (24);
                           # GET /api/stats returns crawl counters + crawl (ANSM) + crawl_eu gauges
                           #  (INTERNAL, blocked at the edge); GET /api/summary is the curated
                           #  PUBLIC view the /status page consumes (proxied, rate-limited)

@@ -76,6 +76,8 @@ fil du temps on aboutit à une **copie locale à jour** des données, sans jamai
 solliciter agressivement les sites sources : requêtes peu fréquentes, limitées en
 débit, et une seule requête même si plusieurs lecteurs consultent la même page.
 
+Les **nouveaux médicaments** sont détectés automatiquement : chaque jour, le catalogue officiel de la BDPM est re-téléchargé et comparé au précédent, et chaque médicament apparu est récupéré en priorité (auprès de l'EMA s'il a une autorisation européenne, sinon de l'ANSM), puis rendu trouvable par la recherche. Le même passage repère les RCP que l'EMA a révisés. La page [/status](https://justelesrcp.olicorne.org/status) liste ces découvertes, leur source et leur état d'indexation.
+
 Pour les médicaments à autorisation européenne, le RCP est publié par l'EMA sous
 forme de PDF. J'ai posé la question à l'EMA : ils m'ont confirmé qu'il fallait le
 récupérer nous-mêmes ainsi, faute d'accès prévu aux RCP. justelesRCP télécharge

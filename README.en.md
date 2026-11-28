@@ -72,6 +72,8 @@ with a button. Over time this builds a **local, up-to-date copy** of the data,
 without ever hammering the source sites: infrequent, rate-limited requests, and a
 single request even when many readers view the same page.
 
+**New medicines** are picked up automatically: every day the official BDPM catalog is downloaded again and diffed against the previous one, and each new medicine is fetched first (from the EMA if centrally authorized, else from the ANSM), then made findable by search. The same pass spots the RCPs the EMA has revised. The [/status](https://justelesrcp.olicorne.org/status) page lists these discoveries, their source and their indexing state.
+
 For centrally-authorized medicines, the RCP is published by the EMA as a PDF. I
 asked the EMA about it, and they confirmed we had to fetch it ourselves this way,
 as there is no planned access to the RCPs. So justelesRCP downloads that official
