@@ -75,6 +75,7 @@ import click
 from loguru import logger
 
 import bdpm  # pure-stdlib sibling: ema_links
+import discover  # new-drug discovery helpers (pure + the BDPM downloader)
 import svc_http  # shared JSON handler / server / logging / sibling loader
 
 scrape = svc_http.load_sibling("scrape-rcp.py", "scrape_rcp")
@@ -169,6 +170,16 @@ class _CrawlLane:
         self.force_pending: set[str] = set()  # CIS still to re-crawl in the forced pass
         self.wake = threading.Event()         # set by SIGHUP to break an idle sleep
         self.stale = False  # order must be rebuilt: rotation wrapped, or a new EMA link
+        # Discovery (see _Discoverer): ``priority`` holds newly discovered CIS, handed
+        # out before anything else and regardless of the order or the TTL (a new drug
+        # is in no order yet); ``revised`` (EMA lane) holds the /eu/ pages whose EMA
+        # PDF was revised after our fetch, due now like ``outdated``.
+        self.priority: list[str] = []
+        self.revised: set[str] = set()
+
+    def forced_due(self, cis: str) -> bool:
+        """Due whatever the TTL: an older converter made it, or the EMA revised it."""
+        return cis in self.outdated or cis in self.revised
 
     # The lane's due test, used everywhere the crawler asks (claim, gauges, idle
     # wait) so they never disagree. Caller holds the Refresher's _lock.
@@ -181,7 +192,7 @@ class _CrawlLane:
 
     def due_at(self, cis: str):
         entry = self.manifest.get(cis)
-        if cis in self.outdated and (entry or {}).get("status") != "error":
+        if self.forced_due(cis) and (entry or {}).get("status") != "error":
             return None
         return scrape.due_at(entry, self.ttl_days)
 
@@ -259,8 +270,8 @@ class _LaneScheduler:
         """
         if not lane.enabled:
             return 0
-        return sum(1 for cis in lane.order
-                   if cis in lane.outdated or lane.is_due(cis))
+        return len(lane.priority) + sum(1 for cis in lane.order
+                                        if lane.forced_due(cis) or lane.is_due(cis))
 
     @staticmethod
     def _crawl_eta_seconds(due: int, rate: float) -> float:
@@ -347,6 +358,14 @@ class _LaneScheduler:
         even if the signal raced ahead of _build_crawl_order.
         """
         with self._lock:
+            # Newly discovered drugs first: they are in no order yet (no page).
+            for i, cis in enumerate(lane.priority):
+                if cis not in self._pending:
+                    del lane.priority[i]
+                    self._pending[cis] = "crawl"
+                    lane.idle = False
+                    lane.idle_logged = False
+                    return cis
             n = len(lane.order)
             if not n:
                 lane.idle = True
@@ -380,9 +399,9 @@ class _LaneScheduler:
                 if cis in self._pending:
                     continue  # already queued/in flight (on-demand or other lane)
                 if lane.is_due(cis):
-                    if cis in lane.outdated:
+                    if lane.forced_due(cis):
                         if not lane.ttl_due(cis):
-                            # Due only for the converter: on a live failure keep the
+                            # Due only for the converter or an EMA revision: on a live failure keep the
                             # current overlay rather than swap in an archived copy
                             # (the EMA WAF 429s bulk fetches; see _process_ema).
                             lane.no_archive.add(cis)
@@ -406,6 +425,8 @@ class _LaneScheduler:
         now = datetime.now(timezone.utc)
         soonest: float | None = None
         with self._lock:
+            if lane.priority:
+                return 1.0
             for cis in lane.order:
                 at = lane.due_at(cis)
                 if at is None:
@@ -510,10 +531,16 @@ class _Stats:
             # On-demand (button/auto) lane queue depth + drain ETA.
             "ondemand": {"queued": s["queued"], "pending": s["pending"],
                          "eta_seconds": s["eta_seconds"]},
+            # New-drug discovery + EMA revisions (see _Discoverer).
+            "new_drugs": self.discovery_summary(),
         }
 
-    def _record(self, cis: str, source: str, outcome: str, result: str) -> None:
+    def _record(self, cis: str, source: str, outcome: str, result: str,
+                slug: str = "") -> None:
         """Tally one completed refresh and emit its progress line.
+
+        ``slug`` (the page stem, on 'ok' only) feeds the discovery record when this
+        CIS is a newly discovered drug (``_note_discovered``).
 
         ``outcome`` is 'ok' | 'empty' | 'error'. A crawler item logs which lane
         (rcp/eu) plus its position in that lane's rotation and its sweep ETA
@@ -556,9 +583,191 @@ class _Stats:
                 e_due, _fmt_dhm(self._crawl_eta_seconds(e_due, self._eu_lane.rate)),
                 to_go, scrape._fmt_dur(self._eta_seconds(to_go)),
             )
+        self._note_discovered(cis, outcome, result, slug)
 
 
-class Refresher(_LaneScheduler, _Stats):
+# Where discovery keeps the live BDPM download and its record: a WRITABLE mount
+# (the BDPM copies deploy.sh ships into data/ are single-file read-only mounts).
+LIVE_DIR = build.DATA / "live"
+DISCOVERY_PATH = LIVE_DIR / "new-drugs.json"
+
+
+def use_bdpm_dir(d) -> None:
+    """Point build.py's and scrape-rcp.py's BDPM inputs (catalog + COMPO/GENER
+    joins) at directory ``d``. A join missing there keeps its current path."""
+    for name, attr in (("CIS_bdpm.txt", "BDPM_PATH"), ("CIS_COMPO_bdpm.txt", "COMPO_PATH"),
+                       ("CIS_GENER_bdpm.txt", "GENER_PATH")):
+        path = d / name
+        if path.is_file():
+            setattr(build, attr, path)
+            setattr(scrape, attr, path)
+
+
+class _Discoverer:
+    """New-drug discovery and EMA revision check, a mixin of Refresher (which owns
+    the lanes, ``_lock``, the manifests and the render context it swaps).
+
+    Every ``discover_hours`` (first run ``DISCOVER_FIRST_DELAY`` after start):
+
+    1. download the live BDPM into data/live (discover.download_bdpm) and repoint
+       build/scrape at it, reload the names + centrally-authorized set (so a new
+       drug renders under its real name and lands in the right lane);
+    2. diff the catalog (DiscoveryState.apply_catalog) and put every new drug (plus,
+       on the first run, the never-fetched pageless backlog) on its lane's
+       ``priority`` list: the EMA lane for a centrally-authorized CIS (its PDF link
+       is harvested live off the ANSM page when none is known), the ANSM one else;
+    3. download the EMA EPAR-documents dump and mark the /eu/ overlays fetched before
+       their PDF's last revision as ``revised`` on the EMA lane (due now).
+
+    Each fetched drug's outcome lands in the record via ``_note_discovered`` (hooked
+    in _record). The record lives in data/live/new-drugs.json and feeds /status
+    (``discovery_summary``) and GET /api/search-extra (``search_extra``). New pages
+    reach the static search index, browse pages and sitemap at the next full build;
+    until then search-extra makes them findable. ``_disc_lock`` guards the record;
+    it is never held while taking ``_lock``.
+    """
+
+    DISCOVER_FIRST_DELAY = 300.0
+
+    def _discover_run(self) -> None:
+        time.sleep(self.DISCOVER_FIRST_DELAY)
+        while True:
+            try:
+                self.discover_once()
+            except Exception as exc:  # never let the thread die
+                logger.exception("discovery run failed: {}", exc)
+            time.sleep(max(1.0, self.discover_hours) * 3600.0)
+
+    def _get_bytes(self, client, url: str) -> bytes:
+        resp = client.get(url, timeout=180)
+        resp.raise_for_status()
+        return resp.content
+
+    def discover_once(self) -> None:
+        """One discovery run (see the class docstring)."""
+        with self._disc_lock:
+            self._discovery.data["last_check"] = discover._iso()
+        due: list[str] = []
+        try:
+            with self._client() as client:
+                rows = discover.download_bdpm(lambda u: self._get_bytes(client, u), LIVE_DIR)
+        except Exception as exc:
+            logger.warning("discovery: live BDPM download failed: {}", str(exc)[:200])
+            with self._disc_lock:
+                self._discovery.data["last_error"] = str(exc)[:200]
+        else:
+            use_bdpm_dir(LIVE_DIR)
+            names = self._reload_catalog()
+            eu_cis = self._eu_cis
+            with self._lock:
+                attempted = set(self._manifest) | set(self._ema_manifest)
+                has_page = set(self._page_cis) | eu_cis
+            with self._disc_lock:
+                due = self._discovery.apply_catalog(
+                    names, lambda c: "ema" if c in eu_cis else "ansm", has_page, attempted)
+                self._discovery.data["last_ok"] = discover._iso()
+                self._discovery.data["last_error"] = ""
+            logger.info("discovery: catalog {} drugs, {} to fetch", rows, len(due))
+        self._check_ema_revisions()
+        self._save_discovery()
+        self._enqueue_discovered(due)
+
+    def _reload_catalog(self) -> dict[str, str]:
+        """Re-read the (just downloaded) catalog: names for the renderer, and the
+        centrally-authorized set + authorization groups for the EMA lane. Each is
+        rebound in one assignment, so readers on other threads see old or new."""
+        names = {cis: name for cis, name in bdpm.read_catalog(build.BDPM_PATH) if name}
+        build._NAMES.update(names)  # render_record names + slugs a new drug from it
+        cap = build.load_cap_meta()
+        page_cis = set(self._page_cis)
+        self._cap, self._auth_groups = cap, build.auth_groups(cap)
+        self._eu_cis = frozenset(c for c in cap if c not in page_cis)
+        return names
+
+    def _enqueue_discovered(self, due: list[str]) -> None:
+        lanes = set()
+        with self._lock:
+            for cis in due:
+                lane = self._eu_lane if cis in self._eu_cis else self._ansm_lane
+                if cis not in lane.priority and cis not in self._pending:
+                    lane.priority.append(cis)
+                    lanes.add(lane)
+        for lane in lanes:
+            if not lane.enabled:
+                logger.warning("discovery: {} crawler disabled, its new drugs wait", lane.name)
+            lane.wake.set()
+
+    def _check_ema_revisions(self) -> None:
+        """Mark the /eu/ overlays the EMA revised since we fetched them as due."""
+        with self._disc_lock:
+            self._discovery.data["ema"]["last_check"] = discover._iso()
+        try:
+            records = ema_scrape.fetch_ema_documents()
+        except Exception as exc:
+            logger.warning("discovery: EMA documents download failed: {}", str(exc)[:200])
+            with self._disc_lock:
+                self._discovery.data["ema"]["last_error"] = str(exc)[:200]
+            return
+        dates = ema_scrape.ema_pi_dates(records)
+        revised = ema_scrape.revised_overlays(
+            sorted(build._overlay_cis(build.EU_OVERLAY_DIR)), dates)
+        with self._lock:
+            self._eu_lane.revised = set(revised)
+        names = build._NAMES
+        with self._disc_lock:
+            st = self._discovery
+            st.note_revisions(revised, {c: names.get(c, "") for c in revised})
+            st.data["ema"].update(last_ok=discover._iso(), last_error="",
+                                  timestamp=max(dates.values(), default=""))
+        logger.info("discovery: {} /eu/ page(s) revised at the EMA since our fetch",
+                    len(revised))
+        if revised:
+            self._eu_lane.wake.set()
+
+    def _note_discovered(self, cis: str, outcome: str, result: str, slug: str) -> None:
+        """_record hook: log a discovered drug's outcome; an ANSM one that now has a
+        page joins the page set (crawl order, backlinks, ``_known``)."""
+        eu = cis in self._eu_cis
+        with self._disc_lock:
+            tracked = self._discovery.note_result(
+                cis, outcome, slug=slug, error="" if outcome == "ok" else result)
+            revision = eu and outcome == "ok" and cis in self._discovery.data["ema"]["revised"]
+            if revision:
+                self._discovery.note_revision_fetched(cis)
+        if not (tracked or revision):
+            return
+        if tracked and outcome == "ok" and not eu:
+            with self._lock:
+                self._page_cis.add(cis)
+            self._ansm_lane.stale = True
+        self._save_discovery()
+
+    def _save_discovery(self) -> None:
+        with self._disc_lock:
+            try:
+                self._discovery.save()
+            except OSError as exc:
+                logger.warning("could not persist {}: {}", DISCOVERY_PATH.name, exc)
+
+    def discovery_summary(self) -> dict:
+        """The /status view of discovery (DiscoveryState.summary). A fetched new drug
+        counts as indexed once its semantic-search vectors exist."""
+        def indexed(d: dict) -> bool | None:
+            subdir = "eu" if d.get("lane") == "ema" else "rcp"
+            page = build.DIST / subdir / f"{d.get('slug')}.html"
+            return build.served_mtime(build.vec_path_for(page)) is not None
+        with self._disc_lock:
+            summary = self._discovery.summary(indexed)
+        summary["enabled"] = self.discover_enabled
+        summary["every_hours"] = self.discover_hours
+        return summary
+
+    def search_extra(self) -> list[dict]:
+        with self._disc_lock:
+            return self._discovery.search_rows()
+
+
+class Refresher(_LaneScheduler, _Stats, _Discoverer):
     """Serialises refreshes behind rate-limited worker threads, one per lane.
 
     Splitting the lanes onto separate workers is what makes a click feel instant:
@@ -590,7 +799,8 @@ class Refresher(_LaneScheduler, _Stats):
                  crawl: bool = True, crawl_ttl_days: int = 365,
                  eu_crawl: bool = True, eu_rate: float = 300.0,
                  eu_crawl_ttl_days: int = 180, embed_notify_url: str = "",
-                 demand_hourly_max: int = 0) -> None:
+                 demand_hourly_max: int = 0, discover_enabled: bool = True,
+                 discover_hours: float = 24.0) -> None:
         self.rate = rate
         self.demand_rate = demand_rate
         self.min_interval = min_interval
@@ -659,6 +869,13 @@ class Refresher(_LaneScheduler, _Stats):
             "eu", eu_crawl, eu_crawl_ttl_days, eu_rate, self._ema_manifest,
             self._build_eu_order, ema_scrape.outdated_conversions)
         self._crawl_lanes = (self._ansm_lane, self._eu_lane)
+        # New-drug discovery (see _Discoverer). The record loads even when disabled,
+        # so /status keeps showing the last runs.
+        self.discover_enabled, self.discover_hours = discover_enabled, discover_hours
+        self._disc_lock = threading.Lock()
+        self._discovery = discover.DiscoveryState(DISCOVERY_PATH)
+        self._discover_worker = threading.Thread(target=self._discover_run,
+                                                 name="discover", daemon=True)
         # Workers: the on-demand lane always runs; each crawl lane only when enabled.
         self._demand_worker = threading.Thread(target=self._demand_run,
                                                name="demand", daemon=True)
@@ -673,6 +890,14 @@ class Refresher(_LaneScheduler, _Stats):
         for lane, worker in self._crawl_workers:
             if lane.enabled:
                 worker.start()
+        if self.discover_enabled:
+            self._discover_worker.start()
+        # Re-queue the discovered drugs a restart left pending (or due a retry). On
+        # the very first start, the catalog loaded now is the "known" baseline.
+        with self._disc_lock:
+            self._discovery.seed_known(build._NAMES)
+            due = self._discovery.due_for_fetch()
+        self._enqueue_discovered(due)
 
     def _build_eu_order(self) -> list[str]:
         """Frequency-ordered /eu/ CIS the EMA crawler rotates through: every
@@ -1048,7 +1273,8 @@ class Refresher(_LaneScheduler, _Stats):
                 logger.warning("render failed for {}: {}", cis, row["error"])
                 self._record(cis, source, "error", f"render failed: {row['error'][:120]}")
             else:
-                self._record(cis, source, "ok", f"{row['slug']} ({len(rcp)} bytes)")
+                self._record(cis, source, "ok", f"{row['slug']} ({len(rcp)} bytes)",
+                             slug=row["slug"])
                 self._notify_embed(cis)  # re-embed this page for semantic search
         self._persist_manifest()
 
@@ -1116,6 +1342,7 @@ class Refresher(_LaneScheduler, _Stats):
             scrape.store_entry(self._ema_manifest, cis, entry)
             if status != "error":  # reconverted (or settled): no longer outdated
                 self._eu_lane.outdated.discard(cis)
+                self._eu_lane.revised.discard(cis)
         if status == "ok":
             # Re-read the overlay process_one just wrote, then render the /eu/ page
             # (writes dist/eu/<slug>.html, stored as .br) BEFORE persisting the manifest,
@@ -1126,7 +1353,8 @@ class Refresher(_LaneScheduler, _Stats):
                 logger.warning("EU render produced nothing for {}", cis)
                 self._record(cis, source, "empty", "render produced nothing")
             else:
-                self._record(cis, source, "ok", f"{row['slug']} (eu, {entry.get('bytes', 0)} bytes)")
+                self._record(cis, source, "ok", f"{row['slug']} (eu, {entry.get('bytes', 0)} bytes)",
+                             slug=row["slug"])
                 self._notify_embed(cis)  # re-embed this /eu/ page for semantic search
         elif status == "empty":
             self._record(cis, source, "empty", "EMA PDF yielded no HTML")
@@ -1226,6 +1454,11 @@ class _Handler(svc_http.JSONHandler):
         if self.path == "/api/stats":
             self._send(200, REFRESHER.stats())
             return
+        if self.path == "/api/search-extra":
+            # Drugs discovery fetched since the last full build (not yet in the static
+            # search-index.json); search.js merges them in. Public, same row shape.
+            self._send(200, REFRESHER.search_extra())
+            return
         if self.path == "/api/summary":  # public curated view for the /status page
             self._send(200, REFRESHER.public_summary())
             return
@@ -1313,6 +1546,16 @@ UMAMI = umami.Tracker(env={})  # replaced in main() from the environment
               help="Staleness threshold for the /eu/ crawler (env "
                    "REFRESH_EMA_CRAWL_TTL_DAYS). Default 180 (~6 months): EMA SmPC PDFs "
                    "change rarely, so a long window keeps EMA traffic minimal.")
+@click.option("--discover/--no-discover", "discover_enabled", default=True, show_default=True,
+              envvar="REFRESH_DISCOVER",
+              help="Look for new drugs (env REFRESH_DISCOVER): download the live BDPM "
+                   "catalog into data/live, fetch every new CIS on its lane (EMA or ANSM), "
+                   "and mark the /eu/ pages the EMA revised since our fetch as due "
+                   "(EPAR-documents dump). Results show on /status.")
+@click.option("--discover-hours", type=float, default=24.0, show_default=True,
+              envvar="REFRESH_DISCOVER_HOURS",
+              help="Hours between discovery runs (env REFRESH_DISCOVER_HOURS); the first "
+                   "runs 5 minutes after start. Minimum 1.")
 @click.option("--timeout", type=float, default=30.0, show_default=True,
               help="Per-request HTTP timeout in seconds.")
 @click.option("--gzip/--no-gzip", "gzip_overlay", default=True, show_default=True,
@@ -1338,12 +1581,18 @@ def main(host: str, port: int, rate: float, demand_rate: float, min_interval: fl
          queue_max: int, demand_hourly_max: int, crawl: bool, crawl_ttl_days: int,
          eu_crawl: bool, eu_rate: float, eu_crawl_ttl_days: int, timeout: float,
          gzip_overlay: bool, user_agent: str | None, embed_notify_url: str,
-         log_level: str) -> None:
+         discover_enabled: bool, discover_hours: float, log_level: str) -> None:
     """Run the RCP refresh service (see module docstring)."""
     global REFRESHER, UMAMI
     svc_http.setup_logging(log_level)
     UMAMI = umami.Tracker(log=logger.warning)
     ua = user_agent or f"justelesRCP-refresh/1.0 (RCP freshness bot; {scrape.UA_CONTACT})"
+    # Start on the newest BDPM catalog: the one deploy.sh shipped, or the one the last
+    # discovery run downloaded into data/live (newer between two deploys).
+    bdpm_dir = discover.newest_bdpm_dir(LIVE_DIR, build.DATA)
+    if bdpm_dir is not None:
+        use_bdpm_dir(bdpm_dir)
+        logger.info("BDPM catalog: {}", build.BDPM_PATH)
     # The on-demand and crawler workers each build/serve on their own thread; the
     # crawler builds its frequency-ordered page list inside its worker, so the HTTP
     # server below starts accepting (and /api/health passes) without waiting on I/O.
@@ -1351,7 +1600,8 @@ def main(host: str, port: int, rate: float, demand_rate: float, min_interval: fl
                           timeout=timeout, gzip_overlay=gzip_overlay, user_agent=ua,
                           queue_max=queue_max, crawl=crawl, crawl_ttl_days=crawl_ttl_days,
                           eu_crawl=eu_crawl, eu_rate=eu_rate, eu_crawl_ttl_days=eu_crawl_ttl_days,
-                          embed_notify_url=embed_notify_url, demand_hourly_max=demand_hourly_max)
+                          embed_notify_url=embed_notify_url, demand_hourly_max=demand_hourly_max,
+                          discover_enabled=discover_enabled, discover_hours=discover_hours)
     REFRESHER.start()
 
     # SIGHUP arms a full re-crawl of both lanes without dropping any overlays
@@ -1367,13 +1617,15 @@ def main(host: str, port: int, rate: float, demand_rate: float, min_interval: fl
 
     logger.info("refresh service on {}:{} (crawl-rate {}s, demand-rate {}s, "
                 "min-interval {}s, demand-hourly-max={}, overlay={}, rcp-crawl={}, "
-                "eu-crawl={}, embed-notify={}, umami-ai-reads={})",
+                "eu-crawl={}, embed-notify={}, discover={}, umami-ai-reads={})",
                 host, port, rate, demand_rate, min_interval,
                 demand_hourly_max or "off",
                 "gzip" if gzip_overlay else "plain",
                 f"on ttl={crawl_ttl_days}d" if crawl else "off",
                 f"on rate={eu_rate}s ttl={eu_crawl_ttl_days}d" if eu_crawl else "off",
-                embed_notify_url or "off", "on" if UMAMI.enabled else "off")
+                embed_notify_url or "off",
+                f"every {discover_hours}h" if discover_enabled else "off",
+                "on" if UMAMI.enabled else "off")
     svc_http.QuietHTTPServer((host, port), _Handler).serve_forever()
 
 

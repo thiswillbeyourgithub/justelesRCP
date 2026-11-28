@@ -547,6 +547,8 @@ def test_summary_reports_crawler_refresh_count_not_the_lane_gauge():
                 "fresh": 0, "busy": 0, "budget": 0}
     r._ansm_lane = rs._CrawlLane("rcp", True, 365, 120, {}, lambda: [])
     r._eu_lane = rs._CrawlLane("eu", True, 180, 300, {}, lambda: [])
+    r._disc_lock, r.discover_enabled, r.discover_hours = threading.Lock(), True, 24.0
+    r._discovery = rs.discover.DiscoveryState(Path("/nonexistent/new-drugs.json"))
     summary = r.public_summary()
     assert summary["refreshes"]["crawl"] == 2, summary["refreshes"]
     assert isinstance(summary["crawl"], dict)  # the lane gauge keeps its key
@@ -918,6 +920,59 @@ def test_ema_revision_dates_make_older_overlays_revised():
     print("ok  test_ema_revision_dates_make_older_overlays_revised")
 
 
+def test_discovered_drugs_jump_the_queue_and_revised_pages_are_due():
+    """A drug added to the BDPM after the last deploy was never fetched: the crawl
+    order only holds CIS that already have a page. Discovery now puts it on its
+    lane's ``priority`` list, claimed first even when everything else is fresh (or
+    the order is empty), and an /eu/ page the EMA revised is due whatever the TTL,
+    without the archive fallback. A fetched new ANSM drug joins the page set and
+    becomes searchable through /api/search-extra."""
+    import tempfile
+    import threading
+    from datetime import datetime, timezone
+    spec = importlib.util.spec_from_file_location(
+        "refresh_service", Path(__file__).parent / "refresh-service.py")
+    rs = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(rs)
+    r = rs.Refresher.__new__(rs.Refresher)
+    r._lock, r._pending = threading.Lock(), {}
+    fresh = {"status": "ok", "last_fetch": datetime.now(timezone.utc).isoformat()}
+    eu = rs._CrawlLane("eu", True, 180, 0, {"1": dict(fresh), "2": dict(fresh)},
+                       lambda: ["1", "2"])
+    ansm = rs._CrawlLane("rcp", True, 365, 0, {}, lambda: [])
+    r._build_crawl_order(eu)
+    r._build_crawl_order(ansm)
+    assert r._claim_next_crawl(eu) is None  # all fresh: idle
+    eu.revised = {"2"}
+    assert r._due_count_locked(eu) == 1
+    assert r._claim_next_crawl(eu) == "2" and "2" in eu.no_archive
+    r._pending.clear()
+
+    r._eu_lane, r._ansm_lane = eu, ansm
+    r._eu_cis, r._page_cis = frozenset({"9"}), set()
+    with tempfile.TemporaryDirectory() as d:
+        r._disc_lock = threading.Lock()
+        r._discovery = rs.discover.DiscoveryState(Path(d) / "new-drugs.json")
+        r._discovery.data["known"] = ["1"]
+        r._discovery.data["backlog_done"] = True
+        due = r._discovery.apply_catalog({"1": "A", "8": "NEW RCP", "9": "NEW EU"},
+                                         lambda c: "ema" if c in r._eu_cis else "ansm",
+                                         set(), set())
+        r._enqueue_discovered(due)
+        assert ansm.priority == ["8"] and eu.priority == ["9"], (ansm.priority, eu.priority)
+        assert r._claim_next_crawl(ansm) == "8"  # empty order, still claimed
+        assert r._claim_next_crawl(eu) == "9"
+        assert r._idle_wait_seconds(eu) > 0
+        r._note_discovered("8", "ok", "8-new-rcp (10 bytes)", "8-new-rcp")
+        r._note_discovered("9", "empty", "no EMA PDF url", "")
+        assert "8" in r._page_cis and ansm.stale
+        assert r.search_extra() == [{"cis": "8", "name": "NEW RCP", "slug": "8-new-rcp"}]
+        saved = rs.discover.DiscoveryState(Path(d) / "new-drugs.json")
+        assert saved.drugs["9"]["status"] == "empty"
+        assert saved.drugs["9"]["error"] == "no EMA PDF url"
+    print("ok  test_discovered_drugs_jump_the_queue_and_revised_pages_are_due")
+
+
 if __name__ == "__main__":
     test_pymupdf_is_pinned_to_the_refresh_images_version()
     test_parse_tolerates_runon_records()
@@ -944,4 +999,5 @@ if __name__ == "__main__":
     test_converter_version_stamp_makes_old_overlays_due()
     test_reconversion_uses_the_same_revision_archive_copy()
     test_ema_revision_dates_make_older_overlays_revised()
+    test_discovered_drugs_jump_the_queue_and_revised_pages_are_due()
     print("\nAll tests passed.")

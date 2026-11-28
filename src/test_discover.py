@@ -88,10 +88,19 @@ def test_first_run_seeds_and_takes_backlog_then_diffs():
         st = discover.DiscoveryState(Path(d) / "new-drugs.json")  # reload from disk
         due = st.apply_catalog({"1": "A", "2": "B", "4": "D", "5": "E", "6": "F"}, lane,
                                has_page=set(), attempted=set())
-        assert due == ["4", "5", "6"], due  # backlog 4 still pending
-        assert st.drugs["5"] == {**st.drugs["5"], "lane": "ema", "kind": "new"}
+        assert due == ["4", "5", "6"], due  # backlog 4 still pending, no new backlog
+        assert st.drugs["5"]["kind"] == "new"
+        assert st.drugs["5"]["lane"] == "ema"
         assert st.drugs["6"]["lane"] == "ansm" and "3" in st.data["removed"]
         assert st.data["last_found"]
+
+        st = discover.DiscoveryState(Path(d) / "seeded.json")  # service-seeded first run
+        st.seed_known({"1", "2"})
+        st.seed_known({"1"})  # no-op once seeded
+        due = st.apply_catalog({"1": "A", "2": "B", "3": "C", "7": "G"}, lane,
+                               has_page={"1", "2"}, attempted={"3"})
+        assert due == ["3", "7"] and st.drugs["3"]["kind"] == "new", st.drugs
+        assert st.drugs["7"]["kind"] == "new"  # new wins over backlog
     print("ok  test_first_run_seeds_and_takes_backlog_then_diffs")
 
 
@@ -99,6 +108,7 @@ def test_results_retry_policy_and_search_rows():
     with tempfile.TemporaryDirectory() as d:
         st = discover.DiscoveryState(Path(d) / "s.json")
         st.data["known"] = ["0"]
+        st.data["backlog_done"] = True
         st.apply_catalog({"0": "Z", "1": "A", "2": "B", "3": "C"},
                          lambda c: "ema" if c == "2" else "ansm", set(), set())
         assert not st.note_result("0", "ok")  # not tracked

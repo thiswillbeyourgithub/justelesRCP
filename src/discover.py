@@ -135,7 +135,7 @@ class DiscoveryState:
     """The discovery record, persisted as JSON (``data/live/new-drugs.json``)::
 
         {"last_check": iso, "last_ok": iso, "last_error": str, "last_found": iso,
-         "catalog_size": int, "known": [cis, ...],
+         "catalog_size": int, "known": [cis, ...], "backlog_done": bool,
          "drugs": {cis: {"name", "lane": "ansm"|"ema", "kind": "new"|"backlog",
                          "found": iso, "status": "pending"|"ok"|"empty"|"error",
                          "tried": iso, "fetched": iso, "slug": str, "error": str}},
@@ -170,19 +170,28 @@ class DiscoveryState:
         tmp.write_text(json.dumps(self.data, ensure_ascii=False, indent=0), encoding="utf-8")
         tmp.replace(self.path)
 
+    def seed_known(self, cis) -> None:
+        """Before the very first run, take the catalog the service started with as
+        the known one, so drugs the live catalog added since the last deploy count
+        as new (not as a silent seed)."""
+        if not self.data["known"]:
+            self.data["known"] = sorted(cis)
+
     def apply_catalog(self, names: dict[str, str], lane_of, has_page: set[str],
                       attempted: set[str]) -> list[str]:
         """Diff ``names`` (the current catalog, CIS -> name) against the known one,
         record the new and removed drugs, and return the CIS to fetch now: the new
-        ones, the first-run backlog, plus any earlier one still due a (re)try (see
+        ones, the one-time backlog (first run only), plus any earlier one still due a (re)try (see
         ``due_for_fetch``). ``lane_of(cis) -> "ansm"|"ema"``."""
         now = _iso()
         current = set(names)
         known = set(self.data["known"])
         new, removed = diff_catalog(known, current)
         kinds = {c: "new" for c in new}
-        if not known:
-            kinds.update((c, "backlog") for c in backlog_cis(current, has_page, attempted))
+        if not self.data.get("backlog_done"):
+            kinds.update((c, "backlog") for c in backlog_cis(current, has_page, attempted)
+                         if c not in kinds)
+            self.data["backlog_done"] = True
         for cis, kind in kinds.items():
             if cis not in self.drugs:
                 self.drugs[cis] = {"name": names[cis], "lane": lane_of(cis), "kind": kind,
@@ -198,16 +207,17 @@ class DiscoveryState:
 
     def due_for_fetch(self, now: datetime | None = None) -> list[str]:
         """Discovered CIS to (re)hand to a lane: every one still pending (e.g. after a
-        restart lost the in-memory queue), and those that came back empty or failed,
-        at most every RETRY_GAP_DAYS for RETRY_DAYS after being found."""
+        restart lost the in-memory queue), and the NEW ones that came back empty or
+        failed, at most every RETRY_GAP_DAYS for RETRY_DAYS after being found (not the
+        backlog: ~1k mostly RCP-less drugs retried weekly would hog the ANSM lane)."""
         now = now or _now()
         out = []
         for cis, d in self.drugs.items():
             if d.get("status") == "pending":
                 out.append(cis)
                 continue
-            if d.get("status") not in ("empty", "error"):
-                continue
+            if d.get("status") not in ("empty", "error") or d.get("kind") != "new":
+                continue  # the one-time backlog is not retried
             found, tried = _parse(d.get("found")), _parse(d.get("tried"))
             if found and now - found > timedelta(days=RETRY_DAYS):
                 continue
