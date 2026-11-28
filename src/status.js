@@ -536,6 +536,19 @@
     return sp;
   }
 
+  // The EMA revisions popup: the list can run to hundreds of rows (153 on the first
+  // check), so it lives behind a button like the indexing backlog. The rows come from
+  // the /api/summary already loaded, so no extra request.
+  function openRevisions(revised) {
+    if (!window.jlrcpModal) return;  // changelog.js missing: no popup frame
+    var m = window.jlrcpModal.open({ title: "Révisions publiées par l'EMA", cls: "status-modal" });
+    m.body.appendChild(table(["Médicament", "CIS", "Révisé par l'EMA le", "Repéré le", "Récupéré le"],
+      revised.map(function (r) {
+        return [r.name || "-", r.cis, isoDay(r.revised), isoDay(r.found),
+                r.fetched ? isoDay(r.fetched) : el("span", "status-warn", "en attente")];
+      })));
+  }
+
   function drugLink(cis, name, lane, slug) {
     if (!slug) return el("span", null, name || cis);
     var a = el("a", null, name || cis);
@@ -635,12 +648,17 @@
     frag.appendChild(metric("Dernière vérification", isoWhen(ema.last_check)));
     if (ema.timestamp) frag.appendChild(metric("Données EMA du", isoWhen(ema.timestamp)));
     if (ema.last_error) frag.appendChild(note("Erreur : " + ema.last_error, "warn"));
-    if (ema.revised && ema.revised.length) {
-      frag.appendChild(table(["Médicament", "CIS", "Révisé par l'EMA le", "Repéré le", "Récupéré le"],
-        ema.revised.map(function (r) {
-          return [r.name || "-", r.cis, isoDay(r.revised), isoDay(r.found),
-                  r.fetched ? isoDay(r.fetched) : el("span", "status-warn", "en attente")];
-        })));
+    var revised = ema.revised || [];
+    if (revised.length) {
+      // Counted from the listed rows (the last recent_days only), not revised_pending,
+      // which covers every revision ever seen and could exceed the list.
+      frag.appendChild(metric("Révisions repérées ces " + days + " derniers jours", num(revised.length)));
+      frag.appendChild(metric("Déjà récupérées",
+        num(revised.filter(function (r) { return r.fetched; }).length)));
+      var more = el("button", "changelog-all status-more", "Voir les révisions de l'EMA");
+      more.type = "button";
+      more.addEventListener("click", function () { openRevisions(revised); });
+      frag.appendChild(more);
     }
     setBody("body-newdrugs", frag);
   }
