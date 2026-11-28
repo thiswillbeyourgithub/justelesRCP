@@ -46,25 +46,15 @@ fi
 #      CIS_COMPO_bdpm.txt  CIS -> active-substance denomination    (optional join)
 #      CIS_GENER_bdpm.txt  generic-group label per CIS             (optional join)
 #    They are small and refreshed daily upstream, so re-fetch them EVERY run
-#    (unlike the ~1GB frozen RCP dump). Download to a temp file and swap on success
-#    so a failed/partial download never clobbers a good existing copy.
+#    (unlike the ~1GB frozen RCP dump). src/discover.py does the download (the same
+#    code the refresh service's daily new-drug discovery runs): every file goes to a
+#    temp file, the catalog must hold >= 10000 drugs and no file may be an HTML error
+#    page, and only then are they swapped in, so a failed/partial download never
+#    clobbers a good existing copy (a failed optional join keeps its old copy).
 #    Dataset: https://www.data.gouv.fr/datasets/base-de-donnees-publique-des-medicaments-base-officielle
-BDPM_LIVE="https://base-donnees-publique.medicaments.gouv.fr/download/file"
-
-for f in CIS_bdpm CIS_COMPO_bdpm CIS_GENER_bdpm; do
-  echo "Downloading $f.txt (live BDPM)..."
-  if wget -O "data/$f.txt.tmp" "$BDPM_LIVE/$f.txt" && [ -s "data/$f.txt.tmp" ]; then
-    mv -f "data/$f.txt.tmp" "data/$f.txt"
-  else
-    rm -f "data/$f.txt.tmp"
-    if [ -f "data/$f.txt" ]; then
-      echo "WARN: $f.txt download failed; keeping the existing copy."
-    elif [ "$f" = CIS_bdpm ]; then
-      echo "WARN: $f.txt download failed and none present; build will fall back to HTML denominations."
-    else
-      echo "WARN: $f.txt download failed and none present; scrape-rcp.py frequency join degrades to name-only."
-    fi
-  fi
-done
+echo "Downloading CIS_bdpm.txt + COMPO/GENER joins (live BDPM)..."
+if ! uv run src/discover.py data; then
+  [ -f data/CIS_bdpm.txt ] || echo "WARN: no CIS_bdpm.txt present; build will fall back to HTML denominations."
+fi
 
 echo "Done. Now run: uv run src/build.py"

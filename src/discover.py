@@ -1,3 +1,7 @@
+# /// script
+# requires-python = ">=3.11"
+# dependencies = []
+# ///
 """New-drug discovery: the pure pieces the refresh service's discovery thread uses.
 
 The refresh service already re-crawls every page it knows, but before this module
@@ -17,6 +21,10 @@ The refresh service now, once a day (``REFRESH_DISCOVER_HOURS``):
 3. hands each one to the matching crawler lane (EMA when centrally authorized,
    ANSM otherwise), which fetches, renders and serves it, and keeps a record of
    every step in ``data/live/new-drugs.json`` (``DiscoveryState``) for /status.
+
+Run directly (``uv run src/discover.py [DEST]``, default ``data/``) it just
+downloads and validates the live BDPM files into DEST; ``scripts/download-data.sh``
+uses that so both paths share one validated download.
 
 Everything here is I/O-light and testable without the service (see
 test_discover.py). The orchestration (threads, lanes, rendering) lives in
@@ -328,3 +336,20 @@ def _parse(stamp) -> datetime | None:
     except ValueError:
         return None
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _urllib_get(url: str) -> bytes:
+    import urllib.request
+    req = urllib.request.Request(url, headers={"User-Agent": "justelesRCP-discover"})
+    with urllib.request.urlopen(req, timeout=120) as resp:
+        return resp.read(MAX_FILE_BYTES + 1)
+
+
+if __name__ == "__main__":
+    import sys
+    target = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).resolve().parent.parent / "data"
+    try:
+        n = download_bdpm(_urllib_get, target)
+    except Exception as e:
+        sys.exit(f"WARN: live BDPM download failed ({e}); keeping the existing copies.")
+    print(f"Live BDPM: {n} drugs in {target / 'CIS_bdpm.txt'} (+ COMPO/GENER joins).")
