@@ -116,4 +116,4 @@ Le plus simple est de lire le code, d'ouvrir une *issue*, ou de me contacter via
 
 ## Crédits
 
-Réalisé avec l'aide de [Claude Code](https://claude.com/claude-code).
+Réalisé avec l'aide de [Claude Code](https://claude.com/claude-code). Police [Atkinson Hyperlegible Next](https://github.com/googlefonts/atkinson-hyperlegible-next) du Braille Institute (SIL OFL 1.1), embarquée dans `src/fonts/`.

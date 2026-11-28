@@ -4244,6 +4244,12 @@ def write_static_assets(changelog: dict) -> None:
     for raster in ("og.png", "icon-192.png", "icon-512.png", "apple-touch-icon.png",
                    "icon-maskable-192.png", "icon-maskable-512.png"):
         shutil.copy(SRC / raster, DIST / raster)
+    # The UI font (woff2 is already compressed, so no .br sibling), with its OFL
+    # licence. Replaced whole so a renamed or dropped file does not linger in dist.
+    fonts = DIST / "fonts"
+    if fonts.exists():
+        shutil.rmtree(fonts)
+    shutil.copytree(SRC / "fonts", fonts)
 
 
 def _esc(text: str) -> str:

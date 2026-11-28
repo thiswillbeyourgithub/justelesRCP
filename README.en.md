@@ -111,4 +111,4 @@ The simplest is to read the code, open an *issue*, or contact me via
 
 ## Credits
 
-Built with the help of [Claude Code](https://claude.com/claude-code).
+Built with the help of [Claude Code](https://claude.com/claude-code). Typeface [Atkinson Hyperlegible Next](https://github.com/googlefonts/atkinson-hyperlegible-next) by the Braille Institute (SIL OFL 1.1), vendored in `src/fonts/`.
