@@ -74,13 +74,13 @@ class JSONHandler(BaseHTTPRequestHandler):
         the path before route matching)."""
         return urlsplit(self.path)
 
-    def _send(self, code: int, payload: dict) -> None:
+    def _send(self, code: int, payload, cache: str = "no-store") -> None:
         body = json.dumps(payload).encode("utf-8")
         try:
             self.send_response(code)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")
+            self.send_header("Cache-Control", cache)
             self.end_headers()
             self.wfile.write(body)
         except (BrokenPipeError, ConnectionResetError):

@@ -36,9 +36,18 @@
     return (p.get("q") || p.get("query") || "").trim();
   };
 
-  fetch("/search-index.json")
-    .then((r) => r.json())
-    .then((data) => {
+  // Drugs the refresh service discovered and fetched since the last full build
+  // (/api/search-extra, same row shape) are appended so they are findable at once.
+  // Best-effort: the service is optional, so any failure just means no extra rows.
+  const extra = fetch("/api/search-extra")
+    .then((r) => (r.ok ? r.json() : []))
+    .catch(() => []);
+  Promise.all([fetch("/search-index.json").then((r) => r.json()), extra])
+    .then(([base, more]) => {
+      const seen = new Set(base.map((e) => e.cis));
+      const data = base.concat(
+        (Array.isArray(more) ? more : []).filter((e) => e && e.cis && e.name && !seen.has(e.cis))
+      );
       index = data;
       norm = data.map((e) => normalize(e.name));
       normSub = data.map((e) => (e.sub ? normalize(e.sub) : ""));

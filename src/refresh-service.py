@@ -1456,8 +1456,9 @@ class _Handler(svc_http.JSONHandler):
             return
         if self.path == "/api/search-extra":
             # Drugs discovery fetched since the last full build (not yet in the static
-            # search-index.json); search.js merges them in. Public, same row shape.
-            self._send(200, REFRESHER.search_extra())
+            # search-index.json); search.js merges them in on every page with a search
+            # box, so let browsers reuse it for 5 min. Public, same row shape.
+            self._send(200, REFRESHER.search_extra(), cache="public, max-age=300")
             return
         if self.path == "/api/summary":  # public curated view for the /status page
             self._send(200, REFRESHER.public_summary())
