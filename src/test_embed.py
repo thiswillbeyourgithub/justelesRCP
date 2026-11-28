@@ -519,7 +519,9 @@ def test_chunk_locations_land_on_their_blocks():
     heading: the browser used to FIND each chunk by its text, which fails whenever that
     text is not contiguous on the page (about 19% of chunks on a 300-page audit). Here
     the filler-dropped run, the linearised rows and the paragraph after
-    the browser-repaired <p><table> must all land, the last one only after the shift.
+    the <p><span><div><table> must all land, unshifted.
+
+    (build._split_block_paragraphs, see the next test).
     """
     audit = svc_http.load_sibling("audit-locate.py", "audit_locate")
     raw = _located_page()
@@ -532,15 +534,50 @@ def test_chunk_locations_land_on_their_blocks():
         assert loc is not None, (sec, snippet)
         reasons[snippet[:30]] = audit.check(doc, sec, snippet, loc[:2], loc[2])
     assert set(reasons.values()) <= {"ok", "shifted"}, reasons
-    # The filler sits between the two paragraphs of ONE chunk: its run spans all three.
+    # The filler sits between the two paragraphs of ONE chunk: its run spans all three
+    # (and, since the later short prose merges into it, possibly more).
     head = next(c for c in chunks if c[1].startswith("Flacon non ouvert"))
-    assert head[3][1] - head[3][0] == 2 and "2 ans" not in head[1], head
+    assert head[3][0] == 0 and head[3][1] >= 2 and "2 ans" not in head[1], head
     rows = [c for c in chunks if c[3][2] and c[0] == "sec-0"]
     assert [c[1].split(";")[0] for c in rows] == [
         "Très fréquent: Troubles du métabolisme et de la nutrition",
         "Très fréquent: Affections du système nerveux"], rows
-    assert "shifted" in reasons.values(), reasons
+    assert set(reasons.values()) == {"ok"}, reasons
     print("ok  test_chunk_locations_land_on_their_blocks")
+
+
+def test_caption_after_nested_table_lands_on_its_block():
+    """A <p> holding a table then text is split into valid HTML, so the text's
+    chunk lands on its own block in the browser.
+
+    Regression for APREPITANT 69320173 "Figure 2": the overlay has
+    ``<p><span><div><table>..</table></div></span>caption</p>``. A browser closes
+    the <p> at the <div>, drops the stray </span> and leaves the caption as bare
+    text outside any block, so its chunk landed on the section heading (audit-locate
+    "text-mismatch") and every later block of the section was numbered off by one.
+    """
+    audit = svc_http.load_sibling("audit-locate.py", "audit_locate")
+    raw = (
+        '<div id="textDocument">\n'
+        '<p class="AmmAnnexeTitre1" id="sec-0">5. PROPRIÉTÉS PHARMACOLOGIQUES</p>\n'
+        '<p class="AmmCorpsTexte">Figure 2</p>\n'
+        '<p class="AmmCorpsTexte"><span style="position:absolute"><div><table><tr>'
+        "<td><p>image</p></td></tr></table></div></span>Délai jusqu'au premier "
+        "épisode de vomissement à partir du début de l'administration de la "
+        "chimiothérapie dans la population pédiatrique pendant les phases aiguë et "
+        "retardée, cycle 1 (population en intention de traiter).</p>\n"
+        '<p class="AmmCorpsTexte">Une analyse de l\'efficacité au cycle 1 dans les '
+        "sous-groupes a démontré que, indépendamment de la catégorie d'âge et du "
+        "sexe, le traitement a permis un meilleur contrôle de la réponse.</p>\n"
+        "</div>"
+    )
+    doc = audit._parse(build.clean_rcp(raw)[1])  # the served markup, as a browser parses it
+    chunks = build.section_chunks(raw, located=True)
+    reasons = {c[1][:20]: audit.check(doc, c[0], c[1], c[3][:2], c[3][2])
+               for c in chunks}
+    assert any("Délai" in c[1] for c in chunks), chunks
+    assert set(reasons.values()) == {"ok"}, reasons
+    print("ok  test_caption_after_nested_table_lands_on_its_block")
 
 
 def test_vec_add_locations_backfills_without_reencoding():
@@ -2508,6 +2545,7 @@ if __name__ == "__main__":
     test_flat_table_snippet_resolves_to_its_rows()
     test_linearised_row_snippet_resolves_to_its_row()
     test_chunk_locations_land_on_their_blocks()
+    test_caption_after_nested_table_lands_on_its_block()
     test_vec_add_locations_backfills_without_reencoding()
     test_eu_page_without_heading_ids_gets_the_chunks_anchors()
     test_dsfr_backtotop_chrome_stripped()

@@ -944,11 +944,95 @@ def _parse_clean(raw: str):
             node.set("style", ";".join(kept))
         else:
             del node.attrib["style"]
+    _split_block_paragraphs(doc)
     _demote_prose_headings(doc)
     _promote_numbered_titles(doc)
     _eu_open_smpc(doc)  # after the promotion, which may give the SmPC its headings
     _promote_subheads(doc)
     return doc
+
+
+# Start tags that close an open <p> in the HTML5 parser (the spec's "close a p
+# element" list), i.e. what a browser hoists out of a <p> that lxml leaves inside.
+_P_CLOSERS = frozenset({
+    "address", "article", "aside", "blockquote", "details", "dialog", "div", "dl",
+    "fieldset", "figcaption", "figure", "footer", "form", "h1", "h2", "h3", "h4",
+    "h5", "h6", "header", "hgroup", "hr", "main", "menu", "nav", "ol", "p", "pre",
+    "section", "summary", "table", "ul", "li", "dd", "dt"})
+
+
+def _has_block(el) -> bool:
+    return any(isinstance(d.tag, str) and d.tag in _P_CLOSERS for d in el.iterdescendants())
+
+
+def _split_block_paragraphs(doc) -> None:
+    """Split every <p> that holds a block (a <div>, <table>, nested <p>...) into its
+    inline runs, each its own <p>, with the blocks between them as siblings.
+
+    lxml keeps ``<p><span><div><table>..</table></div></span>caption</p>`` as one
+    paragraph, but the HTML5 parser of a browser closes the <p> at the <div>, drops
+    the stray </span>, leaves "caption" as bare text outside any paragraph and turns
+    the final </p> into a new empty <p>. A chunk located on that lxml paragraph then
+    pointed at blocks that, in the browser, do not hold its text (TIBSOVO-like
+    figure captions, APREPITANT 69320173 "Figure 2": the hit landed on the section
+    heading), and every later block of the section was numbered off by one. Emitting
+    valid HTML makes the page and the chunker see the same tree. Inline wrappers that
+    hold a block (that <span>) are unwrapped first, so each block is a direct child.
+    Whitespace-only runs are dropped; the first run keeps the paragraph's id."""
+    for p in [p for p in doc.iter("p") if _has_block(p)]:
+        if p.getparent() is None:
+            continue
+        while True:  # unwrap the inline wrappers until every block is a direct child
+            wrap = next((c for c in p if isinstance(c.tag, str)
+                         and c.tag not in _P_CLOSERS and _has_block(c)), None)
+            if wrap is None:
+                break
+            wrap.drop_tag()
+        attrib = {k: v for k, v in p.attrib.items() if k != "id"}
+        out, run = [], None
+
+        def text_into(text):
+            nonlocal run
+            if not text:
+                return
+            if run is None:
+                run = p.makeelement("p", attrib)
+                out.append(run)
+            if len(run):
+                run[-1].tail = (run[-1].tail or "") + text
+            else:
+                run.text = (run.text or "") + text
+
+        text_into(p.text)
+        for child in list(p):
+            tail, child.tail = child.tail, None
+            if isinstance(child.tag, str) and child.tag in _P_CLOSERS:
+                out.append(child)
+                run = None
+            else:
+                if run is None:
+                    run = p.makeelement("p", attrib)
+                    out.append(run)
+                run.append(child)
+            text_into(tail)
+        # A run is a fresh <p> (no parent yet); a block is still a child of p.
+        out = [n for n in out if n.getparent() is not None
+               or len(n) or (n.text or "").strip()]
+        if out and out[0].tag == "p" and p.get("id"):
+            out[0].set("id", p.get("id"))
+        parent, tail = p.getparent(), p.tail
+        idx = parent.index(p)
+        parent.remove(p)
+        for i, node in enumerate(out):
+            parent.insert(idx + i, node)
+        if out:
+            out[-1].tail = (out[-1].tail or "") + (tail or "")
+        elif tail:
+            prev = parent[idx - 1] if idx else None
+            if prev is not None:
+                prev.tail = (prev.tail or "") + tail
+            else:
+                parent.text = (parent.text or "") + tail
 
 
 def _is_eu_doc(doc) -> bool:
@@ -1790,15 +1874,8 @@ def section_chunks(raw: str, cis: str = "", *, located: bool = False) -> list[tu
 # number a section's blocks identically. Bump it with any change to either, so the
 # embed service rewrites every sidecar's locations (no re-encode, see
 # vec_add_locations).
-VEC_LOC_VERSION = 1
+VEC_LOC_VERSION = 2
 _LOC_LEAF = frozenset({"p", "li", "td", "th", "dd", "dt", "caption"})
-# Start tags that close an open <p> in the HTML5 parser (the spec's "close a p
-# element" list), i.e. what a browser hoists out of a <p> that lxml leaves inside.
-_P_CLOSERS = frozenset({
-    "address", "article", "aside", "blockquote", "details", "dialog", "div", "dl",
-    "fieldset", "figcaption", "figure", "footer", "form", "h1", "h2", "h3", "h4",
-    "h5", "h6", "header", "hgroup", "hr", "main", "menu", "nav", "ol", "p", "pre",
-    "section", "summary", "table", "ul", "li", "dd", "dt"})
 
 
 class _BlockIndex:
@@ -1821,17 +1898,14 @@ class _BlockIndex:
             if (re.fullmatch(r"sec-\d+", sib.get("id") or "")
                     or "AmmAnnexeTitre1" in (sib.get("class") or "").split()):
                 break
-            # A <p> wrapping a block (via a stray inline tag, e.g. the scraped
-            # <p><iv><div><table>) stays one block in lxml, but a browser closes the
-            # <p> at the <div>, so on the page it is the <p> then the block's leaves.
-            own = [sib] if sib.tag in _LOC_LEAF else []
-            if own and not (sib.tag == "p" and any(
-                    d.tag in _P_CLOSERS for d in sib.iterdescendants())):
+            # No <p> holds a block here (_split_block_paragraphs), so a leaf is one
+            # block, exactly as the browser parses the served page.
+            if sib.tag in _LOC_LEAF:
                 self.blocks.append(sib)
                 continue
             leaves = [d for d in sib.iterdescendants()
                       if isinstance(d.tag, str) and d.tag in _LOC_LEAF]
-            self.blocks.extend(own + leaves or [sib])
+            self.blocks.extend(leaves or [sib])
         # Keyed by element: lxml hands back the same proxy while self.blocks holds it.
         self.index = {el: i for i, el in enumerate(self.blocks)}
 
