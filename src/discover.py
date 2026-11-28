@@ -186,8 +186,9 @@ class DiscoveryState:
             self.data["known"] = sorted(cis)
 
     def apply_catalog(self, names: dict[str, str], lane_of, has_page: set[str],
-                      attempted: set[str]) -> list[str]:
+                      attempted: set[str], old_names: dict[str, str] | None = None) -> list[str]:
         """Diff ``names`` (the current catalog, CIS -> name) against the known one,
+        naming each removed drug from ``old_names`` (the previous catalog) if given,
         record the new and removed drugs, and return the CIS to fetch now: the new
         ones, the one-time backlog (first run only), plus any earlier one still due a (re)try (see
         ``due_for_fetch``). ``lane_of(cis) -> "ansm"|"ema"``."""
@@ -205,7 +206,8 @@ class DiscoveryState:
                 self.drugs[cis] = {"name": names[cis], "lane": lane_of(cis), "kind": kind,
                                    "found": now, "status": "pending"}
         for cis in removed:
-            self.data["removed"][cis] = {"name": self.drugs.get(cis, {}).get("name", ""),
+            old = (old_names or {}).get(cis) or self.drugs.get(cis, {}).get("name", "")
+            self.data["removed"][cis] = {"name": old,
                                          "date": now}
         if new:
             self.data["last_found"] = now
@@ -278,14 +280,15 @@ class DiscoveryState:
             c = counts.setdefault(kind, {}).setdefault(
                 lane, {"pending": 0, "ok": 0, "empty": 0, "error": 0, "indexed": 0})
             c[status] = c.get(status, 0) + 1
-            is_indexed = indexed(d) if status == "ok" and kind == "new" else None
+            is_indexed = indexed(d) if status == "ok" else None
             if is_indexed:
                 c["indexed"] += 1
             if kind == "new" and (_parse(d.get("found")) or now) >= cutoff:
                 recent.append({"cis": cis, "name": d.get("name", ""), "lane": lane,
                                "found": d.get("found"), "status": status,
                                "tried": d.get("tried"), "fetched": d.get("fetched"),
-                               "slug": d.get("slug", ""), "indexed": is_indexed})
+                               "slug": d.get("slug", ""), "indexed": is_indexed,
+                               "error": d.get("error", "") if status == "error" else ""})
         recent.sort(key=lambda r: (r["found"] or "", r["cis"]), reverse=True)
         removed = sorted(({"cis": c, **v} for c, v in self.data["removed"].items()
                           if (_parse(v.get("date")) or now) >= cutoff),

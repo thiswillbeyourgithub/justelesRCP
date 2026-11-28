@@ -87,11 +87,11 @@ def test_first_run_seeds_and_takes_backlog_then_diffs():
 
         st = discover.DiscoveryState(Path(d) / "new-drugs.json")  # reload from disk
         due = st.apply_catalog({"1": "A", "2": "B", "4": "D", "5": "E", "6": "F"}, lane,
-                               has_page=set(), attempted=set())
+                               has_page=set(), attempted=set(), old_names={"3": "C"})
         assert due == ["4", "5", "6"], due  # backlog 4 still pending, no new backlog
         assert st.drugs["5"]["kind"] == "new"
         assert st.drugs["5"]["lane"] == "ema"
-        assert st.drugs["6"]["lane"] == "ansm" and "3" in st.data["removed"]
+        assert st.drugs["6"]["lane"] == "ansm" and st.data["removed"]["3"]["name"] == "C"
         assert st.data["last_found"]
 
         st = discover.DiscoveryState(Path(d) / "seeded.json")  # service-seeded first run

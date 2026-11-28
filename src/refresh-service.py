@@ -657,6 +657,7 @@ class _Discoverer:
                 self._discovery.data["last_error"] = str(exc)[:200]
         else:
             use_bdpm_dir(LIVE_DIR)
+            old_names = dict(build._NAMES)  # to name the drugs the new catalog dropped
             names = self._reload_catalog()
             eu_cis = self._eu_cis
             with self._lock:
@@ -664,7 +665,8 @@ class _Discoverer:
                 has_page = set(self._page_cis) | eu_cis
             with self._disc_lock:
                 due = self._discovery.apply_catalog(
-                    names, lambda c: "ema" if c in eu_cis else "ansm", has_page, attempted)
+                    names, lambda c: "ema" if c in eu_cis else "ansm", has_page, attempted,
+                    old_names)
                 self._discovery.data["last_ok"] = discover._iso()
                 self._discovery.data["last_error"] = ""
             logger.info("discovery: catalog {} drugs, {} to fetch", rows, len(due))
