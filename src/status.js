@@ -501,6 +501,141 @@
     setBody("body-catchup", frag);
   }
 
+  // ---- new-drug discovery (public_summary.new_drugs) ------------------------
+  // The refresh service re-downloads the BDPM catalog daily, fetches each new CIS in
+  // its lane (EMA for a central authorization, else ANSM) and tracks it until its
+  // page has semantic-search vectors. Also: drugs gone from the catalog and /eu/
+  // pages the EMA revised. Dates are ISO strings here (not epochs like elsewhere).
+  var LANE_FR = { ansm: "ANSM", ema: "EMA" };
+  var DRUG_STATUS_FR = { pending: "en attente", ok: "récupéré", empty: "pas encore de RCP",
+                         error: "erreur" };
+
+  function isoWhen(iso) {
+    if (!iso) return "-";
+    var d = new Date(iso);
+    return isNaN(d) ? iso : d.toLocaleString("fr-FR");
+  }
+  function isoDay(iso) {
+    if (!iso) return "-";
+    var d = new Date(iso);
+    return isNaN(d) ? iso : d.toLocaleDateString("fr-FR");
+  }
+
+  function errSpan(text, detail) {
+    var sp = el("span", "status-warn", text);
+    if (detail) sp.title = detail;
+    return sp;
+  }
+
+  function drugLink(cis, name, lane, slug) {
+    if (!slug) return el("span", null, name || cis);
+    var a = el("a", null, name || cis);
+    a.href = "/" + (lane === "ema" ? "eu" : "rcp") + "/" + slug + ".html";
+    a.target = "_blank";
+    a.rel = "noopener";
+    return a;
+  }
+
+  // One table: a row per lane, a column per status, for one kind (new / backlog).
+  function countsTable(byLane) {
+    var rows = [];
+    ["ansm", "ema"].forEach(function (lane) {
+      var c = byLane && byLane[lane];
+      if (!c) return;
+      var fetched = c.ok || 0;
+      rows.push([LANE_FR[lane], num(c.pending || 0), num(fetched), num(c.empty || 0),
+                 num(c.error || 0), num(c.indexed || 0) + " / " + num(fetched)]);
+    });
+    if (!rows.length) return null;
+    return table(["Source", "En attente", "Récupérés", "Pas encore de RCP", "Erreurs",
+                  "Indexés"], rows);
+  }
+
+  function renderNewDrugs(s) {
+    var nd = s && s.new_drugs;
+    if (!nd) { setBody("body-newdrugs", note("Information indisponible.", "off")); return; }
+    var frag = document.createDocumentFragment();
+    var head = el("div", "status-lane-head");
+    head.appendChild(el("h3", "status-lane-title", "Catalogue BDPM"));
+    if (!nd.enabled) head.appendChild(badge("désactivé", "off"));
+    else if (nd.last_error) head.appendChild(badge("dernière vérification en échec", "warn"));
+    else if (nd.last_ok) head.appendChild(badge("actif", "ok"));
+    else head.appendChild(badge("première vérification à venir", "run"));
+    frag.appendChild(head);
+
+    frag.appendChild(metric("Dernière vérification", isoWhen(nd.last_check)));
+    frag.appendChild(metric("Dernière vérification réussie", isoWhen(nd.last_ok),
+      nd.last_error ? "warn" : ""));
+    if (nd.enabled && nd.every_hours)
+      frag.appendChild(metric("Fréquence", "toutes les " + num(nd.every_hours) + " h"));
+    frag.appendChild(metric("Dernière découverte", nd.last_found ? isoWhen(nd.last_found) : "aucune"));
+    if (nd.catalog_size) frag.appendChild(metric("Médicaments au catalogue", num(nd.catalog_size)));
+    if (nd.last_error) frag.appendChild(note("Erreur : " + nd.last_error, "warn"));
+
+    var counts = nd.counts || {};
+    var pendingIdx = 0;
+    ["ansm", "ema"].forEach(function (lane) {
+      var c = counts["new"] && counts["new"][lane];
+      if (c) pendingIdx += (c.pending || 0) + Math.max(0, (c.ok || 0) - (c.indexed || 0));
+    });
+    var tNew = countsTable(counts["new"]);
+    frag.appendChild(el("h3", "status-lane-title status-table-title", "Nouveaux médicaments détectés"));
+    if (tNew) {
+      frag.appendChild(metric("Pas encore indexés (en attente ou à indexer)", num(pendingIdx),
+        pendingIdx ? "warn" : ""));
+      frag.appendChild(tNew);
+    } else {
+      frag.appendChild(note("Aucun nouveau médicament détecté pour l'instant."));
+    }
+    var tBack = countsTable(counts.backlog);
+    if (tBack) {
+      frag.appendChild(el("h3", "status-lane-title status-table-title",
+        "Rattrapage initial (médicaments du catalogue jamais récupérés)"));
+      frag.appendChild(tBack);
+    }
+
+    var days = nd.recent_days || 120;
+    if (nd.recent && nd.recent.length) {
+      frag.appendChild(el("h3", "status-lane-title status-table-title",
+        "Détectés ces " + days + " derniers jours (" + nd.recent.length + ")"));
+      frag.appendChild(table(["Médicament", "CIS", "Source", "Détecté le", "Récupéré le", "État",
+                              "Indexé"],
+        nd.recent.map(function (r) {
+          var st = DRUG_STATUS_FR[r.status] || r.status || "-";
+          return [drugLink(r.cis, r.name, r.lane, r.status === "ok" ? r.slug : ""), r.cis,
+                  LANE_FR[r.lane] || r.lane, isoDay(r.found), isoDay(r.fetched),
+                  r.status === "error" ? errSpan(st, r.error) : st,
+                  r.indexed === true ? "oui" : r.indexed === false ? "non" : "-"];
+        })));
+    }
+    if (nd.removed && nd.removed.length) {
+      frag.appendChild(el("h3", "status-lane-title status-table-title",
+        "Retirés du catalogue ces " + days + " derniers jours (" + nd.removed.length + ")"));
+      frag.appendChild(table(["Médicament", "CIS", "Retiré le"],
+        nd.removed.map(function (r) { return [r.name || "-", r.cis, isoDay(r.date)]; })));
+    }
+
+    var ema = nd.ema || {};
+    frag.appendChild(el("div", "status-sep"));
+    var eh = el("div", "status-lane-head");
+    eh.appendChild(el("h3", "status-lane-title", "Révisions publiées par l'EMA"));
+    if (ema.last_error) eh.appendChild(badge("dernière vérification en échec", "warn"));
+    else if (ema.revised_pending) eh.appendChild(badge(num(ema.revised_pending) + " à récupérer", "run"));
+    else if (ema.last_ok) eh.appendChild(badge("à jour", "ok"));
+    frag.appendChild(eh);
+    frag.appendChild(metric("Dernière vérification", isoWhen(ema.last_check)));
+    if (ema.timestamp) frag.appendChild(metric("Données EMA du", isoWhen(ema.timestamp)));
+    if (ema.last_error) frag.appendChild(note("Erreur : " + ema.last_error, "warn"));
+    if (ema.revised && ema.revised.length) {
+      frag.appendChild(table(["Médicament", "CIS", "Révisé par l'EMA le", "Repéré le", "Récupéré le"],
+        ema.revised.map(function (r) {
+          return [r.name || "-", r.cis, isoDay(r.revised), isoDay(r.found),
+                  r.fetched ? isoDay(r.fetched) : el("span", "status-warn", "en attente")];
+        })));
+    }
+    setBody("body-newdrugs", frag);
+  }
+
   function renderDown(ids, msg) {
     ids.forEach(function (id) { setBody(id, note(msg, "off")); });
   }
@@ -526,11 +661,11 @@
     var uptimes = [];
     var crawlS = null, embedS = null;
     var pRefresh = getJSON(SUMMARY_URL).then(function (s) {
-      crawlS = s; renderCrawl(s); renderRefresh(s);
+      crawlS = s; renderCrawl(s); renderRefresh(s); renderNewDrugs(s);
       if (typeof s.uptime_seconds === "number") uptimes.push(s.uptime_seconds);
     }).catch(function () {
       crawlS = null;
-      renderDown(["body-crawl", "body-refresh"], "Service de rafraîchissement indisponible.");
+      renderDown(["body-crawl", "body-refresh", "body-newdrugs"], "Service de rafraîchissement indisponible.");
     });
     var pEmbed = getJSON(SEM_URL).then(function (s) {
       embedS = s; renderEmbed(s); renderQueries(s);
