@@ -172,7 +172,8 @@ services:
     # REFRESH_MIN_INTERVAL_SECONDS, REFRESH_QUEUE_MAX, REFRESH_CRAWL (ANSM
     # crawler on/off) + REFRESH_CRAWL_TTL_DAYS; the EMA /eu/ crawler lane
     # REFRESH_EMA_CRAWL (on/off) + REFRESH_EMA_RATE_SECONDS (default 300, gentle)
-    # + REFRESH_EMA_CRAWL_TTL_DAYS (default 180); RCP_OVERLAY_GZIP. See docker/env.example.
+    # + REFRESH_EMA_CRAWL_TTL_DAYS (default 180); new-drug discovery REFRESH_DISCOVER
+    # (on/off) + REFRESH_DISCOVER_HOURS (default 24); RCP_OVERLAY_GZIP. See docker/env.example.
     volumes:
       # Read-only: the CIS -> name map (for page titles) and the RCP template are
       # baked into the image, but names must be current, so mount the map RO.
@@ -205,6 +206,11 @@ services:
       - ../data/eu:/app/data/eu
       - ../data/.scrape-ema-manifest.json:/app/data/.scrape-ema-manifest.json
       - ../dist/eu:/app/dist/eu
+      # New-drug discovery (discover.py): the live BDPM catalog the service
+      # re-downloads daily (it wins over the deploy-time copy above once newer)
+      # and the discovery state new-drugs.json shown on /status. Must exist as a
+      # directory owned by REFRESH_UID before `up`; deploy.sh creates it.
+      - ../data/live:/app/data/live
     tmpfs:
       - /tmp:mode=1777
     healthcheck:
